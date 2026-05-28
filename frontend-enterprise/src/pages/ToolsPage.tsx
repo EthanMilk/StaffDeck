@@ -8,6 +8,7 @@ import type { ToolRead } from '../types';
 export default function ToolsPage() {
   const [rows, setRows] = useState<ToolRead[]>([]);
   const [selected, setSelected] = useState<ToolRead | null>(null);
+  const [testToolId, setTestToolId] = useState<string | undefined>();
   const [form] = Form.useForm();
   const [testJson, setTestJson] = useState('{}');
   const [testResult, setTestResult] = useState('');
@@ -22,8 +23,21 @@ export default function ToolsPage() {
     load();
   }, []);
 
+  useEffect(() => {
+    if (!rows.length) {
+      setTestToolId(undefined);
+      return;
+    }
+    if (!testToolId || !rows.some((row) => row.id === testToolId)) {
+      const [first] = rows;
+      setTestToolId(first.id);
+      setTestJson(JSON.stringify(exampleFromSchema(first.input_schema), null, 2));
+    }
+  }, [rows, testToolId]);
+
   function edit(row: ToolRead) {
     setSelected(row);
+    setTestToolId(row.id);
     form.setFieldsValue({
       ...row,
       headers: JSON.stringify(row.headers, null, 2),
@@ -33,6 +47,12 @@ export default function ToolsPage() {
       allowed_skills: row.allowed_skills.join(','),
     });
     setTestJson(JSON.stringify(exampleFromSchema(row.input_schema), null, 2));
+    setTestResult('');
+  }
+
+  function clearEditor() {
+    setSelected(null);
+    form.resetFields();
   }
 
   async function save() {
@@ -57,18 +77,29 @@ export default function ToolsPage() {
       await api.post('/api/enterprise/tools', payload);
     }
     message.success('已保存');
-    setSelected(null);
-    form.resetFields();
+    clearEditor();
     load();
   }
 
-  async function test(row = selected) {
-    if (!row) {
+  function selectTestTool(toolId: string) {
+    const row = rows.find((item) => item.id === toolId);
+    setTestToolId(toolId);
+    setTestJson(JSON.stringify(exampleFromSchema(row?.input_schema || {}), null, 2));
+    setTestResult('');
+  }
+
+  async function test(row?: ToolRead) {
+    const target = row || rows.find((item) => item.id === testToolId) || selected;
+    if (!target) {
       message.warning('请先选择工具');
       return;
     }
-    const argumentsJson = row.id === selected?.id ? parseJson(testJson, {}) : exampleFromSchema(row.input_schema);
-    const result = await api.post(`/api/enterprise/tools/${row.id}/test`, {
+    if (row) {
+      setTestToolId(row.id);
+      setTestJson(JSON.stringify(exampleFromSchema(row.input_schema), null, 2));
+    }
+    const argumentsJson = row ? exampleFromSchema(row.input_schema) : parseJson(testJson, {});
+    const result = await api.post(`/api/enterprise/tools/${target.id}/test`, {
       tenant_id: TENANT_ID,
       arguments: argumentsJson,
     });
@@ -110,7 +141,16 @@ export default function ToolsPage() {
           />
         </Card>
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          <Card className="editor-card" title={selected ? '编辑工具' : '新建工具'}>
+          <Card
+            className="editor-card"
+            title={selected ? '编辑工具' : '新建工具'}
+            extra={(
+              <Space className="card-header-actions">
+                <Button onClick={clearEditor}>清空</Button>
+                <Button type="primary" icon={<SaveOutlined />} onClick={save}>保存</Button>
+              </Space>
+            )}
+          >
             <Form form={form} layout="vertical" initialValues={{ method: 'POST', enabled: true, headers: '{}', auth: '{}', input_schema: '{}', output_schema: '{}' }}>
               <Form.Item name="name" label="工具名称" rules={[{ required: true }]}><Input prefix={<ToolOutlined />} /></Form.Item>
               <Form.Item name="display_name" label="展示名称"><Input /></Form.Item>
@@ -123,13 +163,27 @@ export default function ToolsPage() {
               <Form.Item name="output_schema" label="Output Schema"><Input.TextArea rows={5} /></Form.Item>
               <Form.Item name="allowed_skills" label="Allowed Skills"><Input placeholder="after_sales_refund,after_sales_exchange" /></Form.Item>
               <Form.Item name="enabled" label="启用" valuePropName="checked"><Switch /></Form.Item>
-              <div className="form-actions">
-                <Button type="primary" icon={<SaveOutlined />} onClick={save}>保存</Button>
-                <Button onClick={() => { setSelected(null); form.resetFields(); }}>清空</Button>
-              </div>
             </Form>
           </Card>
-          <Card className="editor-card" title="工具测试" extra={<Button icon={<ExperimentOutlined />} onClick={() => test()}>调用</Button>}>
+          <Card
+            className="editor-card"
+            title="工具测试"
+            extra={(
+              <Space className="card-header-actions">
+                <Select
+                  value={testToolId}
+                  placeholder="选择工具"
+                  style={{ width: 220 }}
+                  options={rows.map((row) => ({
+                    value: row.id,
+                    label: row.display_name ? `${row.display_name} / ${row.name}` : row.name,
+                  }))}
+                  onChange={selectTestTool}
+                />
+                <Button icon={<ExperimentOutlined />} onClick={() => test()}>调用</Button>
+              </Space>
+            )}
+          >
             <Input.TextArea rows={4} value={testJson} onChange={(event) => setTestJson(event.target.value)} />
             <Input.TextArea rows={8} value={testResult} readOnly style={{ marginTop: 12 }} />
           </Card>

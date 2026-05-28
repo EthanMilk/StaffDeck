@@ -274,6 +274,13 @@ select,
   font-weight: 740;
 }
 
+.card-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: min(100%, 360px);
+}
+
 .ant-statistic-title {
   color: var(--muted) !important;
   font-size: 12px !important;
