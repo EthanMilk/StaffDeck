@@ -13,6 +13,58 @@ class FakeEvents:
         self.records.append((tenant_id, session_id, event_type, payload))
 
 
+class FakeDb:
+    def __init__(self) -> None:
+        self.commits = 0
+        self.refreshed: list[object] = []
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def refresh(self, row: object) -> None:
+        self.refreshed.append(row)
+
+
+class FakeToolExecutor:
+    def __init__(self, db: FakeDb) -> None:
+        self.db = db
+        self.commits_seen_before_execute: int | None = None
+
+    def execute(
+        self, tenant_id: str, tool_call: ToolCall, active_skill_id: str | None = None
+    ) -> ToolResult:
+        self.commits_seen_before_execute = self.db.commits
+        return ToolResult(tool_name=tool_call.name, success=True, data={"ok": True})
+
+
+def test_tool_call_start_event_is_committed_before_external_execute() -> None:
+    db = FakeDb()
+    executor = FakeToolExecutor(db)
+    loop = object.__new__(AgentLoop)
+    loop.db = db
+    loop.events = FakeEvents()
+    loop.tool_executor = executor
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="purchase",
+    )
+
+    result = loop._execute_tool_call(
+        _request("下单"),
+        session,
+        ToolCall(name="product.purchase", arguments={"product_id": "A1"}),
+    )
+
+    assert result.success is True
+    assert executor.commits_seen_before_execute == 1
+    assert db.commits == 2
+    assert [record[2] for record in loop.events.records] == [
+        "tool_call_started",
+        "tool_call_finished",
+    ]
+
+
 def test_terminal_skill_completion_when_required_slots_are_complete() -> None:
     loop = object.__new__(AgentLoop)
     session = ChatSession(

@@ -26,9 +26,10 @@ class ToolExecutor:
         tool_call: ToolCall,
         active_skill_id: str | None = None,
     ) -> ToolResult:
-        tool = self.db.exec(
-            select(Tool).where(Tool.tenant_id == tenant_id, Tool.name == tool_call.name)
-        ).first()
+        with self.db.no_autoflush:
+            tool = self.db.exec(
+                select(Tool).where(Tool.tenant_id == tenant_id, Tool.name == tool_call.name)
+            ).first()
         if not tool:
             return self._error(tool_call.name, "NOT_FOUND", "工具不存在或未配置。")
         if not tool.enabled:

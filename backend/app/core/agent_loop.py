@@ -223,21 +223,7 @@ class AgentLoop:
                     f"正在调用工具 {step_result.tool_call.name}",
                     {"tool_name": step_result.tool_call.name},
                 )
-                self.events.record(
-                    request.tenant_id,
-                    chat_session.id,
-                    "tool_call_started",
-                    step_result.tool_call.model_dump(),
-                )
-                tool_result = self.tool_executor.execute(
-                    request.tenant_id, step_result.tool_call, chat_session.active_skill_id
-                )
-                self.events.record(
-                    request.tenant_id,
-                    chat_session.id,
-                    "tool_call_finished",
-                    tool_result.model_dump(),
-                )
+                tool_result = self._execute_tool_call(request, chat_session, step_result.tool_call)
                 self._advance_after_successful_tool(
                     request.tenant_id, chat_session, active_skill, step_result, tool_result
                 )
@@ -466,21 +452,7 @@ class AgentLoop:
         self.db.refresh(chat_session)
         if step_result.tool_call:
             status("tool", {"tool_name": step_result.tool_call.name})
-            self.events.record(
-                request.tenant_id,
-                chat_session.id,
-                "tool_call_started",
-                step_result.tool_call.model_dump(),
-            )
-            tool_result = self.tool_executor.execute(
-                request.tenant_id, step_result.tool_call, chat_session.active_skill_id
-            )
-            self.events.record(
-                request.tenant_id,
-                chat_session.id,
-                "tool_call_finished",
-                tool_result.model_dump(),
-            )
+            tool_result = self._execute_tool_call(request, chat_session, step_result.tool_call)
             self._advance_after_successful_tool(
                 request.tenant_id, chat_session, active_skill, step_result, tool_result
             )
@@ -1187,6 +1159,8 @@ class AgentLoop:
             "tool_call_started",
             tool_call.model_dump(),
         )
+        self.db.commit()
+        self.db.refresh(chat_session)
         tool_result = self.tool_executor.execute(
             request.tenant_id, tool_call, chat_session.active_skill_id
         )
