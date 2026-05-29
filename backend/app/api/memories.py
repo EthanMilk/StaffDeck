@@ -5,7 +5,7 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from app.db.models import MemoryRecord
-from app.memory.service import memory_read
+from app.memory.service import memory_read, memory_rows_for_read
 from app.security.tenant import ensure_tenant
 
 
@@ -30,7 +30,7 @@ def list_memories(
         statement = statement.where(MemoryRecord.user_id == user_id)
     if username:
         statement = statement.where(MemoryRecord.username == username)
-    rows = list(db.exec(statement.order_by(MemoryRecord.updated_at.desc()).limit(limit)).all())
+    rows = memory_rows_for_read(list(db.exec(statement.order_by(MemoryRecord.updated_at.desc()).limit(limit)).all()))
     if q:
         needle = q.strip().lower()
         rows = [row for row in rows if needle in row.content.lower() or needle in (row.username or "").lower()]

@@ -88,7 +88,7 @@ class AgentLoop:
                 self._complete_active_skill(
                     request.tenant_id, chat_session, prepared.active_skill, "step_completed"
                 )
-            self._capture_memory(request, chat_session, reply, step_result, tool_result)
+            self._capture_memory(request, chat_session, reply, step_result, tool_result, prepared.model_config)
 
         except AgentLoopPreconditionError as exc:
             chat_session = chat_session or self._get_or_create_session(request)
@@ -295,7 +295,7 @@ class AgentLoop:
                 chat_session.status = "handoff"
             elif self._should_complete_skill(active_skill, chat_session, step_result, tool_result):
                 self._complete_active_skill(request.tenant_id, chat_session, active_skill, "step_completed")
-            self._capture_memory(request, chat_session, reply, step_result, tool_result)
+            self._capture_memory(request, chat_session, reply, step_result, tool_result, model_config)
 
         except AgentLoopPreconditionError as exc:
             chat_session = chat_session or self._get_or_create_session(request)
@@ -1658,8 +1658,27 @@ class AgentLoop:
         reply: str,
         step_result: StepAgentResult,
         tool_result: ToolResult | None,
+        model_config: ModelConfig,
     ) -> list[dict[str, object]]:
-        saved = [memory_read(row) for row in self.memory.capture_turn(request, chat_session, reply, step_result, tool_result)]
+        try:
+            rows = self.memory.capture_turn(
+                request,
+                chat_session,
+                reply,
+                step_result,
+                tool_result,
+                model_config,
+                self._recent_messages(chat_session),
+            )
+        except Exception as exc:
+            self.events.record(
+                request.tenant_id,
+                chat_session.id,
+                "memory_error",
+                {"message": str(exc)},
+            )
+            return []
+        saved = [memory_read(row) for row in rows]
         if saved:
             self.events.record(
                 request.tenant_id,
