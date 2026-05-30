@@ -62,6 +62,7 @@ class SkillEditor:
             "current_skill": request.current_skill.model_dump(mode="json"),
             "instruction": request.instruction,
             "target_path": request.target_path,
+            "target_paths": _target_paths(request),
             "target_label": request.target_label,
             "conversation": request.conversation[-12:],
         }
@@ -71,18 +72,41 @@ class SkillEditor:
     ) -> SkillRewriteResponse:
         draft = raw.get("draft_skill") if isinstance(raw.get("draft_skill"), dict) else raw
         candidate = SkillCard.model_validate(draft)
-        merged = _merge_target(request.current_skill, candidate, request.target_path)
+        target_paths = _target_paths(request)
+        merged = _merge_targets(request.current_skill, candidate, target_paths)
         assistant_message = str(raw.get("assistant_message") or "已完成选中部分的改写。").strip()
         warnings = [str(item) for item in raw.get("warnings", []) if str(item).strip()]
         changed_paths = [str(item) for item in raw.get("changed_paths", []) if str(item).strip()]
         if not changed_paths and merged.model_dump() != request.current_skill.model_dump():
-            changed_paths = [request.target_path]
+            changed_paths = target_paths
         return SkillRewriteResponse(
             draft_skill=merged,
             assistant_message=assistant_message,
             changed_paths=changed_paths,
             warnings=warnings,
         )
+
+
+def _target_paths(request: SkillRewriteRequest) -> list[str]:
+    paths = [path.strip() for path in request.target_paths if path.strip()]
+    if not paths:
+        paths = [request.target_path.strip() or "all"]
+    if "all" in paths:
+        return ["all"]
+    deduped: list[str] = []
+    for path in paths:
+        if path not in deduped:
+            deduped.append(path)
+    return deduped or ["all"]
+
+
+def _merge_targets(current: SkillCard, candidate: SkillCard, target_paths: list[str]) -> SkillCard:
+    if "all" in target_paths:
+        return candidate
+    merged = current
+    for path in target_paths:
+        merged = _merge_target(merged, candidate, path)
+    return merged
 
 
 def _merge_target(current: SkillCard, candidate: SkillCard, target_path: str) -> SkillCard:

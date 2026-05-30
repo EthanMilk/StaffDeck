@@ -659,6 +659,7 @@ select,
 
 .skill-source-toolbar {
   margin-bottom: 12px;
+  justify-content: flex-start;
 }
 
 .skill-warning {
@@ -675,6 +676,7 @@ select,
 }
 
 .skill-source-section {
+  position: relative;
   width: 100%;
   padding: 14px;
   text-align: left;
@@ -690,6 +692,24 @@ select,
   box-shadow: var(--shadow-soft);
 }
 
+.skill-source-section.active {
+  background: #f7f7f7;
+}
+
+.selection-mark {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--accent-foreground);
+  background: var(--foreground);
+  border-radius: 999px;
+  font-size: 12px;
+}
+
 .skill-source-section pre {
   margin: 0;
   color: var(--foreground);
@@ -702,6 +722,13 @@ select,
 .skill-source-steps {
   display: grid;
   gap: 12px;
+}
+
+.skill-source-group-title {
+  margin: 2px 0 -2px;
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 780;
 }
 
 .skill-flow {
@@ -726,6 +753,7 @@ select,
 }
 
 .skill-flow-node {
+  position: relative;
   width: min(420px, 92%);
   min-height: 92px;
   padding: 14px 16px;
@@ -749,6 +777,10 @@ select,
   box-shadow: var(--shadow-soft);
 }
 
+.skill-flow-node.active {
+  background: #f7f7f7;
+}
+
 .skill-flow-node span {
   color: var(--muted);
   font-size: 12px;
@@ -764,6 +796,34 @@ select,
   color: var(--muted);
   font-family: var(--font-mono);
   font-size: 12px;
+}
+
+.skill-flow-node p {
+  margin: 4px 0 0;
+  color: var(--foreground);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: normal;
+}
+
+.skill-flow-meta {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.skill-flow-meta em {
+  max-width: 100%;
+  padding: 3px 7px;
+  color: var(--muted);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .skill-flow-tools {

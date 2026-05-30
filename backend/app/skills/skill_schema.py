@@ -80,6 +80,7 @@ class SkillRewriteRequest(BaseModel):
     current_skill: SkillCard
     instruction: str
     target_path: str = "all"
+    target_paths: list[str] = Field(default_factory=list)
     target_label: Optional[str] = None
     conversation: list[dict[str, str]] = Field(default_factory=list)
 

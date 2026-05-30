@@ -35,6 +35,33 @@ def test_skill_editor_only_merges_selected_step() -> None:
     assert response.draft_skill.steps[1].instruction == current.steps[1].instruction
 
 
+def test_skill_editor_merges_multiple_selected_targets() -> None:
+    current = _skill_card()
+    candidate = _skill_card()
+    candidate.description = "新的描述"
+    candidate.steps[0].instruction = "新的收集说明"
+    candidate.steps[1].instruction = "不应修改第二步"
+
+    response = SkillEditor()._normalize_response(  # noqa: SLF001
+        {
+            "assistant_message": "已改写多个区域。",
+            "draft_skill": candidate.model_dump(),
+        },
+        SkillRewriteRequest(
+            tenant_id="tenant_demo",
+            current_skill=current,
+            instruction="优化基础信息和第一步",
+            target_path="basic",
+            target_paths=["basic", "steps.collect_info"],
+            target_label="基础信息、步骤 1",
+        ),
+    )
+
+    assert response.draft_skill.description == "新的描述"
+    assert response.draft_skill.steps[0].instruction == "新的收集说明"
+    assert response.draft_skill.steps[1].instruction == current.steps[1].instruction
+
+
 def test_skill_stats_counts_skill_entry_and_feedback() -> None:
     with _test_session() as db:
         db.add(

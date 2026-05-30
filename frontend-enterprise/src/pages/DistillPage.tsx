@@ -1,5 +1,6 @@
 import {
   BranchesOutlined,
+  CheckOutlined,
   CodeOutlined,
   SaveOutlined,
   SendOutlined,
@@ -24,7 +25,7 @@ type TargetSelection = {
 
 type ViewMode = 'source' | 'flow';
 
-const DEFAULT_TARGET: TargetSelection = { path: 'all', label: '整个技能' };
+const DEFAULT_TARGET_PATHS = ['basic'];
 
 export default function DistillPage() {
   const [searchParams] = useSearchParams();
@@ -40,7 +41,7 @@ export default function DistillPage() {
     },
   ]);
   const [input, setInput] = useState('');
-  const [selectedTarget, setSelectedTarget] = useState<TargetSelection>(DEFAULT_TARGET);
+  const [selectedPaths, setSelectedPaths] = useState<string[]>(DEFAULT_TARGET_PATHS);
   const [viewMode, setViewMode] = useState<ViewMode>('source');
   const [loading, setLoading] = useState(false);
   const [streamStatus, setStreamStatus] = useState('');
@@ -51,7 +52,7 @@ export default function DistillPage() {
       setDraft(null);
       setLoadedSkill(null);
       setWarnings([]);
-      setSelectedTarget(DEFAULT_TARGET);
+      setSelectedPaths(DEFAULT_TARGET_PATHS);
       return;
     }
     api
@@ -59,12 +60,12 @@ export default function DistillPage() {
       .then((result) => {
         setDraft(result.content);
         setLoadedSkill(result);
-        setSelectedTarget(DEFAULT_TARGET);
+        setSelectedPaths(DEFAULT_TARGET_PATHS);
         setMessages([
           {
             id: 'loaded',
             role: 'assistant',
-            content: `已加载「${result.name}」。点击右侧基础信息或步骤后，可以让我只改这一部分。`,
+            content: `已加载「${result.name}」。你可以在右侧选择一个或多个区域，然后在这里描述需要怎样改写。`,
           },
         ]);
       })
@@ -73,7 +74,8 @@ export default function DistillPage() {
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const sourceMarkdown = useMemo(() => (draft ? skillToMarkdown(draft) : ''), [draft]);
+  const allPaths = useMemo(() => (draft ? allTargetPaths(draft) : DEFAULT_TARGET_PATHS), [draft]);
+  const allSelected = draft ? allPaths.every((path) => selectedPaths.includes(path)) : false;
 
   async function send() {
     const text = input.trim();
@@ -104,10 +106,10 @@ export default function DistillPage() {
             const nextWarnings = Array.isArray(item.data.warnings) ? item.data.warnings.map(String) : [];
             setDraft(draftSkill);
             setWarnings(nextWarnings);
-            setSelectedTarget(DEFAULT_TARGET);
+            setSelectedPaths(DEFAULT_TARGET_PATHS);
             updateMessage(
               assistantId,
-              `已生成「${draftSkill.name}」草稿。现在可以点击右侧任意部分继续局部改写。`,
+              `已生成「${draftSkill.name}」草稿。你可以在右侧选择一个或多个区域继续改写。`,
             );
             setStreamStatus('生成完成');
           }
@@ -129,10 +131,11 @@ export default function DistillPage() {
   async function rewriteSelectedTarget(text: string) {
     if (!draft) return;
     setLoading(true);
-    setStreamStatus(`正在改写：${selectedTarget.label}`);
+    setStreamStatus('正在改写选中内容');
     const assistantId = pushMessage('assistant', '');
     const controller = new AbortController();
     let receivedMessageChunk = false;
+    const targets = selectedPaths.length > 0 ? selectedPaths : DEFAULT_TARGET_PATHS;
     abortRef.current = controller;
     try {
       await streamPost(
@@ -141,8 +144,9 @@ export default function DistillPage() {
           tenant_id: TENANT_ID,
           current_skill: draft,
           instruction: text,
-          target_path: selectedTarget.path,
-          target_label: selectedTarget.label,
+          target_path: targets[0],
+          target_paths: targets,
+          target_label: targetLabel(targets, draft),
           conversation: messages.map((item) => ({ role: item.role, content: item.content })),
         },
         (item) => {
@@ -158,6 +162,7 @@ export default function DistillPage() {
             const nextDraft = item.data.draft_skill as SkillCard;
             const nextWarnings = Array.isArray(item.data.warnings) ? item.data.warnings.map(String) : [];
             setDraft(nextDraft);
+            setSelectedPaths((current) => reconcileSelectedPaths(current, nextDraft));
             setWarnings(nextWarnings);
             setStreamStatus('改写完成');
             if (!receivedMessageChunk) {
@@ -213,9 +218,17 @@ export default function DistillPage() {
     setStreamStatus('已停止');
   }
 
-  function selectTarget(target: TargetSelection) {
-    setSelectedTarget(target);
-    pushMessage('assistant', `已选中：${target.label}。请告诉我你想怎样改写这一部分。`);
+  function toggleTarget(target: TargetSelection) {
+    setSelectedPaths((current) => {
+      if (current.includes(target.path)) {
+        return current.length > 1 ? current.filter((path) => path !== target.path) : current;
+      }
+      return [...current, target.path];
+    });
+  }
+
+  function toggleAllTargets() {
+    setSelectedPaths(allSelected ? DEFAULT_TARGET_PATHS : allPaths);
   }
 
   function pushMessage(role: ChatItem['role'], content: string) {
@@ -243,10 +256,9 @@ export default function DistillPage() {
     <>
       <div className="page-title">
         <Typography.Title level={3}>技能改写</Typography.Title>
-        <Typography.Text type="secondary">当前选中：{selectedTarget.label}</Typography.Text>
       </div>
       <div className="skill-workbench">
-        <Card className="skill-chat-card" title="改写对话">
+        <Card className="skill-chat-card">
           <div className="skill-chat-panel">
             <div className="skill-chat-messages">
               {messages.map((item) => (
@@ -268,7 +280,7 @@ export default function DistillPage() {
                 rows={4}
                 placeholder={
                   draft
-                    ? '说明你要如何改写选中的部分'
+                    ? '说明你要如何改写右侧选中的部分'
                     : '输入“标题：... 原始SOP文本：...”或直接粘贴流程说明'
                 }
               />
@@ -290,7 +302,7 @@ export default function DistillPage() {
         </Card>
         <Card
           className="skill-source-card"
-          title="技能结构"
+          title={viewMode === 'source' ? '源码' : '流程图'}
           extra={
             <Button disabled={!draft || loading} icon={<SaveOutlined />} onClick={saveDraft}>
               保存草稿
@@ -298,13 +310,17 @@ export default function DistillPage() {
           }
         >
           <div className="skill-source-toolbar">
-            <Button
-              icon={viewMode === 'source' ? <BranchesOutlined /> : <CodeOutlined />}
-              onClick={() => setViewMode(viewMode === 'source' ? 'flow' : 'source')}
-            >
-              {viewMode === 'source' ? '显示流程' : '显示源码'}
-            </Button>
-            <Typography.Text type="secondary">{viewMode === 'source' ? '源码' : '流程图'}</Typography.Text>
+            <Space>
+              <Button
+                icon={viewMode === 'source' ? <BranchesOutlined /> : <CodeOutlined />}
+                onClick={() => setViewMode(viewMode === 'source' ? 'flow' : 'source')}
+              >
+                {viewMode === 'source' ? '显示流程' : '显示源码'}
+              </Button>
+              <Button disabled={!draft} onClick={toggleAllTargets}>
+                {allSelected ? '取消全选' : '全选'}
+              </Button>
+            </Space>
           </div>
           {warnings.map((warning) => (
             <Alert key={warning} type="warning" message={warning} showIcon className="skill-warning" />
@@ -313,13 +329,12 @@ export default function DistillPage() {
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无技能草稿" />
           ) : viewMode === 'source' ? (
             <SkillSource
-              markdown={sourceMarkdown}
               skill={draft}
-              selectedPath={selectedTarget.path}
-              onSelect={selectTarget}
+              selectedPaths={selectedPaths}
+              onToggle={toggleTarget}
             />
           ) : (
-            <SkillFlow skill={draft} selectedPath={selectedTarget.path} onSelect={selectTarget} />
+            <SkillFlow skill={draft} selectedPaths={selectedPaths} onToggle={toggleTarget} />
           )}
         </Card>
       </div>
@@ -328,25 +343,26 @@ export default function DistillPage() {
 }
 
 function SkillSource({
-  markdown,
   skill,
-  selectedPath,
-  onSelect,
+  selectedPaths,
+  onToggle,
 }: {
-  markdown: string;
   skill: SkillCard;
-  selectedPath: string;
-  onSelect: (target: TargetSelection) => void;
+  selectedPaths: string[];
+  onToggle: (target: TargetSelection) => void;
 }) {
   return (
     <div className="skill-source-md">
+      <div className="skill-source-group-title">基础信息</div>
       <button
         type="button"
-        className={`skill-source-section ${selectedPath === 'basic' ? 'active' : ''}`}
-        onClick={() => onSelect({ path: 'basic', label: '基础信息' })}
+        className={`skill-source-section ${selectedPaths.includes('basic') ? 'active' : ''}`}
+        onClick={() => onToggle({ path: 'basic', label: '基础信息' })}
       >
-        <pre>{markdown.split('\n## Steps')[0]}</pre>
+        {selectedPaths.includes('basic') && <span className="selection-mark"><CheckOutlined /></span>}
+        <pre>{basicToMarkdown(skill)}</pre>
       </button>
+      <div className="skill-source-group-title">详细步骤</div>
       <div className="skill-source-steps">
         {skill.steps.map((step, index) => {
           const stepId = String(step.step_id || `step_${index + 1}`);
@@ -355,9 +371,10 @@ function SkillSource({
             <button
               type="button"
               key={path}
-              className={`skill-source-section ${selectedPath === path ? 'active' : ''}`}
-              onClick={() => onSelect({ path, label: `步骤 ${index + 1}：${step.name || stepId}` })}
+              className={`skill-source-section ${selectedPaths.includes(path) ? 'active' : ''}`}
+              onClick={() => onToggle({ path, label: `步骤 ${index + 1}：${step.name || stepId}` })}
             >
+              {selectedPaths.includes(path) && <span className="selection-mark"><CheckOutlined /></span>}
               <pre>{stepToMarkdown(step, index)}</pre>
             </button>
           );
@@ -369,23 +386,30 @@ function SkillSource({
 
 function SkillFlow({
   skill,
-  selectedPath,
-  onSelect,
+  selectedPaths,
+  onToggle,
 }: {
   skill: SkillCard;
-  selectedPath: string;
-  onSelect: (target: TargetSelection) => void;
+  selectedPaths: string[];
+  onToggle: (target: TargetSelection) => void;
 }) {
   return (
     <div className="skill-flow">
       <button
         type="button"
-        className={`skill-flow-node root ${selectedPath === 'basic' ? 'active' : ''}`}
-        onClick={() => onSelect({ path: 'basic', label: '基础信息' })}
+        className={`skill-flow-node root ${selectedPaths.includes('basic') ? 'active' : ''}`}
+        onClick={() => onToggle({ path: 'basic', label: '基础信息' })}
       >
+        {selectedPaths.includes('basic') && <span className="selection-mark"><CheckOutlined /></span>}
         <span>基础信息</span>
         <strong>{skill.name}</strong>
         <small>{skill.skill_id}</small>
+        <p>{skill.description || '暂无描述'}</p>
+        <div className="skill-flow-meta">
+          <em>业务域 {skill.business_domain || '-'}</em>
+          <em>必填 {joinPlain(skill.required_info)}</em>
+          <em>意图 {joinPlain(skill.trigger_intents)}</em>
+        </div>
       </button>
       {skill.steps.map((step, index) => {
         const stepId = String(step.step_id || `step_${index + 1}`);
@@ -398,12 +422,18 @@ function SkillFlow({
             <div className="skill-flow-line" />
             <button
               type="button"
-              className={`skill-flow-node ${selectedPath === path ? 'active' : ''}`}
-              onClick={() => onSelect({ path, label: `步骤 ${index + 1}：${step.name || stepId}` })}
+              className={`skill-flow-node ${selectedPaths.includes(path) ? 'active' : ''}`}
+              onClick={() => onToggle({ path, label: `步骤 ${index + 1}：${step.name || stepId}` })}
             >
+              {selectedPaths.includes(path) && <span className="selection-mark"><CheckOutlined /></span>}
               <span>Step {index + 1}</span>
               <strong>{String(step.name || stepId)}</strong>
               <small>{stepId}</small>
+              <p>{String(step.instruction || '暂无说明')}</p>
+              <div className="skill-flow-meta">
+                <em>字段 {joinPlain(asStringList(step.expected_user_info))}</em>
+                <em>动作 {joinPlain(asStringList(step.allowed_actions))}</em>
+              </div>
             </button>
             {toolActions.length > 0 && (
               <div className="skill-flow-tools">
@@ -430,11 +460,10 @@ function parseInitialSkillPrompt(text: string): { title: string; raw_content: st
   return { title, raw_content: rawContent };
 }
 
-function skillToMarkdown(skill: SkillCard): string {
+function basicToMarkdown(skill: SkillCard): string {
   return [
     `# ${skill.name}`,
     '',
-    '## 基础信息',
     `- skill_id: \`${skill.skill_id}\``,
     `- version: \`${skill.version}\``,
     `- business_domain: ${skill.business_domain || '-'}`,
@@ -444,9 +473,6 @@ function skillToMarkdown(skill: SkillCard): string {
     `- goal: ${joinList(skill.goal)}`,
     `- required_info: ${joinList(skill.required_info)}`,
     `- response_rules: ${joinList(skill.response_rules)}`,
-    '',
-    '## Steps',
-    ...skill.steps.map((step, index) => stepToMarkdown(step, index)),
   ].join('\n');
 }
 
@@ -464,6 +490,37 @@ function joinList(values: string[] | undefined): string {
   return values && values.length > 0 ? values.map((item) => `\`${item}\``).join(', ') : '-';
 }
 
+function joinPlain(values: string[] | undefined): string {
+  return values && values.length > 0 ? values.join('、') : '-';
+}
+
 function asStringList(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String) : [];
+}
+
+function allTargetPaths(skill: SkillCard): string[] {
+  return [
+    'basic',
+    ...skill.steps.map((step, index) => `steps.${String(step.step_id || `step_${index + 1}`)}`),
+  ];
+}
+
+function reconcileSelectedPaths(paths: string[], skill: SkillCard): string[] {
+  const available = allTargetPaths(skill);
+  const next = paths.filter((path) => available.includes(path));
+  return next.length > 0 ? next : DEFAULT_TARGET_PATHS;
+}
+
+function targetLabel(paths: string[], skill: SkillCard): string {
+  const labels = paths.map((path) => {
+    if (path === 'basic') return '基础信息';
+    if (path.startsWith('steps.')) {
+      const stepId = path.split('.', 2)[1];
+      const index = skill.steps.findIndex((step) => String(step.step_id || '') === stepId);
+      const step = index >= 0 ? skill.steps[index] : null;
+      return step ? `步骤 ${index + 1}：${step.name || stepId}` : path;
+    }
+    return path;
+  });
+  return labels.join('、');
 }
