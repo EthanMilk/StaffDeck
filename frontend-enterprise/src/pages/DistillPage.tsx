@@ -163,6 +163,14 @@ export default function DistillPage() {
     const payload = parseInitialSkillPrompt(text);
     setLoading(true);
     setStreamStatus('正在生成技能草稿');
+    let streamBuffer = '';
+    let latestPreview = createStreamingDraftSeed(payload);
+    let latestPreviewSignature = JSON.stringify(latestPreview);
+    setDraft(latestPreview);
+    setSelectedPaths(DEFAULT_TARGET_PATHS);
+    setHighlightedPaths([]);
+    setUpdatingPaths([]);
+    setTextDiffs([]);
     const assistantId = pushMessage('assistant', '', {
       thinking: 'running',
       thinkingDetails: ['正在理解技能目标与输入信息'],
@@ -179,11 +187,26 @@ export default function DistillPage() {
             appendThinkingDetail(assistantId, String(item.data.text || '正在处理'));
             return;
           }
+          if (item.event === 'chunk') {
+            const content = typeof item.data.content === 'string' ? item.data.content : '';
+            if (!content) return;
+            streamBuffer += content;
+            const preview = previewSkillFromStream(streamBuffer, latestPreview, payload);
+            const previewSignature = JSON.stringify(preview);
+            if (previewSignature !== latestPreviewSignature) {
+              latestPreview = preview;
+              latestPreviewSignature = previewSignature;
+              setDraft(preview);
+              setStreamStatus('正在解码技能结构');
+            }
+            return;
+          }
           if (item.event === 'complete') {
             const draftSkill = item.data.draft_skill as SkillCard;
             const nextWarnings = Array.isArray(item.data.warnings) ? item.data.warnings.map(String) : [];
             appendThinkingDetail(assistantId, `已生成技能草稿：${draftSkill.name}`);
-            animateDraftChange(blankSkillForAnimation(draftSkill), draftSkill, allTargetPaths(draftSkill), 120);
+            const changedPaths = diffTargetPaths(latestPreview, draftSkill, allTargetPaths(draftSkill));
+            animateDraftChange(latestPreview, draftSkill, changedPaths.length > 0 ? changedPaths : allTargetPaths(draftSkill), 120);
             setSelectedPaths(DEFAULT_TARGET_PATHS);
             updateMessage(
               assistantId,
@@ -919,6 +942,296 @@ function parseInitialSkillPrompt(text: string): { title: string; raw_content: st
   const title = titleMatch?.[1]?.trim() || lines[0]?.slice(0, 32) || '新技能';
   const rawContent = rawMatch?.[1]?.trim() || lines.slice(titleMatch ? 0 : 1).join('\n') || text;
   return { title, raw_content: rawContent };
+}
+
+function createStreamingDraftSeed(payload: { title: string; raw_content: string }): SkillCard {
+  return {
+    skill_id: `skill_${slugSegment(payload.title) || 'preview'}`,
+    name: payload.title || '新技能',
+    version: '1.0.0',
+    business_domain: '',
+    description: payload.raw_content.slice(0, 120),
+    trigger_intents: [],
+    user_utterance_examples: [],
+    goal: [],
+    required_info: [],
+    steps: [],
+    interruption_policy: {},
+    response_rules: [],
+  };
+}
+
+function previewSkillFromStream(
+  streamText: string,
+  previous: SkillCard,
+  payload: { title: string; raw_content: string },
+): SkillCard {
+  const parsed = parseCompleteStreamSkill(streamText);
+  if (parsed) return parsed;
+  const source = extractDraftSkillSource(streamText);
+  const next = cloneSkill(previous || createStreamingDraftSeed(payload));
+  applyStringPreview(next, source, 'skill_id');
+  applyStringPreview(next, source, 'name');
+  applyStringPreview(next, source, 'version');
+  applyStringPreview(next, source, 'business_domain');
+  applyStringPreview(next, source, 'description');
+  applyArrayPreview(next, source, 'trigger_intents');
+  applyArrayPreview(next, source, 'user_utterance_examples');
+  applyArrayPreview(next, source, 'goal');
+  applyArrayPreview(next, source, 'required_info');
+  applyArrayPreview(next, source, 'response_rules');
+  const steps = extractStepPreview(source);
+  if (steps.length > 0) next.steps = steps;
+  return next;
+}
+
+function parseCompleteStreamSkill(streamText: string): SkillCard | null {
+  try {
+    const parsed = JSON.parse(extractJsonCandidate(streamText)) as Record<string, unknown>;
+    const draft = isRecord(parsed.draft_skill) ? parsed.draft_skill : parsed;
+    if (!isRecord(draft)) return null;
+    return {
+      skill_id: stringValue(draft.skill_id, 'skill_preview'),
+      name: stringValue(draft.name, '新技能'),
+      version: stringValue(draft.version, '1.0.0'),
+      business_domain: stringValue(draft.business_domain, ''),
+      description: stringValue(draft.description, ''),
+      trigger_intents: asStringList(draft.trigger_intents),
+      user_utterance_examples: asStringList(draft.user_utterance_examples),
+      goal: asStringList(draft.goal),
+      required_info: asStringList(draft.required_info),
+      steps: Array.isArray(draft.steps) ? draft.steps.filter(isRecord).map(normalizeStepPreview) : [],
+      interruption_policy: isRecord(draft.interruption_policy) ? stringRecord(draft.interruption_policy) : {},
+      response_rules: asStringList(draft.response_rules),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function extractDraftSkillSource(streamText: string): string {
+  const fieldIndex = streamText.indexOf('"draft_skill"');
+  if (fieldIndex < 0) return streamText;
+  const objectStart = streamText.indexOf('{', fieldIndex);
+  if (objectStart < 0) return streamText.slice(fieldIndex);
+  return streamText.slice(objectStart);
+}
+
+function extractJsonCandidate(streamText: string): string {
+  const stripped = streamText.trim();
+  const start = stripped.indexOf('{');
+  const end = stripped.lastIndexOf('}');
+  return start >= 0 && end >= start ? stripped.slice(start, end + 1) : stripped;
+}
+
+function applyStringPreview(skill: SkillCard, source: string, field: keyof SkillCard): void {
+  const value = extractJsonStringField(source, String(field));
+  if (value !== null) {
+    (skill as unknown as Record<string, unknown>)[field] = value;
+  }
+}
+
+function applyArrayPreview(skill: SkillCard, source: string, field: keyof SkillCard): void {
+  const value = extractJsonStringArrayField(source, String(field));
+  if (value !== null) {
+    (skill as unknown as Record<string, unknown>)[field] = value;
+  }
+}
+
+function extractStepPreview(source: string): Array<Record<string, unknown>> {
+  const fragments = extractObjectFragmentsFromArrayField(source, 'steps');
+  return fragments
+    .map((fragment, index) => parseStepFragment(fragment, index))
+    .filter((step): step is Record<string, unknown> => Boolean(step));
+}
+
+function parseStepFragment(fragment: string, index: number): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(fragment) as unknown;
+    if (isRecord(parsed)) return normalizeStepPreview(parsed, index);
+  } catch {
+    // Partial object: fall through to field extraction.
+  }
+  const stepId = extractJsonStringField(fragment, 'step_id') || '';
+  const name = extractJsonStringField(fragment, 'name') || '';
+  const instruction = extractJsonStringField(fragment, 'instruction') || '';
+  const expectedUserInfo = extractJsonStringArrayField(fragment, 'expected_user_info') || [];
+  const allowedActions = extractJsonStringArrayField(fragment, 'allowed_actions') || [];
+  if (!stepId && !name && !instruction && expectedUserInfo.length === 0 && allowedActions.length === 0) {
+    return null;
+  }
+  return {
+    step_id: stepId || `step_${index + 1}`,
+    name: name || stepId || `步骤 ${index + 1}`,
+    instruction,
+    expected_user_info: expectedUserInfo,
+    allowed_actions: allowedActions,
+  };
+}
+
+function normalizeStepPreview(step: Record<string, unknown>, index = 0): Record<string, unknown> {
+  const stepId = stringValue(step.step_id, `step_${index + 1}`);
+  return {
+    step_id: stepId,
+    name: stringValue(step.name, stepId),
+    instruction: stringValue(step.instruction, ''),
+    expected_user_info: asStringList(step.expected_user_info),
+    allowed_actions: asStringList(step.allowed_actions),
+  };
+}
+
+function extractJsonStringField(source: string, field: string): string | null {
+  const match = new RegExp(`"${escapeRegExp(field)}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`).exec(source);
+  if (!match) return null;
+  return decodeJsonString(match[1]);
+}
+
+function extractJsonStringArrayField(source: string, field: string): string[] | null {
+  const start = findFieldValueStart(source, field);
+  if (start === null) return null;
+  const arrayStart = skipWhitespace(source, start);
+  if (source[arrayStart] !== '[') return null;
+  const arrayEnd = findBalancedEnd(source, arrayStart, '[', ']');
+  const arrayText = arrayEnd === null ? source.slice(arrayStart + 1) : source.slice(arrayStart, arrayEnd + 1);
+  if (arrayEnd !== null) {
+    try {
+      const parsed = JSON.parse(arrayText) as unknown;
+      return asStringList(parsed);
+    } catch {
+      return extractQuotedJsonStrings(arrayText);
+    }
+  }
+  return extractQuotedJsonStrings(arrayText);
+}
+
+function extractObjectFragmentsFromArrayField(source: string, field: string): string[] {
+  const start = findFieldValueStart(source, field);
+  if (start === null) return [];
+  const arrayStart = skipWhitespace(source, start);
+  if (source[arrayStart] !== '[') return [];
+  const fragments: string[] = [];
+  let objectStart = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = arrayStart + 1; index < source.length; index += 1) {
+    const char = source[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '{') {
+      if (depth === 0) objectStart = index;
+      depth += 1;
+      continue;
+    }
+    if (char === '}') {
+      depth -= 1;
+      if (depth === 0 && objectStart >= 0) {
+        fragments.push(source.slice(objectStart, index + 1));
+        objectStart = -1;
+      }
+      continue;
+    }
+    if (char === ']' && depth === 0) break;
+  }
+  if (depth > 0 && objectStart >= 0) {
+    fragments.push(source.slice(objectStart));
+  }
+  return fragments;
+}
+
+function findFieldValueStart(source: string, field: string): number | null {
+  const match = new RegExp(`"${escapeRegExp(field)}"\\s*:`).exec(source);
+  return match ? match.index + match[0].length : null;
+}
+
+function skipWhitespace(source: string, start: number): number {
+  let index = start;
+  while (index < source.length && /\s/.test(source[index])) index += 1;
+  return index;
+}
+
+function findBalancedEnd(source: string, start: number, openChar: string, closeChar: string): number | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === openChar) depth += 1;
+    if (char === closeChar) {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return null;
+}
+
+function extractQuotedJsonStrings(source: string): string[] {
+  const values: string[] = [];
+  const pattern = /"((?:\\.|[^"\\])*)"/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(source))) {
+    const value = decodeJsonString(match[1]);
+    if (value) values.push(value);
+  }
+  return values;
+}
+
+function decodeJsonString(value: string): string {
+  try {
+    return JSON.parse(`"${value}"`) as string;
+  } catch {
+    return value;
+  }
+}
+
+function stringValue(value: unknown, fallback = ''): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+function stringRecord(value: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, String(item)]));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function slugSegment(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 32);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function joinList(values: unknown): string {
