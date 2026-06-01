@@ -37,6 +37,10 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+body.skill-distill-fixed {
+  overflow: hidden;
+}
+
 button,
 textarea,
 input {
@@ -217,6 +221,10 @@ select,
   padding: 22px;
   overflow: auto;
   background: var(--background);
+}
+
+body.skill-distill-fixed .content {
+  overflow: hidden;
 }
 
 .page-title {
@@ -584,6 +592,18 @@ select,
   background: var(--surface-muted);
 }
 
+.skill-distill-page {
+  height: calc(100vh - 102px);
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.skill-distill-page .page-title {
+  flex: 0 0 auto;
+}
+
 .skill-workbench {
   display: grid;
   grid-template-columns: minmax(360px, 0.9fr) minmax(520px, 1.1fr);
@@ -592,15 +612,37 @@ select,
   min-height: calc(100vh - 136px);
 }
 
+.skill-distill-page .skill-workbench {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.skill-distill-page .skill-chat-card,
+.skill-distill-page .skill-source-card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
 .skill-chat-card,
 .skill-source-card {
   min-width: 0;
+  min-height: 0;
 }
 
 .skill-chat-card .ant-card-body,
 .skill-source-card .ant-card-body {
   height: calc(100vh - 214px);
   min-height: 560px;
+}
+
+.skill-distill-page .skill-chat-card .ant-card-body,
+.skill-distill-page .skill-source-card .ant-card-body {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .skill-chat-panel {
@@ -754,8 +796,113 @@ select,
 }
 
 .skill-chat-composer {
+  position: relative;
   display: grid;
   gap: 10px;
+}
+
+.skill-chat-composer.dragging {
+  border-radius: 12px;
+  outline: 1px dashed var(--foreground);
+  outline-offset: 6px;
+}
+
+.skill-upload-drop-hint {
+  position: absolute;
+  inset: -6px;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  color: var(--foreground);
+  background: rgba(250, 250, 250, 0.84);
+  border: 1px dashed var(--border-strong);
+  border-radius: 12px;
+  font-weight: 760;
+  pointer-events: none;
+}
+
+.skill-upload-list {
+  display: grid;
+  gap: 8px;
+}
+
+.skill-upload-item {
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 8px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  color: var(--foreground);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.skill-upload-item.error {
+  color: var(--danger);
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.skill-upload-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-upload-status {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.skill-tool-suggestions {
+  margin-top: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.skill-tool-suggestion {
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.skill-tool-suggestion-title {
+  margin-bottom: 4px;
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 780;
+}
+
+.skill-tool-suggestion-desc {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.tool-suggestion-detail {
+  display: grid;
+  gap: 10px;
+}
+
+.tool-suggestion-detail pre {
+  max-height: 220px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 12px;
 }
 
 .skill-chat-actions,

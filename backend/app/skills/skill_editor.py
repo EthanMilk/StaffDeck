@@ -9,6 +9,7 @@ from typing import Any, Iterator
 from app.db.models import ModelConfig
 from app.llm import LLMClient, LLMError
 from app.skills.skill_schema import SkillCard, SkillRewriteRequest, SkillRewriteResponse
+from app.skills.skill_distiller import _normalize_tool_suggestions, _remove_unknown_tool_actions
 from app.skills.step_ids import skill_card_with_unique_step_ids
 
 
@@ -69,6 +70,7 @@ class SkillEditor:
             "target_paths": _target_paths(request),
             "target_label": request.target_label,
             "conversation": request.conversation[-12:],
+            "available_tools": request.available_tools,
         }
 
     def _normalize_response(
@@ -78,17 +80,35 @@ class SkillEditor:
         candidate, id_warnings = skill_card_with_unique_step_ids(SkillCard.model_validate(draft))
         target_paths = _target_paths(request)
         merged = _merge_targets(request.current_skill, candidate, target_paths)
+        merged_data = merged.model_dump(mode="json")
+        steps, missing_tool_names = _remove_unknown_tool_actions(
+            [step for step in merged_data.get("steps", []) if isinstance(step, dict)],
+            request.available_tools,
+        )
+        if steps:
+            merged_data["steps"] = steps
+            merged = SkillCard.model_validate(merged_data)
         assistant_message = str(raw.get("assistant_message") or "已完成选中部分的改写。").strip()
         warnings = [str(item) for item in raw.get("warnings", []) if str(item).strip()]
         warnings.extend(warning for warning in id_warnings if warning not in warnings)
+        for tool_name in missing_tool_names:
+            warning = f"改写结果引用了未配置工具 {tool_name}，已移出 allowed_actions 并生成新增工具建议。"
+            if warning not in warnings:
+                warnings.append(warning)
         changed_paths = [str(item) for item in raw.get("changed_paths", []) if str(item).strip()]
         if not changed_paths and merged.model_dump() != request.current_skill.model_dump():
             changed_paths = target_paths
+        tool_suggestions = _normalize_tool_suggestions(
+            raw.get("tool_suggestions"),
+            request,
+            missing_tool_names,
+        )
         return SkillRewriteResponse(
             draft_skill=merged,
             assistant_message=assistant_message,
             changed_paths=changed_paths,
             warnings=warnings,
+            tool_suggestions=tool_suggestions,
         )
 
 

@@ -337,8 +337,9 @@ def rewrite_skill_stream(skill_id: str, request: SkillRewriteRequest) -> Streami
         with Session(get_session_engine()) as db:
             ensure_tenant(db, request.tenant_id)
             model_config = _get_default_model(db, request.tenant_id)
+            enriched_request = _with_available_tools_for_rewrite(db, request)
             yield _sse("status", {"text": "正在调用模型分析改写要求"})
-            for item in SkillEditor().stream_text(request, model_config):
+            for item in SkillEditor().stream_text(enriched_request, model_config):
                 yield _sse(item["event"], item["data"])
 
     return StreamingResponse(stream_events(), media_type="text/event-stream")
@@ -354,6 +355,7 @@ def rewrite_skill(
         raise HTTPException(status_code=400, detail="Path skill_id must match current_skill.skill_id")
     ensure_tenant(db, request.tenant_id)
     model_config = _get_default_model(db, request.tenant_id)
+    request = _with_available_tools_for_rewrite(db, request)
     try:
         return SkillEditor().rewrite(request, model_config)
     except LLMError as exc:
@@ -380,6 +382,20 @@ def _get_default_model(db: Session, tenant_id: str) -> ModelConfig:
 
 
 def _with_available_tools(db: Session, request: SkillDistillRequest) -> SkillDistillRequest:
+    tools = db.exec(
+        select(Tool).where(Tool.tenant_id == request.tenant_id, Tool.enabled == True)  # noqa: E712
+    ).all()
+    available_tools = [
+        *request.available_tools,
+        *[
+            {"name": tool.name, "description": tool.description, "input_schema": tool.input_schema}
+            for tool in tools
+        ],
+    ]
+    return request.model_copy(update={"available_tools": available_tools})
+
+
+def _with_available_tools_for_rewrite(db: Session, request: SkillRewriteRequest) -> SkillRewriteRequest:
     tools = db.exec(
         select(Tool).where(Tool.tenant_id == request.tenant_id, Tool.enabled == True)  # noqa: E712
     ).all()

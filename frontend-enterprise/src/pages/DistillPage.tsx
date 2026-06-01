@@ -2,7 +2,9 @@ import {
   BranchesOutlined,
   CheckOutlined,
   CodeOutlined,
+  CloseOutlined,
   DownOutlined,
+  FileTextOutlined,
   LoadingOutlined,
   RightOutlined,
   SaveOutlined,
@@ -12,10 +14,21 @@ import {
   WarningOutlined,
 } from '@ant-design/icons';
 import { Button, Card, Empty, Input, Modal, Space, Typography, Upload, message } from 'antd';
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, streamPost, TENANT_ID } from '../api/client';
-import type { SkillCard, SkillRead } from '../types';
+import type { SkillCard, SkillRead, ToolSuggestion } from '../types';
 
 type ChatItem = {
   id: string;
@@ -25,7 +38,20 @@ type ChatItem = {
   thinkingDetails?: string[];
   thinkingOpen?: boolean;
   warnings?: string[];
+  toolSuggestions?: ToolSuggestionItem[];
   actionState?: 'pending' | 'confirmed' | 'rejected';
+};
+
+type ToolSuggestionItem = ToolSuggestion & {
+  status?: 'pending' | 'created' | 'rejected';
+};
+
+type UploadAttachment = {
+  id: string;
+  name: string;
+  status: 'uploading' | 'ready' | 'error';
+  text?: string;
+  error?: string;
 };
 
 type TargetSelection = {
@@ -82,11 +108,16 @@ export default function DistillPage() {
   const [saveVersion, setSaveVersion] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('source');
   const [loading, setLoading] = useState(false);
-  const [uploadingFile, setUploadingFile] = useState(false);
+  const [attachments, setAttachments] = useState<UploadAttachment[]>([]);
+  const [dragActive, setDragActive] = useState(false);
+  const [toolDetail, setToolDetail] = useState<ToolSuggestionItem | null>(null);
   const [streamStatus, setStreamStatus] = useState('');
   const abortRef = useRef<AbortController | null>(null);
+  const uploadControllersRef = useRef<Record<string, AbortController>>({});
+  const dragDepthRef = useRef(0);
   const animationTimersRef = useRef<number[]>([]);
   const sourceScrollRef = useRef<HTMLDivElement | null>(null);
+  const chatMessagesRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!skillId) {
@@ -126,10 +157,20 @@ export default function DistillPage() {
       .catch((error) => message.error(error instanceof Error ? error.message : '加载技能失败'));
   }, [skillId]);
 
-  useEffect(() => () => {
-    abortRef.current?.abort();
-    clearAnimationTimers();
+  useEffect(() => {
+    document.body.classList.add('skill-distill-fixed');
+    return () => {
+      document.body.classList.remove('skill-distill-fixed');
+      abortRef.current?.abort();
+      Object.values(uploadControllersRef.current).forEach((controller) => controller.abort());
+      clearAnimationTimers();
+    };
   }, []);
+
+  useEffect(() => {
+    if (!chatMessagesRef.current) return;
+    chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
+  }, [attachments, loading, messages]);
 
   useEffect(() => {
     if (!loading || !sourceScrollRef.current) return;
@@ -137,6 +178,8 @@ export default function DistillPage() {
   }, [draft, loading, textDiffs, viewMode]);
 
   const allPaths = useMemo(() => (draft ? allTargetPaths(draft) : DEFAULT_TARGET_PATHS), [draft]);
+  const uploadingFile = attachments.some((item) => item.status === 'uploading');
+  const readyAttachments = attachments.filter((item) => item.status === 'ready' && item.text?.trim());
   const allSelected = draft ? selectedPaths.length > 0 && allPaths.every((path) => selectedPaths.includes(path)) : false;
   const saveReviewDraft = useMemo(() => {
     const sourceDraft = saveDraftSnapshot || draft;
@@ -156,12 +199,14 @@ export default function DistillPage() {
   }, [lastSavedDraft, saveReviewDraft]);
 
   async function send() {
-    const text = input.trim();
-    if (!text || loading) return;
+    const text = buildOutgoingText(input, readyAttachments);
+    if (!text || loading || uploadingFile) return;
+    const displayText = buildDisplayText(input, readyAttachments);
     const confirmedDraft = pendingChange?.nextDraft || draft;
     confirmPendingChange(false);
     setInput('');
-    pushMessage('user', text);
+    setAttachments([]);
+    pushMessage('user', displayText);
     if (!confirmedDraft) {
       await createDraftFromText(text);
       return;
@@ -214,6 +259,7 @@ export default function DistillPage() {
           if (item.event === 'complete') {
             const draftSkill = item.data.draft_skill as SkillCard;
             const nextWarnings = Array.isArray(item.data.warnings) ? item.data.warnings.map(String) : [];
+            const nextToolSuggestions = normalizeToolSuggestions(item.data.tool_suggestions);
             appendThinkingDetail(assistantId, `已生成技能草稿：${draftSkill.name}`);
             clearAnimationTimers();
             setDraft(draftSkill);
@@ -224,7 +270,7 @@ export default function DistillPage() {
             updateMessage(
               assistantId,
               `已生成「${draftSkill.name}」草稿。你可以在右侧选择一个或多个区域继续改写。`,
-              { thinking: 'done', warnings: nextWarnings },
+              { thinking: 'done', warnings: nextWarnings, toolSuggestions: nextToolSuggestions },
             );
             setStreamStatus('生成完成');
           }
@@ -287,6 +333,7 @@ export default function DistillPage() {
           if (item.event === 'complete') {
             const nextDraft = item.data.draft_skill as SkillCard;
             const nextWarnings = Array.isArray(item.data.warnings) ? item.data.warnings.map(String) : [];
+            const nextToolSuggestions = normalizeToolSuggestions(item.data.tool_suggestions);
             const changedPaths = diffTargetPaths(previousDraft, nextDraft, targets);
             const changedLabel = changedPaths.length > 0 ? targetLabel(changedPaths, nextDraft) : '未检测到结构变化';
             appendThinkingDetail(assistantId, `模型返回改写结果：${changedLabel}`);
@@ -302,11 +349,17 @@ export default function DistillPage() {
                 {
                   thinking: 'done',
                   warnings: nextWarnings,
+                  toolSuggestions: nextToolSuggestions,
                   actionState: 'pending',
                 },
               );
             } else {
-              updateMessage(assistantId, undefined, { thinking: 'done', warnings: nextWarnings, actionState: 'pending' });
+              updateMessage(assistantId, undefined, {
+                thinking: 'done',
+                warnings: nextWarnings,
+                toolSuggestions: nextToolSuggestions,
+                actionState: 'pending',
+              });
             }
           }
         },
@@ -378,34 +431,134 @@ export default function DistillPage() {
     setStreamStatus('已停止');
   }
 
-  async function handleFileUpload(file: File) {
-    if (loading || uploadingFile) return;
+  async function stageFileUpload(file: File) {
+    if (loading) return;
     const suffix = file.name.toLowerCase().split('.').pop() || '';
     if (!['md', 'txt', 'doc', 'docx'].includes(suffix)) {
       message.error('仅支持 .md、.doc、.docx、.txt 文件');
       return;
     }
-    setUploadingFile(true);
+    const id = `file_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+    const controller = new AbortController();
+    uploadControllersRef.current[id] = controller;
+    setAttachments((current) => [...current, { id, name: file.name, status: 'uploading' }]);
     try {
       const contentBase64 = await fileToBase64(file);
-      const result = await api.post<{ filename: string; text: string }>('/api/enterprise/skills/files/extract', {
-        filename: file.name,
-        content_base64: contentBase64,
-      });
-      const title = filenameTitle(result.filename);
-      const filePrompt = `标题：${title}\n原始技能文本：\n${result.text}`;
-      if (!draft) {
-        pushMessage('user', `上传文件：${result.filename}`);
-        await createDraftFromText(filePrompt);
-      } else {
-        setInput((current) => `${current ? `${current}\n\n` : ''}以下是上传文件「${result.filename}」的内容：\n${result.text}`);
-        message.success('已读取文件内容');
-      }
+      if (controller.signal.aborted) return;
+      const result = await api.postWithSignal<{ filename: string; text: string }>(
+        '/api/enterprise/skills/files/extract',
+        {
+          filename: file.name,
+          content_base64: contentBase64,
+        },
+        controller.signal,
+      );
+      setAttachments((current) =>
+        current.map((item) =>
+          item.id === id ? { id, name: result.filename, status: 'ready', text: result.text } : item,
+        ),
+      );
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '读取文件失败');
+      if (controller.signal.aborted) return;
+      setAttachments((current) =>
+        current.map((item) =>
+          item.id === id
+            ? { ...item, status: 'error', error: error instanceof Error ? error.message : '读取文件失败' }
+            : item,
+        ),
+      );
     } finally {
-      setUploadingFile(false);
+      delete uploadControllersRef.current[id];
     }
+  }
+
+  function uploadFiles(files: File[]) {
+    files.forEach((file) => {
+      void stageFileUpload(file);
+    });
+  }
+
+  function cancelAttachment(id: string) {
+    uploadControllersRef.current[id]?.abort();
+    delete uploadControllersRef.current[id];
+    setAttachments((current) => current.filter((item) => item.id !== id));
+  }
+
+  function handleComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.files || []);
+    if (files.length === 0) return;
+    event.preventDefault();
+    uploadFiles(files);
+  }
+
+  function handleDragEnter(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    dragDepthRef.current += 1;
+    if (event.dataTransfer.types.includes('Files')) setDragActive(true);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+  }
+
+  function handleDragLeave(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setDragActive(false);
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    dragDepthRef.current = 0;
+    setDragActive(false);
+    uploadFiles(Array.from(event.dataTransfer.files || []));
+  }
+
+  async function confirmToolSuggestion(messageId: string, suggestion: ToolSuggestionItem) {
+    try {
+      await api.post('/api/enterprise/tools', {
+        tenant_id: TENANT_ID,
+        name: suggestion.name,
+        display_name: suggestion.display_name || suggestion.name,
+        description: suggestion.description || suggestion.reason || '',
+        method: suggestion.method || 'POST',
+        url: suggestion.url || `/api/mock/${suggestion.name.replace(/\./g, '/')}`,
+        headers: {},
+        auth: {},
+        input_schema: suggestion.input_schema || {},
+        output_schema: suggestion.output_schema || {},
+        allowed_skills: draft ? [draft.skill_id] : [],
+        enabled: true,
+      });
+      setToolSuggestionStatus(messageId, suggestion.name, 'created');
+      message.success('工具已新增');
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('409')) {
+        setToolSuggestionStatus(messageId, suggestion.name, 'created');
+        message.info('工具已存在，已按已新增处理');
+        return;
+      }
+      message.error(error instanceof Error ? error.message : '新增工具失败');
+    }
+  }
+
+  function rejectToolSuggestion(messageId: string, toolName: string) {
+    setToolSuggestionStatus(messageId, toolName, 'rejected');
+  }
+
+  function setToolSuggestionStatus(messageId: string, toolName: string, status: ToolSuggestionItem['status']) {
+    setMessages((current) =>
+      current.map((item) =>
+        item.id === messageId
+          ? {
+              ...item,
+              toolSuggestions: (item.toolSuggestions || []).map((suggestion) =>
+                suggestion.name === toolName ? { ...suggestion, status } : suggestion,
+              ),
+            }
+          : item,
+      ),
+    );
   }
 
   function closeSaveReview() {
@@ -549,14 +702,14 @@ export default function DistillPage() {
   }
 
   return (
-    <>
+    <div className="skill-distill-page">
       <div className="page-title">
         <Typography.Title level={3}>技能改写</Typography.Title>
       </div>
       <div className="skill-workbench">
         <Card className="skill-chat-card">
           <div className="skill-chat-panel">
-            <div className="skill-chat-messages">
+            <div className="skill-chat-messages" ref={chatMessagesRef}>
               {messages.map((item) => (
                 <div key={item.id} className={`skill-chat-row ${item.role}`}>
                   <div className="skill-chat-bubble">
@@ -596,6 +749,39 @@ export default function DistillPage() {
                         ))}
                       </div>
                     )}
+                    {item.toolSuggestions && item.toolSuggestions.length > 0 && (
+                      <div className="skill-tool-suggestions">
+                        {item.toolSuggestions.map((suggestion) => (
+                          <div className="skill-tool-suggestion" key={`${item.id}_${suggestion.name}`}>
+                            <div>
+                              <div className="skill-tool-suggestion-title">
+                                建议新增工具：{suggestion.display_name || suggestion.name}
+                              </div>
+                              <div className="skill-tool-suggestion-desc">
+                                {suggestion.reason || suggestion.description || suggestion.name}
+                              </div>
+                            </div>
+                            <Space>
+                              <Button size="small" onClick={() => setToolDetail(suggestion)}>
+                                详情
+                              </Button>
+                              {suggestion.status !== 'created' && suggestion.status !== 'rejected' && (
+                                <>
+                                  <Button size="small" type="primary" onClick={() => void confirmToolSuggestion(item.id, suggestion)}>
+                                    确认
+                                  </Button>
+                                  <Button size="small" onClick={() => rejectToolSuggestion(item.id, suggestion.name)}>
+                                    拒绝
+                                  </Button>
+                                </>
+                              )}
+                              {suggestion.status === 'created' && <Typography.Text type="secondary">已新增</Typography.Text>}
+                              {suggestion.status === 'rejected' && <Typography.Text type="secondary">已拒绝</Typography.Text>}
+                            </Space>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {item.actionState === 'pending' && (
                       <div className="skill-chat-confirm">
                         <Button size="small" type="primary" onClick={() => confirmPendingChange()}>
@@ -612,10 +798,39 @@ export default function DistillPage() {
                 </div>
               ))}
             </div>
-            <div className="skill-chat-composer">
+            <div
+              className={`skill-chat-composer ${dragActive ? 'dragging' : ''}`}
+              onDragEnter={handleDragEnter}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+            >
+              {dragActive && <div className="skill-upload-drop-hint">松开上传文档</div>}
+              {attachments.length > 0 && (
+                <div className="skill-upload-list">
+                  {attachments.map((attachment) => (
+                    <div className={`skill-upload-item ${attachment.status}`} key={attachment.id}>
+                      <FileTextOutlined />
+                      <span className="skill-upload-name">{attachment.name}</span>
+                      <span className="skill-upload-status">
+                        {attachment.status === 'uploading' && '读取中'}
+                        {attachment.status === 'ready' && '已读取'}
+                        {attachment.status === 'error' && (attachment.error || '读取失败')}
+                      </span>
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<CloseOutlined />}
+                        onClick={() => cancelAttachment(attachment.id)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
               <Input.TextArea
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
+                onPaste={handleComposerPaste}
                 onPressEnter={(event) => {
                   if (!event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
@@ -634,9 +849,10 @@ export default function DistillPage() {
                 <Space>
                   <Upload
                     accept=".md,.txt,.doc,.docx"
+                    multiple
                     showUploadList={false}
                     beforeUpload={(file) => {
-                      void handleFileUpload(file as File);
+                      void stageFileUpload(file as File);
                       return false;
                     }}
                   >
@@ -649,7 +865,13 @@ export default function DistillPage() {
                       停止
                     </Button>
                   )}
-                  <Button type="primary" icon={<SendOutlined />} loading={loading} onClick={() => void send()}>
+                  <Button
+                    type="primary"
+                    icon={<SendOutlined />}
+                    loading={loading}
+                    disabled={uploadingFile || (!input.trim() && readyAttachments.length === 0)}
+                    onClick={() => void send()}
+                  >
                     发送
                   </Button>
                 </Space>
@@ -744,7 +966,29 @@ export default function DistillPage() {
           )}
         </div>
       </Modal>
-    </>
+      <Modal
+        open={Boolean(toolDetail)}
+        title="工具详情"
+        footer={null}
+        width={760}
+        onCancel={() => setToolDetail(null)}
+      >
+        {toolDetail && (
+          <div className="tool-suggestion-detail">
+            <div><strong>工具名：</strong>{toolDetail.name}</div>
+            <div><strong>显示名：</strong>{toolDetail.display_name || '-'}</div>
+            <div><strong>说明：</strong>{toolDetail.description || '-'}</div>
+            <div><strong>方法：</strong>{toolDetail.method}</div>
+            <div><strong>URL：</strong>{toolDetail.url}</div>
+            <div><strong>原因：</strong>{toolDetail.reason || '-'}</div>
+            <Typography.Text strong>输入 Schema</Typography.Text>
+            <pre>{JSON.stringify(toolDetail.input_schema || {}, null, 2)}</pre>
+            <Typography.Text strong>输出 Schema</Typography.Text>
+            <pre>{JSON.stringify(toolDetail.output_schema || {}, null, 2)}</pre>
+          </div>
+        )}
+      </Modal>
+    </div>
   );
 }
 
@@ -1028,9 +1272,9 @@ function createStreamingDraftSeed(payload: { title: string; raw_content: string 
     user_utterance_examples: [],
     goal: [],
     required_info: [],
+    response_rules: [],
     steps: [],
     interruption_policy: {},
-    response_rules: [],
   };
 }
 
@@ -1073,9 +1317,9 @@ function parseCompleteStreamSkill(streamText: string): SkillCard | null {
       user_utterance_examples: asStringList(draft.user_utterance_examples),
       goal: asStringList(draft.goal),
       required_info: asStringList(draft.required_info),
+      response_rules: asStringList(draft.response_rules),
       steps: Array.isArray(draft.steps) ? draft.steps.filter(isRecord).map(normalizeStepPreview) : [],
       interruption_policy: isRecord(draft.interruption_policy) ? stringRecord(draft.interruption_policy) : {},
-      response_rules: asStringList(draft.response_rules),
     };
   } catch {
     return null;
@@ -1348,6 +1592,44 @@ async function fileToBase64(file: File): Promise<string> {
 
 function filenameTitle(filename: string): string {
   return filename.replace(/\.[^.]+$/, '').trim() || '新技能';
+}
+
+function buildOutgoingText(input: string, attachments: UploadAttachment[]): string {
+  const text = input.trim();
+  const attachmentText = attachments
+    .filter((item) => item.status === 'ready' && item.text?.trim())
+    .map((item) => `文件：${item.name}\n${item.text?.trim() || ''}`)
+    .join('\n\n');
+  return [text, attachmentText ? `上传文档内容：\n${attachmentText}` : ''].filter(Boolean).join('\n\n');
+}
+
+function buildDisplayText(input: string, attachments: UploadAttachment[]): string {
+  const text = input.trim();
+  const fileNames = attachments
+    .filter((item) => item.status === 'ready')
+    .map((item) => item.name)
+    .join('、');
+  if (text && fileNames) return `${text}\n\n附件：${fileNames}`;
+  if (fileNames) return `附件：${fileNames}`;
+  return text;
+}
+
+function normalizeToolSuggestions(value: unknown): ToolSuggestionItem[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Record<string, unknown> => isRecord(item))
+    .map((item) => ({
+      name: String(item.name || '').trim(),
+      display_name: typeof item.display_name === 'string' ? item.display_name : undefined,
+      description: typeof item.description === 'string' ? item.description : undefined,
+      method: typeof item.method === 'string' ? item.method : 'POST',
+      url: typeof item.url === 'string' ? item.url : '',
+      input_schema: isRecord(item.input_schema) ? item.input_schema : {},
+      output_schema: isRecord(item.output_schema) ? item.output_schema : {},
+      reason: typeof item.reason === 'string' ? item.reason : '',
+      status: 'pending' as const,
+    }))
+    .filter((item) => item.name);
 }
 
 function allTargetPaths(skill: SkillCard): string[] {

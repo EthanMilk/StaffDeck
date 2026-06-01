@@ -24,9 +24,20 @@ class SkillCard(BaseModel):
     goal: list[str] = Field(default_factory=list)
     required_info: list[str] = Field(default_factory=list)
     slot_filling_policy: dict[str, Any] = Field(default_factory=dict)
+    response_rules: list[str] = Field(default_factory=list)
     steps: list[SkillStep] = Field(default_factory=list)
     interruption_policy: dict[str, str] = Field(default_factory=dict)
-    response_rules: list[str] = Field(default_factory=list)
+
+
+class ToolSuggestion(BaseModel):
+    name: str
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"] = "POST"
+    url: str = ""
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    output_schema: dict[str, Any] = Field(default_factory=dict)
+    reason: str = ""
 
 
 class SkillCreateRequest(BaseModel):
@@ -105,6 +116,7 @@ class SkillDistillRequest(BaseModel):
 class SkillDistillResponse(BaseModel):
     draft_skill: SkillCard
     warnings: list[str] = Field(default_factory=list)
+    tool_suggestions: list[ToolSuggestion] = Field(default_factory=list)
 
 
 class SkillRewriteRequest(BaseModel):
@@ -115,6 +127,7 @@ class SkillRewriteRequest(BaseModel):
     target_paths: list[str] = Field(default_factory=list)
     target_label: Optional[str] = None
     conversation: list[dict[str, str]] = Field(default_factory=list)
+    available_tools: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SkillRewriteResponse(BaseModel):
@@ -122,6 +135,7 @@ class SkillRewriteResponse(BaseModel):
     assistant_message: str
     changed_paths: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    tool_suggestions: list[ToolSuggestion] = Field(default_factory=list)
 
 
 class SkillFileExtractRequest(BaseModel):

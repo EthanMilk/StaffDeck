@@ -187,3 +187,58 @@ def test_fallback_card_instructs_numeric_phrase_extraction() -> None:
     card = SkillDistiller()._fallback_card(request)  # noqa: SLF001
 
     assert any("一个/一件/一台" in step.instruction for step in card.steps)
+
+
+def test_normalize_response_suggests_missing_tools_and_removes_unknown_actions() -> None:
+    request = SkillDistillRequest(
+        tenant_id="tenant_demo",
+        title="商品比价",
+        raw_content="用户提供两个商品名称，调用 product.compare 工具查询价格并反馈比价结果",
+        available_tools=[],
+    )
+    raw = {
+        "draft_skill": {
+            "skill_id": "compare_products",
+            "name": "商品比价",
+            "required_info": ["product_name_1", "product_name_2"],
+            "steps": [
+                {
+                    "step_id": "compare",
+                    "name": "查询比价",
+                    "instruction": "调用工具查询两个商品价格。",
+                    "expected_user_info": ["product_name_1", "product_name_2"],
+                    "allowed_actions": ["continue_flow", "call_tool:product.compare"],
+                },
+                {
+                    "step_id": "reply_result",
+                    "name": "反馈结果",
+                    "instruction": "反馈比价结果。",
+                    "expected_user_info": [],
+                    "allowed_actions": ["answer_user"],
+                },
+            ],
+            "response_rules": [],
+        }
+    }
+
+    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
+
+    assert all(
+        "call_tool:product.compare" not in step.allowed_actions
+        for step in response.draft_skill.steps
+    )
+    assert any(item.name == "product.compare" for item in response.tool_suggestions)
+    assert any("未配置工具 product.compare" in warning for warning in response.warnings)
+
+
+def test_skill_card_serializes_response_rules_before_steps() -> None:
+    request = SkillDistillRequest(
+        tenant_id="tenant_demo",
+        title="资料审核",
+        raw_content="收集资料编号，审核状态，反馈给用户",
+    )
+
+    card = SkillDistiller()._fallback_card(request)  # noqa: SLF001
+    keys = list(card.model_dump().keys())
+
+    assert keys.index("response_rules") < keys.index("steps")

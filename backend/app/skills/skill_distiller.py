@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from time import sleep
 from typing import Any
 
 from app.db.models import ModelConfig
 from app.llm import LLMClient, LLMError
-from app.skills.skill_schema import SkillDistillRequest, SkillDistillResponse, SkillCard, SkillStep
+from app.skills.skill_schema import SkillDistillRequest, SkillDistillResponse, SkillCard, SkillStep, ToolSuggestion
 from app.skills.step_ids import ensure_unique_step_ids, skill_card_with_unique_step_ids
 
 
@@ -116,6 +117,9 @@ class SkillDistiller:
         warnings.extend(step_warnings)
         steps, unique_step_warnings = ensure_unique_step_ids(steps)
         warnings.extend(unique_step_warnings)
+        steps, missing_tool_names = _remove_unknown_tool_actions(steps, request.available_tools)
+        for tool_name in missing_tool_names:
+            warnings.append(f"技能草稿引用了未配置工具 {tool_name}，已移出 allowed_actions 并生成新增工具建议。")
         response_rules = _string_list(draft.get("response_rules"), fallback.response_rules)
         if CLOSED_LOOP_RESPONSE_RULE not in response_rules:
             response_rules.append(CLOSED_LOOP_RESPONSE_RULE)
@@ -141,13 +145,18 @@ class SkillDistiller:
                 steps,
                 fallback.slot_filling_policy,
             ),
+            "response_rules": response_rules,
             "steps": steps,
             "interruption_policy": _string_dict(draft.get("interruption_policy"), fallback.interruption_policy),
-            "response_rules": response_rules,
         }
         draft_skill, card_warnings = skill_card_with_unique_step_ids(SkillCard.model_validate(normalized))
         warnings.extend(card_warnings)
-        response = SkillDistillResponse(draft_skill=draft_skill, warnings=_unique_warnings(warnings))
+        tool_suggestions = _normalize_tool_suggestions(raw.get("tool_suggestions"), request, missing_tool_names)
+        response = SkillDistillResponse(
+            draft_skill=draft_skill,
+            warnings=_unique_warnings(warnings),
+            tool_suggestions=tool_suggestions,
+        )
         if not response.draft_skill.steps:
             response.draft_skill.steps = fallback.steps
             response.warnings.append("模型未生成步骤，已使用规则生成默认步骤。")
@@ -325,6 +334,11 @@ class SkillDistiller:
             slot_filling_policy=_default_slot_filling_policy(
                 [*required_info, *(["operation_confirmed"] if needs_confirmation else [])]
             ),
+            response_rules=[
+                "信息不足时先追问，不要编造事实。",
+                ADAPTIVE_FLOW_RESPONSE_RULE,
+                *([CONFIRMATION_FLOW_RESPONSE_RULE] if needs_confirmation else []),
+            ],
             steps=steps,
             interruption_policy={
                 "related_question": "回答相关问题后回到当前流程。",
@@ -332,11 +346,6 @@ class SkillDistiller:
                 "chitchat": "简短回应后引导用户继续当前流程。",
                 "user_wants_human": "直接转人工。",
             },
-            response_rules=[
-                "信息不足时先追问，不要编造事实。",
-                ADAPTIVE_FLOW_RESPONSE_RULE,
-                *([CONFIRMATION_FLOW_RESPONSE_RULE] if needs_confirmation else []),
-            ],
         )
 
 
@@ -442,8 +451,25 @@ def _needs_confirmation(raw: str) -> bool:
     )
 
 
-def _request_text(request: SkillDistillRequest) -> str:
-    return f"{request.title}\n{request.raw_content}"
+def _request_text(request: Any) -> str:
+    return f"{_request_title(request)}\n{_request_raw_content(request)}"
+
+
+def _request_title(request: Any) -> str:
+    title = getattr(request, "title", None)
+    if isinstance(title, str) and title.strip():
+        return title.strip()
+    current_skill = getattr(request, "current_skill", None)
+    name = getattr(current_skill, "name", None)
+    return str(name or "新技能").strip()
+
+
+def _request_raw_content(request: Any) -> str:
+    raw_content = getattr(request, "raw_content", None)
+    if isinstance(raw_content, str) and raw_content.strip():
+        return raw_content
+    instruction = getattr(request, "instruction", None)
+    return str(instruction or "")
 
 
 def _extract_json(text: str) -> str:
@@ -549,6 +575,153 @@ def _tool_actions(available_tools: list[dict[str, Any]]) -> list[str]:
         if name:
             actions.append(f"call_tool:{name}")
     return actions
+
+
+def _available_tool_names(available_tools: list[dict[str, Any]]) -> set[str]:
+    names: set[str] = set()
+    for tool in available_tools:
+        if not isinstance(tool, dict):
+            continue
+        name = str(tool.get("name") or "").strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def _remove_unknown_tool_actions(
+    steps: list[dict[str, Any]], available_tools: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    available_names = _available_tool_names(available_tools)
+    missing_names: list[str] = []
+    if not available_names:
+        available_names = set()
+    normalized_steps: list[dict[str, Any]] = []
+    for step in steps:
+        next_step = dict(step)
+        actions = []
+        for action in next_step.get("allowed_actions", []):
+            action_text = str(action)
+            if not action_text.startswith("call_tool:"):
+                actions.append(action_text)
+                continue
+            tool_name = action_text.replace("call_tool:", "", 1).strip()
+            if tool_name in available_names:
+                actions.append(action_text)
+                continue
+            if tool_name and tool_name not in missing_names:
+                missing_names.append(tool_name)
+        next_step["allowed_actions"] = actions
+        normalized_steps.append(next_step)
+    return normalized_steps, missing_names
+
+
+def _normalize_tool_suggestions(
+    value: Any, request: Any, missing_tool_names: list[str]
+) -> list[ToolSuggestion]:
+    suggestions: list[ToolSuggestion] = []
+    seen = set(_available_tool_names(request.available_tools))
+
+    if isinstance(value, list):
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            suggestion = _tool_suggestion_from_dict(item, request)
+            if suggestion.name in seen:
+                continue
+            suggestions.append(suggestion)
+            seen.add(suggestion.name)
+
+    for name in missing_tool_names:
+        if name in seen:
+            continue
+        suggestion = _default_tool_suggestion(name, request, f"模型草稿引用了未配置工具 {name}。")
+        suggestions.append(suggestion)
+        seen.add(name)
+
+    for name in _mentioned_tool_names(_request_text(request)):
+        if name in seen:
+            continue
+        suggestion = _default_tool_suggestion(name, request, f"原始输入提到了工具 {name}，但当前工具配置中不存在。")
+        suggestions.append(suggestion)
+        seen.add(name)
+
+    if not suggestions and _needs_external_tool(request):
+        name = f"{_slugify(_request_title(request), _request_raw_content(request))}.execute"
+        if name not in seen:
+            suggestions.append(
+                _default_tool_suggestion(
+                    name,
+                    request,
+                    "原始流程包含查询、核实、创建或处理类动作，但当前没有可覆盖该动作的已配置工具。",
+                )
+            )
+
+    return suggestions
+
+
+def _tool_suggestion_from_dict(item: dict[str, Any], request: Any) -> ToolSuggestion:
+    name = _string(item.get("name"), "")
+    if not name:
+        name = f"{_slugify(_request_title(request), _request_raw_content(request))}.execute"
+    default = _default_tool_suggestion(name, request, _string(item.get("reason"), "模型建议新增该工具。"))
+    return ToolSuggestion(
+        name=name,
+        display_name=_string(item.get("display_name"), default.display_name or name),
+        description=_string(item.get("description"), default.description or ""),
+        method=_tool_method(item.get("method"), default.method),
+        url=_string(item.get("url"), default.url),
+        input_schema=item.get("input_schema") if isinstance(item.get("input_schema"), dict) else default.input_schema,
+        output_schema=item.get("output_schema") if isinstance(item.get("output_schema"), dict) else default.output_schema,
+        reason=_string(item.get("reason"), default.reason),
+    )
+
+
+def _default_tool_suggestion(name: str, request: Any, reason: str) -> ToolSuggestion:
+    title = _request_title(request)
+    raw_content = _request_raw_content(request)
+    required_fields = _infer_required_fields(raw_content)
+    properties = {
+        field: {"type": "string", "description": label}
+        for field, label in required_fields
+    }
+    if not properties:
+        properties = {"query": {"type": "string", "description": "用户请求或业务对象"}}
+    return ToolSuggestion(
+        name=name,
+        display_name=f"{title or name}工具",
+        description=f"用于支撑「{title or name}」流程中的外部查询、核实、创建或处理动作。",
+        method="POST",
+        url=f"/api/mock/{name.replace('.', '/')}",
+        input_schema={"type": "object", "properties": properties, "required": list(properties.keys())},
+        output_schema={"type": "object", "properties": {"success": {"type": "boolean"}, "data": {"type": "object"}}},
+        reason=reason,
+    )
+
+
+def _mentioned_tool_names(text: str) -> list[str]:
+    names: list[str] = []
+    patterns = [
+        r"(?:call_tool:|工具[:：]\s*|调用\s*|使用\s*|tool\s*[:=]\s*)([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+)",
+        r"`([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+)`",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            name = match.group(1).strip()
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
+def _tool_method(value: Any, fallback: str = "POST") -> str:
+    method = str(value or fallback or "POST").upper()
+    return method if method in {"GET", "POST", "PUT", "PATCH", "DELETE"} else "POST"
+
+
+def _needs_external_tool(request: Any) -> bool:
+    text = _request_text(request)
+    if not any(keyword in text for keyword in TOOL_PROCESS_KEYWORDS):
+        return False
+    return not _tool_actions(request.available_tools)
 
 
 def _infer_goals(raw: str) -> list[str]:

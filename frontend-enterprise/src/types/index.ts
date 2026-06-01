@@ -13,6 +13,17 @@ export type SkillCard = {
   response_rules: string[];
 };
 
+export type ToolSuggestion = {
+  name: string;
+  display_name?: string;
+  description?: string;
+  method: string;
+  url: string;
+  input_schema: Record<string, unknown>;
+  output_schema: Record<string, unknown>;
+  reason: string;
+};
+
 export type SkillRead = {
   id: string;
   tenant_id: string;
