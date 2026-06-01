@@ -419,6 +419,61 @@ def test_tool_step_self_loop_advances_to_reply_and_completes_after_success() -> 
     )
 
 
+def test_tool_continuation_is_model_driven_and_accumulates_results() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.db = FakeDb()
+    loop.events = FakeEvents()
+    loop.tool_executor = _RecordingPriceToolExecutor()
+    loop.step_agent = _FakeStepAgent(
+        [
+            StepAgentResult(
+                tool_call=ToolCall(name="product.price_query", arguments={"product_name": "A3"}),
+                is_step_completed=True,
+            ),
+            StepAgentResult(
+                reply="A1 和 A3 均已查到，可以给出比价结果。",
+                next_step_id="reply_result",
+                is_step_completed=True,
+            ),
+        ]
+    )
+    loop._recent_messages = lambda session: []  # type: ignore[method-assign]
+    loop._tool_activity_payload = lambda tenant_id, name, result: {  # type: ignore[method-assign]
+        "toolName": name,
+        "content": result.model_dump(mode="json"),
+        "success": result.success,
+        "isError": not result.success,
+    }
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="price_compare",
+        active_step_id="query_price",
+        slots_json={"product_name_1": "A1", "product_name_2": "A3"},
+    )
+
+    step_result, tool_result = loop._execute_tool_action_cycle(
+        _request("我想比下 A1 和 A3 的价格"),
+        session,
+        _price_compare_skill(),
+        [_price_query_tool()],
+        _model_config(),
+        StepAgentResult(
+            tool_call=ToolCall(name="product.price_query", arguments={"product_name": "A1"}),
+            is_step_completed=True,
+        ),
+        [],
+    )
+
+    assert [call.arguments["product_name"] for call in loop.tool_executor.calls] == ["A1", "A3"]
+    assert loop.step_agent.calls == 2
+    assert tool_result is not None
+    assert tool_result.data["product_name"] == "A3"
+    assert step_result.tool_call is None
+    assert session.active_step_id == "reply_result"
+    assert len(session.slots_json["_tool_results"]) == 2
+
+
 def test_context_repair_does_not_skip_satisfied_tool_step() -> None:
     loop = object.__new__(AgentLoop)
     loop.events = FakeEvents()
@@ -566,6 +621,22 @@ class _FakeStepAgent:
         return result
 
 
+class _RecordingPriceToolExecutor:
+    def __init__(self) -> None:
+        self.calls: list[ToolCall] = []
+
+    def execute(
+        self, tenant_id: str, tool_call: ToolCall, active_skill_id: str | None = None
+    ) -> ToolResult:
+        self.calls.append(tool_call)
+        product_name = str(tool_call.arguments.get("product_name") or "")
+        return ToolResult(
+            tool_name=tool_call.name,
+            success=True,
+            data={"product_name": product_name, "found": True, "price": 129 if product_name == "A1" else 239},
+        )
+
+
 def _request(message: str):
     from app.session.session_schema import ChatTurnRequest
 
@@ -652,6 +723,56 @@ def _order_add_tool() -> Tool:
             "type": "object",
             "properties": {"product_id": {"type": "string"}},
             "required": ["product_id"],
+        },
+        enabled=True,
+    )
+
+
+def _price_compare_skill() -> Skill:
+    return Skill(
+        tenant_id="tenant_demo",
+        skill_id="price_compare",
+        name="商品比价",
+        content_json={
+            "skill_id": "price_compare",
+            "name": "商品比价",
+            "required_info": ["product_name_1", "product_name_2"],
+            "steps": [
+                {
+                    "step_id": "collect_products",
+                    "name": "收集商品",
+                    "expected_user_info": ["product_name_1", "product_name_2"],
+                    "allowed_actions": ["ask_user"],
+                },
+                {
+                    "step_id": "query_price",
+                    "name": "查询价格",
+                    "expected_user_info": [],
+                    "allowed_actions": ["call_tool:product.price_query"],
+                },
+                {
+                    "step_id": "reply_result",
+                    "name": "反馈结果",
+                    "expected_user_info": [],
+                    "allowed_actions": ["answer_user"],
+                },
+            ],
+        },
+        status="published",
+    )
+
+
+def _price_query_tool() -> Tool:
+    return Tool(
+        tenant_id="tenant_demo",
+        name="product.price_query",
+        display_name="商品价格查询",
+        method="POST",
+        url="http://localhost:8000/api/mock/product/price-query",
+        input_schema={
+            "type": "object",
+            "properties": {"product_name": {"type": "string"}},
+            "required": ["product_name"],
         },
         enabled=True,
     )

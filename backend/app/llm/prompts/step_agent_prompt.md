@@ -32,6 +32,11 @@
 - 如果用户当前回复很短，且上一轮正在询问某个字段，应由你判断它是否是该字段的候选答案；是则写入 slot_updates，不是则保持为空。
 - 如果当前步骤 expected_user_info 包含 `*_confirmed` 或 instruction 要求确认，只有用户对当前确认问题作出明确肯定时才能写入 true；不要仅凭用户最初提出诉求、历史订单或上下文推断确认。用户否定或表达“另一个/换一个/不是这个”时，应更新或清空相关对象字段并回到信息收集。
 - 如果 repair_context.reason 是 slot_validation，说明上一次输出可能漏掉了槽位。你必须重新检查 user_message、last_agent_question、repair_context.missing_expected_user_info 和 repair_context.previous_step_result，由你判断是否应补充 slot_updates 或 tool_call；不要为了补槽而编造用户没提供的信息。
+- 如果 repair_context.reason 是 tool_continuation，说明上一轮工具调用已经返回结果。你必须基于 previous_tool_result、accumulated_tool_results、tool_call_history、slots、当前步骤和用户目标判断任务是否完成：
+  - 如果仍缺少必要工具结果，由你输出下一次 tool_call，tool_call.name 必须来自 available_tools，arguments 必须符合 input_schema。
+  - 不要重复调用 tool_call_history 中已经出现过的相同工具和相同参数。
+  - 如果工具结果已经足够完成当前目标，输出无 tool_call 的结果，并将 next_step_id 指向可回复/结束步骤或直接给出 reply。
+  - 不得把“请稍候/正在处理/稍后反馈”作为完成状态；需要继续执行时必须输出 tool_call，需要结束时必须给出可见业务结果。
 - 不要依赖任何平台内置业务规则；所有字段、步骤、工具选择都必须来自 active_skill 和 available_tools。
 - 如果决定调用工具，tool_call.name 必须来自 available_tools，arguments 必须符合对应 input_schema。
 

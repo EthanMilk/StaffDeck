@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from time import sleep
@@ -27,6 +28,31 @@ StatusCallback = Callable[[str, dict[str, object]], None]
 STREAM_CHUNK_INTERVAL_SECONDS = 0.045
 DEFAULT_REFLECTION_MAX_ROUNDS = 1
 REFLECTION_MAX_ROUNDS_LIMIT = 5
+MAX_TOOL_ACTIONS_PER_TURN = 6
+TOOL_CALL_HISTORY_SLOT = "_tool_call_history"
+TOOL_RESULTS_SLOT = "_tool_results"
+
+
+def _normalize_action(action: object) -> str:
+    text = str(action or "").strip().strip("`'\"").strip()
+    if not text:
+        return ""
+    if text.startswith("call_tool:"):
+        tool_name = text.split(":", 1)[1].strip().strip("`'\"").strip()
+        return f"call_tool:{tool_name}" if tool_name else ""
+    aliases = {
+        "ask": "ask_user",
+        "ask_for_info": "ask_user",
+        "ask_user_info": "ask_user",
+        "reply": "answer_user",
+        "respond": "answer_user",
+        "transfer_to_human": "handoff_human",
+        "human_handoff": "handoff_human",
+        "manual_handoff": "handoff_human",
+        "manual_service": "handoff_human",
+        "escalate_to_human": "handoff_human",
+    }
+    return aliases.get(text, text)
 
 
 class AgentLoopPreconditionError(Exception):
@@ -232,25 +258,18 @@ class AgentLoop:
                 yield self._stream_event(event_name, chat_session, payload)
 
             if step_result.tool_call:
-                yield self._stream_status(
+                tool_stream_events: list[tuple[str, dict[str, object]]] = []
+                step_result, tool_result = self._execute_tool_action_cycle(
+                    request,
                     chat_session,
-                    "tool",
-                    f"正在调用工具 {step_result.tool_call.name}",
-                    {"tool_name": step_result.tool_call.name},
+                    active_skill,
+                    tools,
+                    model_config,
+                    step_result,
+                    tool_stream_events,
                 )
-                tool_result = self._execute_tool_call(request, chat_session, step_result.tool_call)
-                self._advance_after_successful_tool(
-                    request.tenant_id, chat_session, active_skill, step_result, tool_result
-                )
-                yield self._stream_event(
-                    "tool_result",
-                    chat_session,
-                    self._tool_activity_payload(
-                        request.tenant_id, step_result.tool_call.name, tool_result
-                    ),
-                )
-                self.db.commit()
-                self.db.refresh(chat_session)
+                for event_name, payload in tool_stream_events:
+                    yield self._stream_event(event_name, chat_session, payload)
 
             reflection_stream_events: list[tuple[str, dict[str, object]]] = []
             reflection_max_rounds = self._get_reflection_max_rounds(request.tenant_id)
@@ -476,13 +495,15 @@ class AgentLoop:
         self.db.commit()
         self.db.refresh(chat_session)
         if step_result.tool_call:
-            status("tool", {"tool_name": step_result.tool_call.name})
-            tool_result = self._execute_tool_call(request, chat_session, step_result.tool_call)
-            self._advance_after_successful_tool(
-                request.tenant_id, chat_session, active_skill, step_result, tool_result
+            step_result, tool_result = self._execute_tool_action_cycle(
+                request,
+                chat_session,
+                active_skill,
+                tools,
+                model_config,
+                step_result,
+                status_callback=status,
             )
-            self.db.commit()
-            self.db.refresh(chat_session)
 
         (
             active_skill,
@@ -654,6 +675,8 @@ class AgentLoop:
                 retry_tool_call,
                 reflection.reason,
                 stream_events,
+                tools,
+                model_config,
             )
             return (*retry_result, True)
 
@@ -681,6 +704,8 @@ class AgentLoop:
                 retry_tool_call,
                 reflection.reason,
                 stream_events,
+                tools,
+                model_config,
             )
             return (*retry_result, True)
 
@@ -705,6 +730,8 @@ class AgentLoop:
         retry_tool_call: ToolCall,
         retry_reason: str | None,
         stream_events: list[tuple[str, dict[str, object]]] | None = None,
+        tools: list[Tool] | None = None,
+        model_config: ModelConfig | None = None,
     ) -> tuple[Skill | None, RouterDecision, StepAgentResult, ToolResult | None]:
         retry_step_result = StepAgentResult(
             tool_call=retry_tool_call,
@@ -721,32 +748,15 @@ class AgentLoop:
                 "target_tool_name": retry_tool_call.name,
             },
         )
-        if stream_events is not None:
-            stream_events.append(
-                (
-                    "status",
-                    {
-                        "phase": "tool",
-                        "text": f"正在调用工具 {retry_tool_call.name}",
-                        "tool_name": retry_tool_call.name,
-                    },
-                )
-            )
-        retry_tool_result = self._execute_tool_call(request, chat_session, retry_tool_call)
-        self._advance_after_successful_tool(
-            request.tenant_id, chat_session, active_skill, retry_step_result, retry_tool_result
+        retry_step_result, retry_tool_result = self._execute_tool_action_cycle(
+            request,
+            chat_session,
+            active_skill,
+            tools or [],
+            model_config,
+            retry_step_result,
+            stream_events,
         )
-        self.db.commit()
-        self.db.refresh(chat_session)
-        if stream_events is not None:
-            stream_events.append(
-                (
-                    "tool_result",
-                    self._tool_activity_payload(
-                        request.tenant_id, retry_tool_call.name, retry_tool_result
-                    ),
-                )
-            )
         return active_skill, router_decision, retry_step_result, retry_tool_result
 
     def _reflection_tool_retry_targets_current_skill(
@@ -835,33 +845,181 @@ class AgentLoop:
 
         tool_result: ToolResult | None = None
         if step_result.tool_call:
-            if stream_events is not None:
-                stream_events.append(
-                    (
-                        "status",
-                        {
-                            "phase": "tool",
-                            "text": f"正在调用工具 {step_result.tool_call.name}",
-                            "tool_name": step_result.tool_call.name,
-                        },
-                    )
-                )
-            tool_result = self._execute_tool_call(request, chat_session, step_result.tool_call)
-            self._advance_after_successful_tool(
-                request.tenant_id, chat_session, active_skill, step_result, tool_result
+            step_result, tool_result = self._execute_tool_action_cycle(
+                request,
+                chat_session,
+                active_skill,
+                tools,
+                model_config,
+                step_result,
+                stream_events,
             )
-            self.db.commit()
-            self.db.refresh(chat_session)
+        return active_skill, router_decision, step_result, tool_result
+
+    def _execute_tool_action_cycle(
+        self,
+        request: ChatTurnRequest,
+        chat_session: ChatSession,
+        active_skill: Skill | None,
+        tools: list[Tool],
+        model_config: ModelConfig | None,
+        step_result: StepAgentResult,
+        stream_events: list[tuple[str, dict[str, object]]] | None = None,
+        status_callback: StatusCallback | None = None,
+    ) -> tuple[StepAgentResult, ToolResult | None]:
+        tool_result: ToolResult | None = None
+        seen_calls: set[str] = set()
+        for iteration in range(MAX_TOOL_ACTIONS_PER_TURN):
+            tool_call = step_result.tool_call
+            if not tool_call:
+                break
+            signature = self._tool_call_signature(tool_call)
+            if signature in seen_calls:
+                self.events.record(
+                    request.tenant_id,
+                    chat_session.id,
+                    "agent_loop_stopped",
+                    {"reason": "duplicate_tool_call", "tool_call": tool_call.model_dump()},
+                )
+                break
+            seen_calls.add(signature)
+            self._emit_tool_status(tool_call, stream_events, status_callback)
+            tool_result = self._execute_tool_call(request, chat_session, tool_call)
+            self._record_tool_result_in_slots(chat_session, tool_call, tool_result)
             if stream_events is not None:
                 stream_events.append(
                     (
                         "tool_result",
                         self._tool_activity_payload(
-                            request.tenant_id, step_result.tool_call.name, tool_result
+                            request.tenant_id, tool_call.name, tool_result
                         ),
                     )
                 )
-        return active_skill, router_decision, step_result, tool_result
+            self.db.commit()
+            self.db.refresh(chat_session)
+            if not tool_result.success or tool_result_needs_reflection(tool_result):
+                break
+
+            if not model_config:
+                self._advance_after_successful_tool(
+                    request.tenant_id, chat_session, active_skill, step_result, tool_result
+                )
+                self.db.commit()
+                self.db.refresh(chat_session)
+                break
+
+            self._emit_thinking_status(chat_session, stream_events, status_callback)
+            continuation_result = self._run_step_agent_once(
+                request,
+                chat_session,
+                active_skill,
+                tools,
+                model_config,
+                repair_reason="tool_continuation",
+                repair_context=self._tool_continuation_context(
+                    tool_call,
+                    tool_result,
+                    chat_session,
+                    iteration + 1,
+                ),
+            )
+            self._apply_step_result(request.tenant_id, chat_session, continuation_result)
+            self.db.commit()
+            self.db.refresh(chat_session)
+            step_result = continuation_result
+            if step_result.tool_call:
+                self.events.record(
+                    request.tenant_id,
+                    chat_session.id,
+                    "agent_loop_continued",
+                    {
+                        "mode": "model_tool_call",
+                        "iteration": iteration + 1,
+                        "tool_call": step_result.tool_call.model_dump(),
+                    },
+                )
+                continue
+
+            self._advance_after_successful_tool(
+                request.tenant_id,
+                chat_session,
+                active_skill,
+                StepAgentResult(
+                    tool_call=tool_call,
+                    next_step_id=step_result.next_step_id,
+                    is_step_completed=True,
+                ),
+                tool_result,
+            )
+            self.db.commit()
+            self.db.refresh(chat_session)
+            break
+        return step_result, tool_result
+
+    def _tool_continuation_context(
+        self,
+        tool_call: ToolCall,
+        tool_result: ToolResult,
+        chat_session: ChatSession,
+        completed_actions: int,
+    ) -> dict[str, object]:
+        slots = chat_session.slots_json or {}
+        return {
+            "reason": "tool_continuation",
+            "previous_tool_call": tool_call.model_dump(mode="json"),
+            "previous_tool_result": tool_result.model_dump(mode="json"),
+            "accumulated_tool_results": slots.get(TOOL_RESULTS_SLOT, []),
+            "tool_call_history": slots.get(TOOL_CALL_HISTORY_SLOT, []),
+            "completed_tool_actions_this_turn": completed_actions,
+            "max_tool_actions_per_turn": MAX_TOOL_ACTIONS_PER_TURN,
+            "instruction": (
+                "基于工具结果、slots、当前技能步骤和用户目标判断是否已经完成。"
+                "如果还需要工具调用，由模型输出下一次 tool_call；"
+                "如果已经足够回复，输出无 tool_call 的结果并推进到可回复步骤。"
+                "不要重复调用 tool_call_history 中相同 name + arguments 的工具。"
+            ),
+        }
+
+    def _emit_tool_status(
+        self,
+        tool_call: ToolCall,
+        stream_events: list[tuple[str, dict[str, object]]] | None,
+        status_callback: StatusCallback | None,
+    ) -> None:
+        payload = {
+            "phase": "tool",
+            "text": f"正在调用工具 {tool_call.name}",
+            "tool_name": tool_call.name,
+        }
+        if stream_events is not None:
+            stream_events.append(("status", payload))
+        if status_callback is not None:
+            status_callback("tool", {"tool_name": tool_call.name})
+
+    def _emit_thinking_status(
+        self,
+        chat_session: ChatSession,
+        stream_events: list[tuple[str, dict[str, object]]] | None,
+        status_callback: StatusCallback | None,
+    ) -> None:
+        payload = {
+            "phase": "stepping",
+            "text": "正在思考",
+            "active_skill_id": chat_session.active_skill_id,
+            "active_step_id": chat_session.active_step_id,
+            "repair_reason": "tool_continuation",
+        }
+        if stream_events is not None:
+            stream_events.append(("status", payload))
+        if status_callback is not None:
+            status_callback(
+                "stepping",
+                {
+                    "active_skill_id": chat_session.active_skill_id,
+                    "active_step_id": chat_session.active_step_id,
+                    "repair_reason": "tool_continuation",
+                },
+            )
 
     def _run_step_agent_with_context_repair(
         self,
@@ -1119,7 +1277,7 @@ class AgentLoop:
             expected = [str(field) for field in current.get("expected_user_info", [])]
             if any(not self._skill_slot_satisfied(slots, field) for field in expected):
                 break
-            actions = [str(action) for action in current.get("allowed_actions", [])]
+            actions = self._step_actions(current)
             if self._step_can_act_without_more_user_input(actions):
                 break
             next_step = steps[step_index + 1]
@@ -1143,11 +1301,19 @@ class AgentLoop:
         return changed
 
     def _step_can_act_without_more_user_input(self, actions: list[str]) -> bool:
+        actions = [_normalize_action(action) for action in actions]
         return (
             self._actions_allow_final_reply(actions)
             or "handoff_human" in actions
             or any(action.startswith("call_tool:") for action in actions)
         )
+
+    def _step_actions(self, step: dict[str, Any]) -> list[str]:
+        return [
+            action
+            for action in (_normalize_action(item) for item in step.get("allowed_actions", []))
+            if action
+        ]
 
     def _tool_call_from_active_step(
         self, chat_session: ChatSession, active_skill: Skill | None, tools: list[Tool]
@@ -1158,7 +1324,7 @@ class AgentLoop:
         if not step:
             return None
         tools_by_name = {tool.name: tool for tool in tools if tool.enabled}
-        for action in [str(item) for item in step.get("allowed_actions", [])]:
+        for action in self._step_actions(step):
             if not action.startswith("call_tool:"):
                 continue
             tool_name = action.split(":", 1)[1].strip()
@@ -1175,6 +1341,56 @@ class AgentLoop:
             if all(self._slot_has_value(arguments, field) for field in required):
                 return ToolCall(name=tool.name, arguments=arguments)
         return None
+
+    def _record_tool_result_in_slots(
+        self,
+        chat_session: ChatSession,
+        tool_call: ToolCall,
+        tool_result: ToolResult,
+    ) -> None:
+        slots = dict(chat_session.slots_json or {})
+        history = self._tool_call_history(slots)
+        signature = self._tool_call_signature(tool_call)
+        if signature not in {self._tool_history_signature(item) for item in history}:
+            history.append({"tool_name": tool_call.name, "arguments": tool_call.arguments})
+
+        results = slots.get(TOOL_RESULTS_SLOT)
+        result_items = list(results) if isinstance(results, list) else []
+        result_items.append(
+            {
+                "tool_name": tool_call.name,
+                "arguments": tool_call.arguments,
+                "success": tool_result.success,
+                "data": tool_result.data,
+                "error": tool_result.error.model_dump() if tool_result.error else None,
+            }
+        )
+        slots[TOOL_CALL_HISTORY_SLOT] = history
+        slots[TOOL_RESULTS_SLOT] = result_items
+        chat_session.slots_json = slots
+
+    def _tool_call_history(self, slots: dict[str, Any]) -> list[dict[str, Any]]:
+        history = slots.get(TOOL_CALL_HISTORY_SLOT)
+        if not isinstance(history, list):
+            return []
+        return [item for item in history if isinstance(item, dict)]
+
+    def _tool_history_signature(self, item: dict[str, Any]) -> str:
+        return self._tool_signature(
+            str(item.get("tool_name") or ""),
+            item.get("arguments") if isinstance(item.get("arguments"), dict) else {},
+        )
+
+    def _tool_call_signature(self, tool_call: ToolCall) -> str:
+        return self._tool_signature(tool_call.name, tool_call.arguments)
+
+    def _tool_signature(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        return json.dumps(
+            {"tool_name": tool_name, "arguments": arguments},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
 
     def _execute_tool_call(
         self, request: ChatTurnRequest, chat_session: ChatSession, tool_call: ToolCall
@@ -1256,7 +1472,7 @@ class AgentLoop:
             expected = [str(field) for field in step.get("expected_user_info", [])]
             if any(not self._skill_slot_satisfied(slots, field) for field in expected):
                 return step_id
-            actions = [str(action) for action in step.get("allowed_actions", [])]
+            actions = self._step_actions(step)
             if self._actions_allow_final_reply(actions) or any(
                 action.startswith("call_tool:") for action in actions
             ):
@@ -1327,6 +1543,9 @@ class AgentLoop:
         for field in fields:
             if self._slot_has_value(slots, field):
                 arguments[field] = slots[field]
+        used_signatures = {self._tool_history_signature(item) for item in self._tool_call_history(slots)}
+        if self._tool_signature(tool.name, arguments) in used_signatures:
+            return {}
         return arguments
 
     def _should_try_reflection(
@@ -1423,7 +1642,7 @@ class AgentLoop:
         step = self._current_skill_step(skill, chat_session.active_step_id)
         if not step:
             return False
-        actions = [str(action) for action in step.get("allowed_actions", [])]
+        actions = self._step_actions(step)
         if not self._actions_allow_final_reply(actions):
             return False
         required = [str(field) for field in (skill.content_json or {}).get("required_info", [])]
@@ -1466,7 +1685,7 @@ class AgentLoop:
         if any(not self._skill_slot_satisfied(slots, field) for field in required):
             return False
 
-        actions = [str(action) for action in steps[step_index].get("allowed_actions", [])]
+        actions = self._step_actions(steps[step_index])
         if not actions:
             return True
         terminal_actions = {"answer_user", "reply", "handoff_human", "continue_flow"}
@@ -1486,7 +1705,7 @@ class AgentLoop:
         step = self._current_skill_step(skill, chat_session.active_step_id)
         if not step:
             return False
-        actions = [str(action) for action in step.get("allowed_actions", [])]
+        actions = self._step_actions(step)
         if not self._actions_allow_final_reply(actions):
             return False
         expected = [str(field) for field in step.get("expected_user_info", [])]
@@ -1496,6 +1715,7 @@ class AgentLoop:
         )
 
     def _actions_allow_final_reply(self, actions: list[str]) -> bool:
+        actions = [_normalize_action(action) for action in actions]
         return any(action in {"answer_user", "reply"} for action in actions)
 
     def _skill_slot_satisfied(self, slots: dict[str, Any], field: str) -> bool:
