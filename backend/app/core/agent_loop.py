@@ -869,7 +869,8 @@ class AgentLoop:
     ) -> tuple[StepAgentResult, ToolResult | None]:
         tool_result: ToolResult | None = None
         seen_calls: set[str] = set()
-        for iteration in range(MAX_TOOL_ACTIONS_PER_TURN):
+        max_actions = self._get_agent_loop_max_actions(request.tenant_id)
+        for iteration in range(max_actions):
             tool_call = step_result.tool_call
             if not tool_call:
                 break
@@ -917,6 +918,7 @@ class AgentLoop:
                 model_config,
                 repair_reason="tool_continuation",
                 repair_context=self._tool_continuation_context(
+                    request.tenant_id,
                     tool_call,
                     tool_result,
                     chat_session,
@@ -958,12 +960,14 @@ class AgentLoop:
 
     def _tool_continuation_context(
         self,
+        tenant_id: str,
         tool_call: ToolCall,
         tool_result: ToolResult,
         chat_session: ChatSession,
         completed_actions: int,
     ) -> dict[str, object]:
         slots = chat_session.slots_json or {}
+        max_actions = self._get_agent_loop_max_actions(tenant_id)
         return {
             "reason": "tool_continuation",
             "previous_tool_call": tool_call.model_dump(mode="json"),
@@ -971,7 +975,7 @@ class AgentLoop:
             "accumulated_tool_results": slots.get(TOOL_RESULTS_SLOT, []),
             "tool_call_history": slots.get(TOOL_CALL_HISTORY_SLOT, []),
             "completed_tool_actions_this_turn": completed_actions,
-            "max_tool_actions_per_turn": MAX_TOOL_ACTIONS_PER_TURN,
+            "max_tool_actions_per_turn": max_actions,
             "instruction": (
                 "基于工具结果、slots、当前技能步骤和用户目标判断是否已经完成。"
                 "如果还需要工具调用，由模型输出下一次 tool_call；"
@@ -1766,6 +1770,13 @@ class AgentLoop:
         row = self.db.get(UIConfig, tenant_id)
         value = row.reflection_max_rounds if row else DEFAULT_REFLECTION_MAX_ROUNDS
         return max(0, min(int(value), REFLECTION_MAX_ROUNDS_LIMIT))
+
+    def _get_agent_loop_max_actions(self, tenant_id: str) -> int:
+        if not hasattr(self.db, "get"):
+            return MAX_TOOL_ACTIONS_PER_TURN
+        row = self.db.get(UIConfig, tenant_id)
+        value = row.agent_loop_max_actions if row else MAX_TOOL_ACTIONS_PER_TURN
+        return max(1, min(int(value), 20))
 
     def _list_published_skills(self, tenant_id: str) -> list[Skill]:
         return list(

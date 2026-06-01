@@ -73,6 +73,10 @@ def _migrate_sqlite_skill_schema() -> None:
                 conn.execute(
                     text("ALTER TABLE ui_configs ADD COLUMN reflection_max_rounds INTEGER NOT NULL DEFAULT 1")
                 )
+            if "agent_loop_max_actions" not in ui_columns:
+                conn.execute(
+                    text("ALTER TABLE ui_configs ADD COLUMN agent_loop_max_actions INTEGER NOT NULL DEFAULT 6")
+                )
 
         if "skill_feedback" in tables:
             feedback_columns = {column["name"] for column in inspector.get_columns("skill_feedback")}

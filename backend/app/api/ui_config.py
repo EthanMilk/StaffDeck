@@ -19,6 +19,7 @@ class UIConfigRead(BaseModel):
     show_skill_trace: bool
     show_tool_trace: bool
     reflection_max_rounds: int
+    agent_loop_max_actions: int
     updated_at: str
 
     model_config = ConfigDict(from_attributes=True)
@@ -30,6 +31,7 @@ class UIConfigUpdateRequest(BaseModel):
     show_skill_trace: bool = True
     show_tool_trace: bool = True
     reflection_max_rounds: int = Field(default=1, ge=0, le=5)
+    agent_loop_max_actions: int = Field(default=6, ge=1, le=20)
 
 
 def ui_config_read(row: UIConfig) -> UIConfigRead:
@@ -39,6 +41,7 @@ def ui_config_read(row: UIConfig) -> UIConfigRead:
         show_skill_trace=row.show_skill_trace,
         show_tool_trace=row.show_tool_trace,
         reflection_max_rounds=row.reflection_max_rounds,
+        agent_loop_max_actions=row.agent_loop_max_actions,
         updated_at=row.updated_at.isoformat(),
     )
 
@@ -70,6 +73,7 @@ def update_enterprise_ui_config(
     row.show_skill_trace = request.show_skill_trace
     row.show_tool_trace = request.show_tool_trace
     row.reflection_max_rounds = request.reflection_max_rounds
+    row.agent_loop_max_actions = request.agent_loop_max_actions
     row.updated_at = utc_now()
     db.add(row)
     db.commit()

@@ -474,6 +474,53 @@ def test_tool_continuation_is_model_driven_and_accumulates_results() -> None:
     assert len(session.slots_json["_tool_results"]) == 2
 
 
+def test_tool_continuation_respects_configured_action_limit() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.db = FakeDb()
+    loop.events = FakeEvents()
+    loop.tool_executor = _RecordingPriceToolExecutor()
+    loop.step_agent = _FakeStepAgent(
+        [
+            StepAgentResult(
+                tool_call=ToolCall(name="product.price_query", arguments={"product_name": "A3"}),
+                is_step_completed=True,
+            )
+        ]
+    )
+    loop._recent_messages = lambda session: []  # type: ignore[method-assign]
+    loop._tool_activity_payload = lambda tenant_id, name, result: {  # type: ignore[method-assign]
+        "toolName": name,
+        "content": result.model_dump(mode="json"),
+        "success": result.success,
+        "isError": not result.success,
+    }
+    loop._get_agent_loop_max_actions = lambda tenant_id: 1  # type: ignore[method-assign]
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        active_skill_id="price_compare",
+        active_step_id="query_price",
+        slots_json={"product_name_1": "A1", "product_name_2": "A3"},
+    )
+
+    loop._execute_tool_action_cycle(
+        _request("我想比下 A1 和 A3 的价格"),
+        session,
+        _price_compare_skill(),
+        [_price_query_tool()],
+        _model_config(),
+        StepAgentResult(
+            tool_call=ToolCall(name="product.price_query", arguments={"product_name": "A1"}),
+            is_step_completed=True,
+        ),
+        [],
+    )
+
+    assert [call.arguments["product_name"] for call in loop.tool_executor.calls] == ["A1"]
+    assert loop.step_agent.calls == 1
+    assert len(session.slots_json["_tool_results"]) == 1
+
+
 def test_context_repair_does_not_skip_satisfied_tool_step() -> None:
     loop = object.__new__(AgentLoop)
     loop.events = FakeEvents()

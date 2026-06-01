@@ -85,6 +85,7 @@ export type UIConfigRead = {
   show_skill_trace: boolean;
   show_tool_trace: boolean;
   reflection_max_rounds: number;
+  agent_loop_max_actions: number;
   updated_at: string;
 };
 

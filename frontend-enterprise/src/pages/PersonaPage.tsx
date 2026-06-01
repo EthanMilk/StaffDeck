@@ -65,6 +65,7 @@ export default function PersonaPage() {
         show_skill_trace: values.show_skill_trace,
         show_tool_trace: values.show_tool_trace,
         reflection_max_rounds: values.reflection_max_rounds,
+        agent_loop_max_actions: values.agent_loop_max_actions,
       });
       setUiUpdatedAt(row.updated_at);
       message.success('展示设置已保存');
@@ -98,6 +99,7 @@ export default function PersonaPage() {
             show_skill_trace: true,
             show_tool_trace: true,
             reflection_max_rounds: 1,
+            agent_loop_max_actions: 6,
           }}
         >
           <Form.Item
@@ -128,6 +130,14 @@ export default function PersonaPage() {
             rules={[{ required: true, type: 'number', min: 0, max: 5 }]}
           >
             <InputNumber min={0} max={5} step={1} precision={0} />
+          </Form.Item>
+          <Form.Item
+            name="agent_loop_max_actions"
+            label="单轮 Agent 最大动作数"
+            tooltip="控制一次用户输入内模型可连续决策和调用工具的最大次数，用于避免无限循环。"
+            rules={[{ required: true, type: 'number', min: 1, max: 20 }]}
+          >
+            <InputNumber min={1} max={20} step={1} precision={0} />
           </Form.Item>
           <Button type="primary" icon={<SaveOutlined />} loading={uiLoading} onClick={saveUiConfig}>
             保存设置
