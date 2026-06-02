@@ -97,8 +97,8 @@ export default function MemoriesPage() {
           <Form.Item name="user_id" label="用户 ID">
             <Input allowClear placeholder="如 user_demo" />
           </Form.Item>
-          <Form.Item name="q" label="关键词">
-            <Input allowClear placeholder="姓名、订单、偏好" />
+          <Form.Item name="q" label="搜索">
+            <Input allowClear placeholder="用户名、用户 ID、记忆内容" />
           </Form.Item>
           <Space>
             <Button type="primary" icon={<SearchOutlined />} htmlType="submit" loading={loading}>查询</Button>

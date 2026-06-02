@@ -183,7 +183,7 @@ export default function ToolsPage() {
               <Form.Item name="auth" label="Auth JSON"><Input.TextArea rows={3} /></Form.Item>
               <Form.Item name="input_schema" label="Input Schema"><Input.TextArea rows={5} /></Form.Item>
               <Form.Item name="output_schema" label="Output Schema"><Input.TextArea rows={5} /></Form.Item>
-              <Form.Item name="allowed_skills" label="Allowed Skills"><Input placeholder="after_sales_refund,after_sales_exchange" /></Form.Item>
+              <Form.Item name="allowed_skills" label="Allowed Skills"><Input placeholder="skill_id_1,skill_id_2" /></Form.Item>
               <Form.Item name="enabled" label="启用" valuePropName="checked"><Switch /></Form.Item>
             </Form>
           </Card>

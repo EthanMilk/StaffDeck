@@ -17,37 +17,15 @@ PROMPT_PATH = Path(__file__).resolve().parents[1] / "llm" / "prompts" / "skill_d
 STREAM_INTERVAL_SECONDS = 0.035
 CLOSED_LOOP_RESPONSE_RULE = (
     "流程必须形成闭环：不得把“请稍候/正在处理/稍后反馈”作为最终回复；"
-    "需要查询、核实、创建或处理时必须调用已配置工具或转人工，并向用户给出明确结果。"
+    "需要外部事实、外部状态或外部副作用时必须调用已配置工具或转人工，并向用户给出明确结果。"
 )
 ADAPTIVE_FLOW_RESPONSE_RULE = (
     "步骤是可自适应推进的目标，不是固定问答脚本；已由当前用户消息、历史信息或路由意图满足的内容"
     "不得重复追问，应直接推进到下一缺失信息、工具调用或最终回复。"
 )
 CONFIRMATION_FLOW_RESPONSE_RULE = (
-    "涉及购买、下单、创建订单、退款、退货、取消订单或提交申请等动作时，"
-    "调用工具或执行处理前必须先让用户确认关键对象和操作内容。"
-)
-TOOL_PROCESS_KEYWORDS = (
-    "查询",
-    "核实",
-    "生成",
-    "创建",
-    "购买",
-    "下单",
-    "提交",
-    "办理",
-    "处理",
-)
-CONFIRMATION_PROCESS_KEYWORDS = (
-    "购买",
-    "下单",
-    "创建订单",
-    "退款",
-    "退货",
-    "取消订单",
-    "提交申请",
-    "提交",
-    "办理",
+    "涉及外部系统写入、用户资产变更、不可逆操作或明确需要确认的处理时，"
+    "调用工具或执行处理前必须先让用户确认关键对象、范围和操作内容。"
 )
 TOOL_STEP_INSTRUCTION_SUFFIX = (
     "工具参数满足时直接调用工具；工具成功后必须基于工具结果进入最终回复，"
@@ -57,12 +35,6 @@ ADAPTIVE_STEP_INSTRUCTION_SUFFIX = (
     "将本步骤作为目标而不是固定话术；如果用户当前消息、历史 slots 或路由意图已满足本步骤，"
     "直接写入对应 slot 并继续到下一缺失信息、工具调用或最终回复，不要重复确认。"
 )
-NUMERIC_EXTRACTION_INSTRUCTION = (
-    "数值字段需要理解口语数字和量词表达，例如“一个/一件/一台/一次”表示 1，"
-    "“两个/两件”表示 2，“三份/3个”表示 3。"
-)
-
-
 class SkillDistiller:
     def distill(self, request: SkillDistillRequest, model_config: ModelConfig) -> SkillDistillResponse:
         payload = self._payload(request)
@@ -125,7 +97,7 @@ class SkillDistiller:
             response_rules.append(CLOSED_LOOP_RESPONSE_RULE)
         if ADAPTIVE_FLOW_RESPONSE_RULE not in response_rules:
             response_rules.append(ADAPTIVE_FLOW_RESPONSE_RULE)
-        if _needs_confirmation(_request_text(request)) and CONFIRMATION_FLOW_RESPONSE_RULE not in response_rules:
+        if _steps_declare_confirmation(steps) and CONFIRMATION_FLOW_RESPONSE_RULE not in response_rules:
             response_rules.append(CONFIRMATION_FLOW_RESPONSE_RULE)
         normalized = {
             "skill_id": _string(draft.get("skill_id"), fallback.skill_id),
@@ -167,31 +139,7 @@ class SkillDistiller:
     ) -> tuple[list[dict[str, Any]], list[str]]:
         normalized_steps = [dict(step) for step in steps]
         warnings: list[str] = []
-        tool_actions = _tool_actions(request.available_tools)
-        has_tool_action = _steps_have_tool_action(normalized_steps)
-        needs_tool = any(keyword in request.raw_content for keyword in TOOL_PROCESS_KEYWORDS)
-
-        if tool_actions and needs_tool and not has_tool_action:
-            insert_at = max(len(normalized_steps) - 1, 0)
-            normalized_steps.insert(
-                insert_at,
-                {
-                    "step_id": _unique_step_id(normalized_steps, "execute_with_tools"),
-                    "name": "执行工具处理",
-                    "instruction": (
-                        "根据技能目标、已收集信息和工具 input_schema 选择合适工具处理；"
-                        f"{TOOL_STEP_INSTRUCTION_SUFFIX}"
-                    ),
-                    "expected_user_info": [],
-                    "allowed_actions": ["continue_flow", *tool_actions],
-                },
-            )
-            warnings.append("原始改写未包含工具步骤，已按可用工具补充闭环执行步骤。")
-
-        if tool_actions and _needs_confirmation(_request_text(request)):
-            inserted = _ensure_confirmation_before_tool(normalized_steps)
-            if inserted:
-                warnings.append("原始改写缺少执行前确认步骤，已补充确认步骤。")
+        _attach_declared_confirmation_to_tool_steps(normalized_steps)
 
         for step in normalized_steps:
             _ensure_adaptive_step_instruction(step)
@@ -259,56 +207,21 @@ class SkillDistiller:
     def _fallback_card(self, request: SkillDistillRequest) -> SkillCard:
         title = request.title.strip() or "新技能"
         raw = request.raw_content
-        inferred_fields = _infer_required_fields(raw)
-        required_info = [field for field, _label in inferred_fields]
-        required_labels = [label for _field, label in inferred_fields]
-        tool_actions = _tool_actions(request.available_tools)
-        needs_confirmation = bool(tool_actions and _needs_confirmation(_request_text(request)))
+        required_info: list[str] = []
         steps: list[SkillStep] = []
-        if required_info:
-            labels = "、".join(required_labels)
-            steps.append(
-                SkillStep(
-                    step_id="collect_required_info",
-                    name="收集必要信息",
-                    instruction=(
-                        f"询问并记录完成该流程所需的信息：{labels}。如果用户一次提供多个信息，"
-                        "需要同时提取并写入对应 slot，不要重复追问已提供的信息；"
-                        "如果信息已经满足，直接推进到下一缺失信息、工具调用或最终回复；"
-                        f"{NUMERIC_EXTRACTION_INSTRUCTION}"
-                        f"{ADAPTIVE_STEP_INSTRUCTION_SUFFIX}"
-                    ),
-                    expected_user_info=required_info,
-                    allowed_actions=["ask_user", "continue_flow"],
-                )
+        steps.append(
+            SkillStep(
+                step_id="understand_request",
+                name="理解原始流程",
+                instruction=(
+                    "根据原始流程文档理解用户目标、缺失信息和下一步处理方式；"
+                    "不要基于固定话术推进，信息不足时追问，涉及外部事实或外部副作用时转人工或等待人工补充工具配置；"
+                    f"{ADAPTIVE_STEP_INSTRUCTION_SUFFIX}"
+                ),
+                expected_user_info=[],
+                allowed_actions=["ask_user", "continue_flow", "handoff_human"],
             )
-        if needs_confirmation:
-            steps.append(
-                SkillStep(
-                    step_id="confirm_operation",
-                    name="确认操作信息",
-                    instruction=(
-                        "调用工具或执行处理前，向用户确认关键对象、数量、订单号、诉求类型等信息；"
-                        "只有用户明确确认后，才能写入 operation_confirmed=true 并继续。"
-                    ),
-                    expected_user_info=["operation_confirmed"],
-                    allowed_actions=["ask_user", "continue_flow"],
-                )
-            )
-        if tool_actions:
-            steps.append(
-                SkillStep(
-                    step_id="execute_with_tools",
-                    name="执行工具处理",
-                    instruction=(
-                        "根据技能目标、已收集信息和工具 input_schema 选择合适工具处理；"
-                        "只能使用 available_tools 中存在且参数已满足的工具；"
-                        f"{ADAPTIVE_STEP_INSTRUCTION_SUFFIX}"
-                    ),
-                    expected_user_info=[],
-                    allowed_actions=["continue_flow", *tool_actions],
-                )
-            )
+        )
         steps.append(
             SkillStep(
                 step_id="reply_result",
@@ -331,13 +244,10 @@ class SkillDistiller:
             user_utterance_examples=[title],
             goal=_infer_goals(raw),
             required_info=required_info,
-            slot_filling_policy=_default_slot_filling_policy(
-                [*required_info, *(["operation_confirmed"] if needs_confirmation else [])]
-            ),
+            slot_filling_policy=_default_slot_filling_policy(required_info),
             response_rules=[
                 "信息不足时先追问，不要编造事实。",
                 ADAPTIVE_FLOW_RESPONSE_RULE,
-                *([CONFIRMATION_FLOW_RESPONSE_RULE] if needs_confirmation else []),
             ],
             steps=steps,
             interruption_policy={
@@ -364,41 +274,6 @@ def _ensure_adaptive_step_instruction(step: dict[str, Any]) -> None:
     step["instruction"] = f"{instruction}{ADAPTIVE_STEP_INSTRUCTION_SUFFIX}"
 
 
-def _ensure_confirmation_before_tool(steps: list[dict[str, Any]]) -> bool:
-    tool_index = next(
-        (
-            index
-            for index, step in enumerate(steps)
-            if any(str(action).startswith("call_tool:") for action in step.get("allowed_actions", []))
-        ),
-        -1,
-    )
-    if tool_index < 0:
-        return False
-
-    prior_confirmation_fields = _confirmation_fields(steps[:tool_index])
-    if prior_confirmation_fields:
-        _append_tool_confirmation_instruction(steps[tool_index], prior_confirmation_fields)
-        return False
-
-    confirmation_field = "operation_confirmed"
-    steps.insert(
-        tool_index,
-        {
-            "step_id": _unique_step_id(steps, "confirm_operation"),
-            "name": "确认操作信息",
-            "instruction": (
-                "调用工具或执行处理前，向用户确认关键对象、数量、订单号、诉求类型等信息；"
-                f"只有用户明确确认后，才能写入 {confirmation_field}=true 并继续。"
-            ),
-            "expected_user_info": [confirmation_field],
-            "allowed_actions": ["ask_user", "continue_flow"],
-        },
-    )
-    _append_tool_confirmation_instruction(steps[tool_index + 1], [confirmation_field])
-    return True
-
-
 def _confirmation_fields(steps: list[dict[str, Any]]) -> list[str]:
     fields: list[str] = []
     for step in steps:
@@ -407,6 +282,20 @@ def _confirmation_fields(steps: list[dict[str, Any]]) -> list[str]:
             if field.endswith("_confirmed") and field not in fields:
                 fields.append(field)
     return fields
+
+
+def _steps_declare_confirmation(steps: list[dict[str, Any]]) -> bool:
+    return bool(_confirmation_fields(steps))
+
+
+def _attach_declared_confirmation_to_tool_steps(steps: list[dict[str, Any]]) -> None:
+    confirmed_fields: list[str] = []
+    for step in steps:
+        if any(str(action).startswith("call_tool:") for action in step.get("allowed_actions", [])):
+            _append_tool_confirmation_instruction(step, confirmed_fields)
+        for field in _confirmation_fields([step]):
+            if field not in confirmed_fields:
+                confirmed_fields.append(field)
 
 
 def _append_tool_confirmation_instruction(step: dict[str, Any], confirmation_fields: list[str]) -> None:
@@ -485,12 +374,6 @@ def _warning_tool_name(text: str) -> str:
         if match:
             return match.group(1).strip("`，。,. ")
     return ""
-
-
-def _needs_confirmation(raw: str) -> bool:
-    return any(keyword in raw for keyword in CONFIRMATION_PROCESS_KEYWORDS) or (
-        "订单" in raw and any(keyword in raw for keyword in ("生成", "新增", "添加"))
-    )
 
 
 def _request_text(request: Any) -> str:
@@ -608,17 +491,6 @@ def _normalize_actions(actions: list[str]) -> list[str]:
     return normalized
 
 
-def _tool_actions(available_tools: list[dict[str, Any]]) -> list[str]:
-    actions: list[str] = []
-    for tool in available_tools:
-        if not isinstance(tool, dict):
-            continue
-        name = str(tool.get("name") or "").strip()
-        if name:
-            actions.append(f"call_tool:{name}")
-    return actions
-
-
 def _available_tool_names(available_tools: list[dict[str, Any]]) -> set[str]:
     names: set[str] = set()
     for tool in available_tools:
@@ -687,17 +559,6 @@ def _normalize_tool_suggestions(
         suggestions.append(suggestion)
         seen.add(name)
 
-    if not suggestions and _needs_external_tool(request):
-        name = f"{_slugify(_request_title(request), _request_raw_content(request))}.execute"
-        if name not in seen:
-            suggestions.append(
-                _default_tool_suggestion(
-                    name,
-                    request,
-                    "原始流程包含查询、核实、创建或处理类动作，但当前没有可覆盖该动作的已配置工具。",
-                )
-            )
-
     return suggestions
 
 
@@ -720,14 +581,7 @@ def _tool_suggestion_from_dict(item: dict[str, Any], request: Any) -> ToolSugges
 
 def _default_tool_suggestion(name: str, request: Any, reason: str) -> ToolSuggestion:
     title = _request_title(request)
-    raw_content = _request_raw_content(request)
-    required_fields = _infer_required_fields(raw_content)
-    properties = {
-        field: {"type": "string", "description": label}
-        for field, label in required_fields
-    }
-    if not properties:
-        properties = {"query": {"type": "string", "description": "用户请求或业务对象"}}
+    properties = {"query": {"type": "string", "description": "用户请求或业务对象"}}
     return ToolSuggestion(
         name=name,
         display_name=f"{title or name}工具",
@@ -759,63 +613,14 @@ def _tool_method(value: Any, fallback: str = "POST") -> str:
     return method if method in {"GET", "POST", "PUT", "PATCH", "DELETE"} else "POST"
 
 
-def _needs_external_tool(request: Any) -> bool:
-    text = _request_text(request)
-    if not any(keyword in text for keyword in TOOL_PROCESS_KEYWORDS):
-        return False
-    return not _tool_actions(request.available_tools)
-
-
 def _infer_goals(raw: str) -> list[str]:
     clauses = [clause.strip() for clause in _split_clauses(raw) if clause.strip()]
     return clauses or ["理解用户诉求", "收集必要信息", "完成流程处理", "向用户反馈结果"]
 
 
-def _infer_required_fields(raw: str) -> list[tuple[str, str]]:
-    fields: list[tuple[str, str]] = []
-    seen: set[str] = set()
-    for clause in _split_clauses(raw):
-        label = _extract_info_label(clause)
-        if not label:
-            continue
-        field = _field_id(label, len(fields) + 1)
-        if field in seen:
-            continue
-        fields.append((field, label))
-        seen.add(field)
-    return fields
-
-
 def _split_clauses(text: str) -> list[str]:
     normalized = text.replace("\n", "，").replace("；", "，").replace(";", "，").replace(",", "，").replace("。", "，")
     return [part.strip() for part in normalized.split("，")]
-
-
-def _extract_info_label(clause: str) -> str | None:
-    text = clause.strip()
-    for verb in ("获取", "收集", "询问", "确认", "记录", "填写", "提供", "输入"):
-        if text.startswith(verb):
-            label = text[len(verb) :].strip(" ：:，。")
-            label = label.removeprefix("用户").removeprefix("客户").removeprefix("您的").strip(" 的")
-            if label and not any(word in label for word in ("是否", "结果", "流程", "状态")):
-                return label[:24]
-    return None
-
-
-def _field_id(label: str, index: int) -> str:
-    common = {
-        "姓名": "user_name",
-        "名字": "user_name",
-        "联系方式": "contact",
-        "手机号": "phone",
-        "电话": "phone",
-    }
-    for key, value in common.items():
-        if key in label:
-            return value
-    ascii_slug = "".join(char.lower() if char.isalnum() else "_" for char in label if ord(char) < 128)
-    ascii_slug = "_".join(part for part in ascii_slug.split("_") if part)
-    return ascii_slug[:48] if ascii_slug else f"info_{index}"
 
 
 def _slugify(title: str, raw: str) -> str:

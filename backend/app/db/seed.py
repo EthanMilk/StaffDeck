@@ -431,7 +431,7 @@ def _sync_demo_skill_if_stale(existing: Skill, desired: dict) -> None:
             continue
         desired_instruction = str(desired_step.get("instruction") or "")
         current_instruction = str(current_step.get("instruction") or "")
-        if desired_instruction and _demo_instruction_is_stale(current_instruction, desired_instruction):
+        if desired_instruction and not current_instruction:
             current_step["instruction"] = desired_instruction
             changed = True
         for key in ("expected_user_info", "allowed_actions"):
@@ -476,28 +476,6 @@ def _sync_demo_skill_if_stale(existing: Skill, desired: dict) -> None:
     if changed:
         existing.content_json = content
         existing.updated_at = utc_now()
-
-
-def _demo_instruction_is_stale(current: str, desired: str) -> bool:
-    if not current:
-        return True
-    if current == desired:
-        return False
-    if "不要反问" in desired and "不要反问" not in current:
-        return True
-    if "不要再询问" in desired and "不要再询问" not in current:
-        return True
-    if "直接询问订单号" in desired and "直接询问订单号" not in current:
-        return True
-    if "目标而不是固定话术" in desired and "目标而不是固定话术" not in current:
-        return True
-    if "进入确认步骤" in desired and "进入确认步骤" not in current:
-        return True
-    if "order_confirmed" in desired and "order_confirmed" not in current:
-        return True
-    if "purchase_confirmed" in desired and "purchase_confirmed" not in current:
-        return True
-    return False
 
 
 def _merge_slot_filling_policy(current: object, desired: dict) -> dict:

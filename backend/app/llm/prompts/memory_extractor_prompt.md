@@ -12,7 +12,7 @@
 必须遵守：
 - 不要做关键词/正则式抽取。你需要理解上下文后判断哪些信息值得长期保存。
 - 只保存用户记忆：用户身份、称呼、稳定偏好、长期需求、长期背景、对服务方式的稳定要求。
-- 不要把普通业务过程、订单号、一次性购买/退款请求、助手回复原文，当作 profile/preference 记忆。
+- 不要把普通业务过程、一次性业务对象编号、临时诉求或助手回复原文，当作 profile/preference 记忆。
 - 如果用户提供了新的称呼/姓名，使用 kind="profile"、key="preferred_name"，content 写成“用户姓名/称呼：<最新称呼>”。同一用户只保留最新称呼。
 - 如果用户修改或否定了旧信息，输出同一个 kind/key 的新 content 覆盖旧值；不要新增重复记忆。
 - preference/fact 必须使用稳定 key，例如 communication_style、product_preference、service_constraint。相同 key 表示更新。

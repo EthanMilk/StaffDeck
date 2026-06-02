@@ -8,18 +8,20 @@ def test_fallback_card_is_not_domain_hardcoded_for_commerce_text() -> None:
         title="购买商品",
         raw_content="获取用户姓名，查询商品是否存在，生成对应订单号，反馈给用户",
         available_tools=[
-            {"name": "product.purchase", "input_schema": {"required": ["product_id"]}},
-            {"name": "order.add", "input_schema": {"required": ["product_id"]}},
+            {"name": "product.purchase", "input_schema": {"required": ["product_id"]}, "requires_confirmation": True},
+            {"name": "order.add", "input_schema": {"required": ["product_id"]}, "requires_confirmation": True},
         ],
     )
 
     card = SkillDistiller()._fallback_card(request)  # noqa: SLF001
 
     assert card.skill_id != "purchase_product"
-    assert card.required_info == ["user_name"]
-    assert any("operation_confirmed" in step.expected_user_info for step in card.steps)
-    assert any("call_tool:product.purchase" in step.allowed_actions for step in card.steps)
-    assert any("call_tool:order.add" in step.allowed_actions for step in card.steps)
+    assert card.required_info == []
+    assert all("operation_confirmed" not in step.expected_user_info for step in card.steps)
+    assert all(
+        not any(action.startswith("call_tool:") for action in step.allowed_actions)
+        for step in card.steps
+    )
 
 
 def test_slot_policy_targets_model_generated_fields() -> None:
@@ -50,7 +52,7 @@ def test_slot_policy_targets_model_generated_fields() -> None:
     assert response.draft_skill.slot_filling_policy["target_info"] == ["asset_id", "issue_desc"]
 
 
-def test_normalize_response_adds_closed_loop_tool_and_final_reply_steps() -> None:
+def test_normalize_response_does_not_infer_tool_or_confirmation_from_raw_words() -> None:
     request = SkillDistillRequest(
         tenant_id="tenant_demo",
         title="退款处理",
@@ -83,6 +85,65 @@ def test_normalize_response_adds_closed_loop_tool_and_final_reply_steps() -> Non
     response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
     steps = response.draft_skill.steps
 
+    assert all(
+        not any(action.startswith("call_tool:") for action in step.allowed_actions)
+        for step in steps
+    )
+    assert all("operation_confirmed" not in step.expected_user_info for step in steps)
+    assert "answer_user" in steps[-1].allowed_actions
+    assert any("不得把" in rule and "请稍候" in rule for rule in response.draft_skill.response_rules)
+    assert any("自适应推进" in rule for rule in response.draft_skill.response_rules)
+    assert not any("确认关键对象" in rule for rule in response.draft_skill.response_rules)
+    assert all("目标而不是固定话术" in step.instruction for step in steps)
+
+
+def test_normalize_response_preserves_model_declared_tool_and_confirmation() -> None:
+    request = SkillDistillRequest(
+        tenant_id="tenant_demo",
+        title="退款处理",
+        raw_content="获取订单号，核实订单是否符合退款条件，处理退款并反馈给用户",
+        available_tools=[
+            {
+                "name": "order.query",
+                "input_schema": {"required": ["order_id"]},
+            }
+        ],
+    )
+    raw = {
+        "draft_skill": {
+            "skill_id": "refund",
+            "name": "退款处理",
+            "required_info": ["order_id"],
+            "steps": [
+                {
+                    "step_id": "collect_order",
+                    "name": "收集订单",
+                    "instruction": "收集订单号。",
+                    "expected_user_info": ["order_id"],
+                    "allowed_actions": ["ask_user", "continue_flow"],
+                },
+                {
+                    "step_id": "confirm_operation",
+                    "name": "确认操作",
+                    "instruction": "确认关键对象和操作内容。",
+                    "expected_user_info": ["operation_confirmed"],
+                    "allowed_actions": ["ask_user", "continue_flow"],
+                },
+                {
+                    "step_id": "query_order",
+                    "name": "查询订单",
+                    "instruction": "调用工具查询订单状态。",
+                    "expected_user_info": [],
+                    "allowed_actions": ["continue_flow", "call_tool:order.query"],
+                }
+            ],
+            "response_rules": [],
+        }
+    }
+
+    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
+    steps = response.draft_skill.steps
+
     assert any("call_tool:order.query" in step.allowed_actions for step in steps)
     confirm_index = next(
         index for index, step in enumerate(steps) if "operation_confirmed" in step.expected_user_info
@@ -93,6 +154,7 @@ def test_normalize_response_adds_closed_loop_tool_and_final_reply_steps() -> Non
         if any(action.startswith("call_tool:") for action in step.allowed_actions)
     )
     assert confirm_index < tool_index
+    assert "operation_confirmed=true" in steps[tool_index].instruction
     assert "answer_user" in steps[-1].allowed_actions
     assert any("不得把" in rule and "请稍候" in rule for rule in response.draft_skill.response_rules)
     assert any("自适应推进" in rule for rule in response.draft_skill.response_rules)
@@ -177,7 +239,7 @@ def test_normalize_response_turns_steps_into_adaptive_goals() -> None:
     assert all("目标而不是固定话术" in step.instruction for step in response.draft_skill.steps)
 
 
-def test_fallback_card_instructs_numeric_phrase_extraction() -> None:
+def test_fallback_card_uses_conservative_adaptive_steps() -> None:
     request = SkillDistillRequest(
         tenant_id="tenant_demo",
         title="预约服务",
@@ -186,7 +248,12 @@ def test_fallback_card_instructs_numeric_phrase_extraction() -> None:
 
     card = SkillDistiller()._fallback_card(request)  # noqa: SLF001
 
-    assert any("一个/一件/一台" in step.instruction for step in card.steps)
+    assert card.required_info == []
+    assert all(
+        not any(action.startswith("call_tool:") for action in step.allowed_actions)
+        for step in card.steps
+    )
+    assert any("目标而不是固定话术" in step.instruction for step in card.steps)
 
 
 def test_normalize_response_suggests_missing_tools_and_removes_unknown_actions() -> None:
