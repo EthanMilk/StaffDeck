@@ -27,8 +27,9 @@ clarification_question 是给终端用户看的澄清问题，必须像客服一
 6. 如果用户意图不清楚，选择 clarify。
 7. 如果用户要求人工，选择 handoff_human。
 8. 判断只能基于 current_session 与 available_skills 的名称、描述、trigger_intents、步骤；不要依赖平台内置业务假设。
-9. 如果用户当前回答像是在补充当前步骤缺失信息，即使内容很短，也应优先选择 continue_current_skill。
-10. 如果用户想回到已经挂起的技能，选择 suspend_current_and_start_new_skill，并把 target_skill_id 指向那个技能；运行时会负责恢复其上下文。
+9. 如果用户当前回答只是补充当前步骤缺失信息，尤其是很短、明显在回答上一轮问题的内容，应优先选择 continue_current_skill。
+10. 如果用户一句话同时补充当前步骤信息，并明确提出临时咨询、前置查询、比较、核实、取消、售后等另一个可由技能处理的诉求，不要让原则9吞掉复合意图；如果该诉求回答后应回到原流程，选择 answer_related_question_then_resume；如果是独立新业务，选择 suspend_current_and_start_new_skill。
+11. 如果用户想回到已经挂起的技能，选择 suspend_current_and_start_new_skill，并把 target_skill_id 指向那个技能；运行时会负责恢复其上下文。
 
 输出格式：
 {

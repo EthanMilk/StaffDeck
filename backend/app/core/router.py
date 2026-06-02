@@ -28,10 +28,19 @@ class Router:
                     "skill_id": skill.skill_id,
                     "name": skill.name,
                     "description": skill.description,
+                    "business_domain": skill.content_json.get("business_domain"),
                     "trigger_intents": skill.content_json.get("trigger_intents", []),
+                    "required_info": skill.content_json.get("required_info", []),
                     "steps": [
-                        {"step_id": step.get("step_id"), "name": step.get("name")}
+                        {
+                            "step_id": step.get("step_id"),
+                            "name": step.get("name"),
+                            "instruction": step.get("instruction"),
+                            "expected_user_info": step.get("expected_user_info", []),
+                            "allowed_actions": step.get("allowed_actions", []),
+                        }
                         for step in skill.content_json.get("steps", [])
+                        if isinstance(step, dict)
                     ],
                 }
                 for skill in available_skills
