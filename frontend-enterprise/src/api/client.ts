@@ -5,7 +5,7 @@ const resolveApiBase = () => {
     if (configured && !configured.includes('127.0.0.1') && !configured.includes('localhost')) {
       return configured;
     }
-    return `${protocol}//${hostname}:45615`;
+    return `${protocol}//${hostname}:8000`;
   }
 
   if (import.meta.env.VITE_API_BASE_URL) {

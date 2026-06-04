@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     demo_model_name: str = "qwen3.6-27b"
     demo_model_api_key: str = ""
     tool_timeout_seconds: float = 8.0
-    cors_origins: str = "http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174,http://47.116.122.5:41009,http://47.116.122.5:49012"
+    cors_origins: str = "http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174,http://39.102.210.77:5173,http://39.102.210.77:5174"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
