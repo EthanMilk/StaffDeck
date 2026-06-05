@@ -1724,26 +1724,22 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
                                 <span>{suggestion.url || '-'}</span>
                               </div>
                             </div>
-                            <div className="skill-tool-suggestion-detail-action">
+                            <div className="skill-tool-suggestion-actions">
                               <Tooltip title="查看详情">
                                 <Button
                                   className="skill-tool-action"
                                   size="small"
-                                  shape="circle"
                                   type="text"
                                   icon={<InfoCircleOutlined />}
                                   onClick={() => openToolDetail(item.id, suggestion)}
                                 />
                               </Tooltip>
-                            </div>
-                            <div className="skill-tool-suggestion-actions">
                               {toolSuggestionResolution(suggestion) === 'new_candidate' && suggestion.status !== 'accepted' && suggestion.status !== 'created' && suggestion.status !== 'rejected' && (
                                 <>
                                   <Tooltip title="确认新增">
                                     <Button
                                       className="skill-tool-action confirm"
                                       size="small"
-                                      shape="circle"
                                       type="text"
                                       disabled={!suggestion.probe_result?.success}
                                       icon={<CheckCircleOutlined />}
@@ -1754,7 +1750,6 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
                                     <Button
                                       className="skill-tool-action reject"
                                       size="small"
-                                      shape="circle"
                                       type="text"
                                       icon={<CloseCircleOutlined />}
                                       onClick={() => rejectToolSuggestion(item.id, suggestion.name)}
