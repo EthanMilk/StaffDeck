@@ -9,6 +9,7 @@ from typing import Any, Iterator
 from app.db.models import ModelConfig
 from app.llm import LLMClient, LLMError
 from app.skills.llm_limits import skill_model_config
+from app.skills.skill_reflection import reflect_skill_response, reflect_skill_response_stream
 from app.skills.skill_schema import SkillCard, SkillRewriteRequest, SkillRewriteResponse
 from app.skills.skill_distiller import (
     _compact_warnings,
@@ -39,10 +40,20 @@ STEP_FIELDS = {"step_id", "name", "instruction", "expected_user_info", "allowed_
 
 class SkillEditor:
     def rewrite(self, request: SkillRewriteRequest, model_config: ModelConfig) -> SkillRewriteResponse:
-        raw = LLMClient(skill_model_config(model_config)).generate_json(
-            PROMPT_PATH.read_text(encoding="utf-8"), self._payload(request)
+        client = LLMClient(skill_model_config(model_config))
+        payload = self._payload(request)
+        raw = client.generate_json(PROMPT_PATH.read_text(encoding="utf-8"), payload)
+        response = self._normalize_response(raw, request)
+        return reflect_skill_response(
+            client=client,
+            source_kind="rewrite",
+            source_payload=payload,
+            response=response,
+            candidate_skill=response.draft_skill,
+            current_warnings=response.warnings,
+            tool_suggestions=response.tool_suggestions,
+            normalize_response=lambda review_raw: self._normalize_response(review_raw, request),
         )
-        return self._normalize_response(raw, request)
 
     def stream_text(
         self, request: SkillRewriteRequest, model_config: ModelConfig
@@ -81,6 +92,16 @@ class SkillEditor:
                     changed_paths=[],
                     warnings=[f"模型未能完成局部改写：{repair_exc}"],
                 )
+        response = yield from reflect_skill_response_stream(
+            client=client,
+            source_kind="rewrite",
+            source_payload=payload,
+            response=response,
+            candidate_skill=response.draft_skill,
+            current_warnings=response.warnings,
+            tool_suggestions=response.tool_suggestions,
+            normalize_response=lambda review_raw: self._normalize_response(review_raw, request),
+        )
         for chunk in _chunk_text(response.assistant_message):
             yield {"event": "message_chunk", "data": {"content": chunk}}
             sleep(STREAM_INTERVAL_SECONDS)

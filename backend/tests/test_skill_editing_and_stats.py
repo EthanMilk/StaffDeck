@@ -252,6 +252,8 @@ def test_skill_editor_stream_repairs_invalid_json_once(monkeypatch) -> None:
 
     def fake_text(self, _system_prompt: str, payload: dict):  # noqa: ANN001
         assert self.max_output_tokens == 16384
+        if payload.get("reflection_round"):
+            return _reflection_passes_json()
         assert "previous_error" in payload
         return json.dumps(
             {
@@ -884,11 +886,17 @@ def test_skill_distiller_stream_uses_generation_status(monkeypatch) -> None:
             "interruption_policy": {},
             "response_rules": []
           },
-          "warnings": []
+            "warnings": []
         }
         """
 
+    def fake_text(self, _system_prompt: str, payload: dict):  # noqa: ANN001
+        assert self.max_output_tokens == 16384
+        assert payload.get("reflection_round") == 1
+        return _reflection_passes_json()
+
     monkeypatch.setattr("app.skills.skill_distiller.LLMClient.generate_text_stream", fake_stream)
+    monkeypatch.setattr("app.skills.skill_distiller.LLMClient.generate_text", fake_text)
     events = list(
         SkillDistiller().stream_text(
             SkillDistillRequest(
@@ -904,7 +912,101 @@ def test_skill_distiller_stream_uses_generation_status(monkeypatch) -> None:
     assert "正在改写技能" not in status_texts
     assert "模型正在规划技能结构" in status_texts
     assert "正在校验模型输出结构" in status_texts
+    assert any(text.startswith("正在反思技能结果") for text in status_texts)
     assert "已完成 Skill Card 结构化" in status_texts
+
+
+def test_skill_distiller_stream_reflects_and_repairs_generated_skill(monkeypatch) -> None:
+    def fake_stream(self, _system_prompt: str, _payload: dict):  # noqa: ANN001
+        assert self.max_output_tokens == 16384
+        yield json.dumps(
+            {
+                "draft_skill": {
+                    "skill_id": "skill_purchase",
+                    "name": "购买流程",
+                    "version": "1.0.0",
+                    "business_domain": "ecommerce",
+                    "description": "收集商品并反馈。",
+                    "trigger_intents": ["buy_product"],
+                    "user_utterance_examples": ["我要买 A1"],
+                    "goal": ["收集商品", "创建订单"],
+                    "required_info": ["product_id"],
+                    "slot_filling_policy": {"enabled": True},
+                    "response_rules": [],
+                    "steps": [
+                        {
+                            "step_id": "collect_product",
+                            "name": "收集商品",
+                            "instruction": "收集商品。",
+                            "expected_user_info": ["product_id"],
+                            "allowed_actions": ["ask_user"],
+                        }
+                    ],
+                    "interruption_policy": {},
+                },
+                "warnings": [],
+            },
+            ensure_ascii=False,
+        )
+
+    def fake_text(self, _system_prompt: str, payload: dict):  # noqa: ANN001
+        assert self.max_output_tokens == 16384
+        if payload.get("reflection_round") == 1:
+            revised = dict(payload["candidate_skill"])
+            revised["steps"] = [
+                *revised["steps"],
+                {
+                    "step_id": "reply_result",
+                    "name": "反馈结果",
+                    "instruction": "给用户明确最终回复。",
+                    "expected_user_info": [],
+                    "allowed_actions": ["answer_user"],
+                },
+            ]
+            return json.dumps(
+                {
+                    "passed": False,
+                    "summary": "缺少闭环回复步骤，已补充。",
+                    "rubric_results": [
+                        {
+                            "name": "closed_loop",
+                            "passed": False,
+                            "finding": "没有最终回复步骤",
+                            "origin": "generated_skill",
+                        }
+                    ],
+                    "warnings": [],
+                    "source_warnings": [],
+                    "draft_skill": revised,
+                    "tool_mentions": [],
+                },
+                ensure_ascii=False,
+            )
+        if payload.get("reflection_round") == 2:
+            return _reflection_passes_json()
+        raise AssertionError(f"unexpected payload: {payload}")
+
+    monkeypatch.setattr("app.skills.skill_distiller.LLMClient.generate_text_stream", fake_stream)
+    monkeypatch.setattr("app.skills.skill_distiller.LLMClient.generate_text", fake_text)
+
+    events = list(
+        SkillDistiller().stream_text(
+            SkillDistillRequest(
+                tenant_id="tenant_demo",
+                title="购买流程",
+                raw_content="用户购买商品后需要得到明确订单结果",
+            ),
+            _model_config(),
+        )
+    )
+    status_texts = [event["data"]["text"] for event in events if event["event"] == "status"]
+    complete = next(event for event in events if event["event"] == "complete")
+
+    assert any("反思发现：闭环能力" in text for text in status_texts)
+    assert any("反思未通过，正在应用第 1 轮修正" in text for text in status_texts)
+    assert any("反思通过" in text for text in status_texts)
+    assert any(event["event"] == "chunk_reset" for event in events)
+    assert [step["step_id"] for step in complete["data"]["draft_skill"]["steps"]][-1] == "reply_result"
 
 
 def test_skill_distiller_stream_repairs_invalid_json_with_model(monkeypatch) -> None:
@@ -914,6 +1016,8 @@ def test_skill_distiller_stream_repairs_invalid_json_with_model(monkeypatch) -> 
 
     def fake_text(self, _system_prompt: str, payload: dict):  # noqa: ANN001
         assert self.max_output_tokens == 16384
+        if payload.get("reflection_round"):
+            return _reflection_passes_json()
         assert payload["repair_attempt"] == 1
         return json.dumps(
             {
@@ -986,6 +1090,8 @@ def test_skill_distiller_stream_uses_staged_generation_after_repair_failure(monk
 
     def fake_text(self, _system_prompt: str, payload: dict):  # noqa: ANN001
         assert self.max_output_tokens == 16384
+        if payload.get("reflection_round"):
+            return _reflection_passes_json()
         if "repair_instruction" in payload:
             return "still invalid"
         mode = payload.get("generation_mode")
@@ -1112,6 +1218,27 @@ def _skill_card() -> SkillCard:
         ],
         interruption_policy={},
         response_rules=[],
+    )
+
+
+def _reflection_passes_json() -> str:
+    return json.dumps(
+        {
+            "passed": True,
+            "summary": "通过",
+            "rubric_results": [
+                {"name": "source_alignment", "passed": True, "finding": "", "origin": "generated_skill"},
+                {"name": "closed_loop", "passed": True, "finding": "", "origin": "generated_skill"},
+                {"name": "adaptive_progression", "passed": True, "finding": "", "origin": "generated_skill"},
+                {"name": "tool_grounding", "passed": True, "finding": "", "origin": "generated_skill"},
+                {"name": "side_effect_confirmation", "passed": True, "finding": "", "origin": "generated_skill"},
+                {"name": "interruption_and_recovery", "passed": True, "finding": "", "origin": "generated_skill"},
+            ],
+            "warnings": [],
+            "source_warnings": [],
+            "tool_mentions": [],
+        },
+        ensure_ascii=False,
     )
 
 
