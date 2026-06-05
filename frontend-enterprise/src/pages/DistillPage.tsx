@@ -1,10 +1,14 @@
 import {
+  ApiOutlined,
   BranchesOutlined,
+  CheckCircleOutlined,
   CheckOutlined,
   CodeOutlined,
   CloseOutlined,
+  CloseCircleOutlined,
   DownOutlined,
   FileTextOutlined,
+  InfoCircleOutlined,
   LoadingOutlined,
   RightOutlined,
   SaveOutlined,
@@ -34,6 +38,7 @@ type ChatItem = {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  attachments?: ChatAttachment[];
   outgoingText?: string;
   createdAt?: string;
   thinking?: 'running' | 'done';
@@ -44,6 +49,12 @@ type ChatItem = {
   actionState?: 'pending' | 'confirmed' | 'rejected';
   snapshotBefore?: DistillHistorySnapshot;
   operations?: DistillHistoryOperation[];
+};
+
+type ChatAttachment = {
+  id: string;
+  name: string;
+  type: string;
 };
 
 type ToolSuggestionItem = ToolSuggestion & {
@@ -375,13 +386,14 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
   async function send() {
     const text = buildOutgoingText(input, readyAttachments);
     if (!text || loading || uploadingFile) return;
-    const displayText = buildDisplayText(input, readyAttachments);
+    const displayText = input.trim();
+    const displayAttachments = buildDisplayAttachments(readyAttachments);
     const snapshotBefore = createHistorySnapshot();
     const confirmedDraft = pendingChange?.nextDraft || draft;
     confirmPendingChange(false);
     setInput('');
     setAttachments([]);
-    pushMessage('user', displayText, { outgoingText: text, snapshotBefore });
+    pushMessage('user', displayText, { attachments: displayAttachments, outgoingText: text, snapshotBefore });
     if (!confirmedDraft) {
       await createDraftFromText(text);
       return;
@@ -1353,7 +1365,11 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
             <div className="skill-chat-messages" ref={chatMessagesRef}>
               {messages.map((item, index) => (
                 <div key={item.id} className={`skill-chat-row ${item.role}`}>
-                  <div className={`skill-chat-bubble ${editingMessage?.id === item.id ? 'editing' : ''}`}>
+                  <div
+                    className={`skill-chat-bubble ${editingMessage?.id === item.id ? 'editing' : ''} ${
+                      item.role === 'user' && item.attachments?.length ? 'has-attachments' : ''
+                    }`}
+                  >
                     {item.role === 'assistant' && item.thinking && (
                       <div className={`skill-chat-thinking-block ${item.thinking}`}>
                         <button
@@ -1399,7 +1415,26 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
                       </div>
                     ) : (
                       <>
-                        {item.content ? <div className="skill-chat-content">{item.content}</div> : item.thinking === 'running' ? null : '正在处理...'}
+                        {item.attachments && item.attachments.length > 0 && (
+                          <div className="skill-chat-attachments">
+                            {item.attachments.map((attachment) => (
+                              <div className="skill-chat-attachment" key={attachment.id} title={attachment.name}>
+                                <span className="skill-chat-attachment-icon">
+                                  <FileTextOutlined />
+                                </span>
+                                <span className="skill-chat-attachment-main">
+                                  <span className="skill-chat-attachment-name">{attachment.name}</span>
+                                  <span className="skill-chat-attachment-type">{attachment.type}</span>
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {item.content ? (
+                          <div className="skill-chat-content">{item.content}</div>
+                        ) : item.role === 'assistant' && item.thinking === 'running' ? null : item.role === 'assistant' ? (
+                          '正在处理...'
+                        ) : null}
                         {item.role === 'user' && (
                           <div className="skill-chat-hover-actions">
                             <span className="skill-chat-time">{formatMessageTime(item.createdAt)}</span>
@@ -1418,62 +1453,92 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
                         )}
                       </>
                     )}
-                    {item.warnings && item.warnings.length > 0 && (
-                      <div className="skill-chat-warning">
-                        <div className="skill-chat-warning-title">
-                          <WarningOutlined />
-                          <span>提示</span>
-                        </div>
-                        {compactWarningItems(item.warnings).map((warning, index) => (
-                          <div key={`${item.id}_warning_${index}`} className="skill-chat-warning-item" title={warning.title}>
-                            {warning.text}
+                    {item.warnings && item.warnings.length > 0 && (() => {
+                      const warnings = compactWarningItems(item.warnings || [], item.toolSuggestions);
+                      if (warnings.length === 0) return null;
+                      return (
+                        <div className="skill-chat-warning">
+                          <div className="skill-chat-warning-title">
+                            <WarningOutlined />
+                            <span>提示</span>
                           </div>
-                        ))}
-                      </div>
-                    )}
+                          {warnings.map((warning, index) => (
+                            <div key={`${item.id}_warning_${index}`} className="skill-chat-warning-item" title={warning.title}>
+                              {warning.text}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
                     {item.toolSuggestions && item.toolSuggestions.length > 0 && (
                       <div className="skill-tool-suggestions">
                         {item.toolSuggestions.map((suggestion) => (
                           <div className="skill-tool-suggestion" key={`${item.id}_${suggestion.name}`}>
-                            <div>
-                              <div className="skill-tool-suggestion-title">
-                                {toolSuggestionTitle(suggestion)}
-                                {toolSuggestionResolution(suggestion) === 'existing' && <Tag color="green">已存在</Tag>}
-                                {toolSuggestionResolution(suggestion) === 'new_candidate' && <Tag color="gold">待新增</Tag>}
-                                {suggestion.probeStatus === 'probing' && <Tag color="processing">测试中</Tag>}
-                                {suggestion.probe_result?.success && <Tag color="green">测试通过</Tag>}
-                                {suggestion.probe_result && !suggestion.probe_result.success && <Tag color="red">测试失败</Tag>}
+                            <div className="skill-tool-suggestion-main">
+                              <div className="skill-tool-suggestion-head">
+                                <div className="skill-tool-suggestion-title">{toolSuggestionTitle(suggestion)}</div>
+                                <span className={`skill-tool-status ${toolSuggestionStatusClass(suggestion)}`}>
+                                  {toolSuggestionStatusText(suggestion)}
+                                </span>
                               </div>
                               <div className="skill-tool-suggestion-desc">
                                 {suggestion.reason || suggestion.description || suggestion.name}
                               </div>
                               <div className="skill-tool-suggestion-meta">
-                                <Tag>{suggestion.method || 'POST'}</Tag>
+                                <span className="skill-tool-method">{suggestion.method || 'POST'}</span>
                                 <span>{suggestion.url || '-'}</span>
                               </div>
                             </div>
-                            <Space>
-                              <Button size="small" onClick={() => openToolDetail(item.id, suggestion)}>
-                                详情
-                              </Button>
+                            <div className="skill-tool-suggestion-actions">
+                              <Tooltip title="查看详情">
+                                <Button
+                                  className="skill-tool-action"
+                                  size="small"
+                                  shape="circle"
+                                  type="text"
+                                  icon={<InfoCircleOutlined />}
+                                  onClick={() => openToolDetail(item.id, suggestion)}
+                                />
+                              </Tooltip>
+                              {toolSuggestionResolution(suggestion) === 'new_candidate' && (
+                                <Tooltip title={suggestion.probe_result ? '再次测试' : '测试接口'}>
+                                  <Button
+                                    className="skill-tool-action"
+                                    size="small"
+                                    shape="circle"
+                                    type="text"
+                                    loading={suggestion.probeStatus === 'probing'}
+                                    icon={<ApiOutlined />}
+                                    onClick={() => void probeToolSuggestion(item.id, suggestion)}
+                                  />
+                                </Tooltip>
+                              )}
                               {toolSuggestionResolution(suggestion) === 'new_candidate' && suggestion.status !== 'created' && suggestion.status !== 'rejected' && (
                                 <>
-                                  <Button
-                                    size="small"
-                                    type="primary"
-                                    disabled={!suggestion.probe_result?.success}
-                                    onClick={() => void confirmToolSuggestion(item.id, suggestion)}
-                                  >
-                                    确认
-                                  </Button>
-                                  <Button size="small" onClick={() => rejectToolSuggestion(item.id, suggestion.name)}>
-                                    拒绝
-                                  </Button>
+                                  <Tooltip title="确认新增">
+                                    <Button
+                                      className="skill-tool-action confirm"
+                                      size="small"
+                                      shape="circle"
+                                      type="text"
+                                      disabled={!suggestion.probe_result?.success}
+                                      icon={<CheckCircleOutlined />}
+                                      onClick={() => void confirmToolSuggestion(item.id, suggestion)}
+                                    />
+                                  </Tooltip>
+                                  <Tooltip title="拒绝">
+                                    <Button
+                                      className="skill-tool-action reject"
+                                      size="small"
+                                      shape="circle"
+                                      type="text"
+                                      icon={<CloseCircleOutlined />}
+                                      onClick={() => rejectToolSuggestion(item.id, suggestion.name)}
+                                    />
+                                  </Tooltip>
                                 </>
                               )}
-                              {suggestion.status === 'created' && <Typography.Text type="secondary">已新增</Typography.Text>}
-                              {suggestion.status === 'rejected' && <Typography.Text type="secondary">已拒绝</Typography.Text>}
-                            </Space>
+                            </div>
                           </div>
                         ))}
                       </div>
@@ -2565,15 +2630,19 @@ function buildOutgoingText(input: string, attachments: UploadAttachment[]): stri
   return [text, attachmentText ? `上传文档内容：\n${attachmentText}` : ''].filter(Boolean).join('\n\n');
 }
 
-function buildDisplayText(input: string, attachments: UploadAttachment[]): string {
-  const text = input.trim();
-  const fileNames = attachments
+function buildDisplayAttachments(attachments: UploadAttachment[]): ChatAttachment[] {
+  return attachments
     .filter((item) => item.status === 'ready')
-    .map((item) => item.name)
-    .join('、');
-  if (text && fileNames) return `${text}\n\n附件：${fileNames}`;
-  if (fileNames) return `附件：${fileNames}`;
-  return text;
+    .map((item) => ({
+      id: item.id,
+      name: item.name,
+      type: attachmentTypeLabel(item.name),
+    }));
+}
+
+function attachmentTypeLabel(filename: string): string {
+  const extension = filename.split('.').pop()?.trim().toUpperCase();
+  return extension || 'FILE';
 }
 
 function formatMessageTime(value?: string): string {
@@ -2655,6 +2724,29 @@ function toolSuggestionResolutionLabel(suggestion: ToolSuggestionItem): string {
   return '可新增候选';
 }
 
+function toolSuggestionStatusText(suggestion: ToolSuggestionItem): string {
+  if (suggestion.status === 'created') return '已新增';
+  if (suggestion.status === 'rejected') return '已拒绝';
+  if (suggestion.probeStatus === 'probing') return '测试中';
+  if (suggestion.probe_result?.success) return '测试通过';
+  if (suggestion.probe_result && !suggestion.probe_result.success) return '测试失败';
+  if (toolSuggestionResolution(suggestion) === 'existing') return '已存在';
+  if (toolSuggestionResolution(suggestion) === 'incomplete') return '信息不足';
+  return '待新增';
+}
+
+function toolSuggestionStatusClass(suggestion: ToolSuggestionItem): string {
+  if (suggestion.status === 'created' || suggestion.probe_result?.success || toolSuggestionResolution(suggestion) === 'existing') {
+    return 'success';
+  }
+  if (suggestion.status === 'rejected' || (suggestion.probe_result && !suggestion.probe_result.success)) {
+    return 'error';
+  }
+  if (suggestion.probeStatus === 'probing') return 'running';
+  if (toolSuggestionResolution(suggestion) === 'incomplete') return 'muted';
+  return 'pending';
+}
+
 function compactWarning(warning: string): string {
   const text = warning.trim();
   const toolName = warningToolName(text);
@@ -2681,9 +2773,22 @@ function compactWarning(warning: string): string {
   return text.length > 82 ? `${text.slice(0, 82)}...` : text;
 }
 
-function compactWarningItems(warnings: string[]): Array<{ text: string; title: string }> {
+function compactWarningItems(
+  warnings: string[],
+  toolSuggestions: ToolSuggestionItem[] | undefined,
+): Array<{ text: string; title: string }> {
+  const suggestionNames = new Set(
+    (toolSuggestions || [])
+      .flatMap((item) => [item.name, item.display_name, item.matched_tool_name, item.matched_tool_display_name])
+      .filter((value): value is string => Boolean(value))
+      .map((value) => value.toLowerCase()),
+  );
   const items: Array<{ text: string; title: string }> = [];
   for (const warning of warnings) {
+    const toolName = warningToolName(warning);
+    if (toolName && !suggestionNames.has(toolName.toLowerCase())) {
+      continue;
+    }
     const text = compactWarning(warning);
     const existing = items.find((item) => item.text === text);
     if (existing) {
