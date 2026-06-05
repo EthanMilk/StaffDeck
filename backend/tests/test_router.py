@@ -103,6 +103,56 @@ def test_router_accepts_ordered_pending_tasks(monkeypatch):
     assert decision.pending_tasks[0].target_step_id == "collect_user_name"
 
 
+def test_router_coerces_answer_alias_before_schema_validation(monkeypatch):
+    def fake_init(self, model_config):  # noqa: ANN001
+        return None
+
+    def fake_generate_json(self, system_prompt, payload):  # noqa: ANN001
+        return {
+            "decision": "answer",
+            "confidence": 0.8,
+            "user_intent": "闲聊问候",
+            "reason": "用户只是问候。",
+        }
+
+    monkeypatch.setattr(LLMClient, "__init__", fake_init)
+    monkeypatch.setattr(LLMClient, "generate_json", fake_generate_json)
+
+    decision = Router().decide(
+        "你好啊",
+        ChatSession(id="session_test", tenant_id="tenant_demo"),
+        [_purchase_skill()],
+        model_config=None,  # type: ignore[arg-type]
+    )
+
+    assert decision.decision == "answer_only"
+
+
+def test_router_downgrades_unknown_decision_to_clarify(monkeypatch):
+    def fake_init(self, model_config):  # noqa: ANN001
+        return None
+
+    def fake_generate_json(self, system_prompt, payload):  # noqa: ANN001
+        return {
+            "decision": "respond_to_user",
+            "confidence": 0.2,
+            "user_intent": "未知",
+        }
+
+    monkeypatch.setattr(LLMClient, "__init__", fake_init)
+    monkeypatch.setattr(LLMClient, "generate_json", fake_generate_json)
+
+    decision = Router().decide(
+        "你好啊",
+        ChatSession(id="session_test", tenant_id="tenant_demo"),
+        [_purchase_skill()],
+        model_config=None,  # type: ignore[arg-type]
+    )
+
+    assert decision.decision == "clarify"
+    assert decision.clarification_question
+
+
 def _purchase_skill() -> Skill:
     return Skill(
         tenant_id="tenant_demo",

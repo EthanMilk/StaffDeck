@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 from app.db.models import ChatSession, ModelConfig, Skill
 from app.llm import LLMClient, LLMError
 from app.session.helpers import public_session
-from app.session.session_schema import RouterDecision
+from app.session.session_schema import RouterDecision, RouterDecisionValue
 
 
 PROMPT_PATH = Path(__file__).resolve().parents[1] / "llm" / "prompts" / "router_prompt.md"
+ALLOWED_DECISIONS = set(get_args(RouterDecisionValue))
 
 
 class Router:
@@ -50,12 +51,42 @@ class Router:
         }
         try:
             raw = LLMClient(model_config).generate_json(PROMPT_PATH.read_text(encoding="utf-8"), payload)
+            raw = self._coerce_raw_decision(raw)
             decision = RouterDecision.model_validate(raw)
         except Exception as exc:
             if isinstance(exc, LLMError):
                 raise
             raise LLMError(f"Router returned invalid JSON schema: {exc}") from exc
         return self._normalize_decision(decision, session, available_skills)
+
+    def _coerce_raw_decision(self, raw: object) -> object:
+        if not isinstance(raw, dict):
+            return raw
+        normalized = dict(raw)
+        decision = str(normalized.get("decision") or "").strip()
+        aliases = {
+            "answer": "answer_only",
+            "answer_user": "answer_only",
+            "chat": "answer_only",
+            "chitchat": "answer_only",
+            "smalltalk": "answer_only",
+            "no_skill": "answer_only",
+            "none": "answer_only",
+            "continue_active_skill": "continue_active",
+            "switch_pending": "switch_to_pending",
+            "start_new_skill": "start_new_task",
+            "handoff_to_human": "handoff",
+            "transfer_to_human": "handoff",
+        }
+        if decision in aliases:
+            normalized["decision"] = aliases[decision]
+        elif decision == "":
+            normalized["decision"] = "clarify"
+        elif decision not in ALLOWED_DECISIONS:
+            normalized["decision"] = "clarify"
+            normalized.setdefault("reason", f"Router returned unsupported decision: {decision}")
+            normalized.setdefault("clarification_question", "请问您想办理哪类业务？")
+        return normalized
 
     def _normalize_decision(
         self, decision: RouterDecision, session: ChatSession, available_skills: list[Skill]
