@@ -1434,6 +1434,73 @@ body.skill-distill-fixed .content {
   white-space: pre-wrap;
 }
 
+.skill-source-edit-field {
+  min-width: 0;
+  width: 100%;
+}
+
+.skill-source-title-input.ant-input,
+.skill-source-step-title-edit .ant-input,
+.skill-source-edit-input.ant-input,
+.skill-source-edit-input.ant-input-textarea,
+.skill-source-edit-input textarea.ant-input {
+  width: 100%;
+  padding: 2px 6px;
+  color: var(--foreground);
+  background: transparent;
+  border-color: transparent;
+  border-radius: 6px;
+  box-shadow: none;
+  line-height: 1.65;
+}
+
+.skill-source-title-input.ant-input {
+  padding: 0 6px;
+  font-size: 18px;
+  font-weight: 780;
+  line-height: 1.5;
+}
+
+.skill-source-step-title-edit {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  font-size: 15px;
+  font-weight: 780;
+}
+
+.skill-source-step-title-edit span {
+  white-space: nowrap;
+}
+
+.skill-source-step-title-edit .ant-input {
+  font-size: 15px;
+  font-weight: 780;
+}
+
+.skill-source-edit-input textarea.ant-input {
+  resize: vertical;
+}
+
+.skill-source-title-input.ant-input:hover,
+.skill-source-step-title-edit .ant-input:hover,
+.skill-source-edit-input.ant-input:hover,
+.skill-source-edit-input textarea.ant-input:hover,
+.skill-source-title-input.ant-input:focus,
+.skill-source-step-title-edit .ant-input:focus,
+.skill-source-edit-input.ant-input:focus,
+.skill-source-edit-input textarea.ant-input:focus {
+  background: #fff;
+  border-color: var(--border);
+  box-shadow: none;
+}
+
+.skill-source-action-preview {
+  margin-top: 6px;
+}
+
 .skill-inline-remove,
 .skill-inline-add {
   padding: 1px 2px;

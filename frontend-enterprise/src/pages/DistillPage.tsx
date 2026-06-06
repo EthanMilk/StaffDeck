@@ -1264,6 +1264,12 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
     });
   }
 
+  function handleSourceEdit(nextDraft: SkillCard, path: string) {
+    setDraft(nextDraft);
+    setDirtyPaths((current) => mergePaths(current, [path]));
+    setHighlightedPaths((current) => mergePaths(current, [path]));
+  }
+
   function toggleAllTargets() {
     setSelectedPaths(allSelected ? [] : allPaths);
   }
@@ -1922,6 +1928,7 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
               toolStatuses={toolStatuses}
               containerRef={sourceScrollRef}
               onToggle={toggleTarget}
+              onEdit={handleSourceEdit}
             />
           ) : (
             <SkillFlow
@@ -2080,6 +2087,7 @@ function SkillSource({
   toolStatuses,
   containerRef,
   onToggle,
+  onEdit,
 }: {
   skill: SkillCard;
   selectedPaths: string[];
@@ -2091,7 +2099,31 @@ function SkillSource({
   toolStatuses: ToolStatusMap;
   containerRef: RefObject<HTMLDivElement>;
   onToggle: (target: TargetSelection) => void;
+  onEdit: (nextDraft: SkillCard, path: string) => void;
 }) {
+  function editBasic(field: keyof SkillCard, value: string | string[]) {
+    const next = cloneSkill(skill);
+    if (field === 'trigger_intents' || field === 'user_utterance_examples' || field === 'goal' || field === 'required_info' || field === 'response_rules') {
+      next[field] = Array.isArray(value) ? value : splitEditableList(value);
+    } else if (field === 'skill_id' || field === 'name' || field === 'version' || field === 'business_domain' || field === 'description') {
+      next[field] = String(value);
+    }
+    onEdit(next, 'basic');
+  }
+
+  function editStep(index: number, field: string, value: string | string[]) {
+    const next = cloneSkill(skill);
+    const currentStep = { ...(next.steps[index] || {}) };
+    currentStep[field] =
+      field === 'expected_user_info' || field === 'allowed_actions'
+        ? Array.isArray(value)
+          ? value
+          : splitEditableList(value)
+        : value;
+    next.steps[index] = currentStep;
+    onEdit(next, stepTargetPath(index));
+  }
+
   return (
     <div className="skill-source-md" ref={containerRef}>
       <div className="skill-source-group-title">基础信息</div>
@@ -2102,17 +2134,17 @@ function SkillSource({
       >
         {selectedPaths.includes('basic') && <span className="selection-mark"><CheckOutlined /></span>}
         <div className="skill-source-rendered">
-          <h2><InlineDiffText path="basic" field="name" value={skill.name} diffs={textDiffs} /></h2>
+          <EditableSourceHeading value={skill.name} onChange={(value) => editBasic('name', value)} />
           <div className="skill-source-meta-list">
-            <SourceTextLine path="basic" field="skill_id" label={fieldLabel('skill_id')} value={skill.skill_id} diffs={textDiffs} />
-            <SourceTextLine path="basic" field="version" label={fieldLabel('version')} value={skill.version} diffs={textDiffs} />
-            <SourceTextLine path="basic" field="business_domain" label={fieldLabel('business_domain')} value={skill.business_domain || '-'} diffs={textDiffs} />
-            <SourceTextLine path="basic" field="description" label={fieldLabel('description')} value={skill.description || '-'} diffs={textDiffs} />
-            <SourceListLine path="basic" field="trigger_intents" label={fieldLabel('trigger_intents')} values={skill.trigger_intents} diffs={textDiffs} />
-            <SourceListLine path="basic" field="user_utterance_examples" label={fieldLabel('user_utterance_examples')} values={skill.user_utterance_examples} diffs={textDiffs} />
-            <SourceListLine path="basic" field="goal" label={fieldLabel('goal')} values={skill.goal} diffs={textDiffs} />
-            <SourceListLine path="basic" field="required_info" label={fieldLabel('required_info')} values={skill.required_info} diffs={textDiffs} />
-            <SourceListLine path="basic" field="response_rules" label={fieldLabel('response_rules')} values={skill.response_rules} diffs={textDiffs} />
+            <EditableSourceTextLine label={fieldLabel('skill_id')} value={skill.skill_id} onChange={(value) => editBasic('skill_id', value)} />
+            <EditableSourceTextLine label={fieldLabel('version')} value={skill.version} onChange={(value) => editBasic('version', value)} />
+            <EditableSourceTextLine label={fieldLabel('business_domain')} value={skill.business_domain || ''} onChange={(value) => editBasic('business_domain', value)} />
+            <EditableSourceTextLine label={fieldLabel('description')} value={skill.description || ''} multiline onChange={(value) => editBasic('description', value)} />
+            <EditableSourceListLine label={fieldLabel('trigger_intents')} values={skill.trigger_intents} onChange={(value) => editBasic('trigger_intents', value)} />
+            <EditableSourceListLine label={fieldLabel('user_utterance_examples')} values={skill.user_utterance_examples} onChange={(value) => editBasic('user_utterance_examples', value)} />
+            <EditableSourceListLine label={fieldLabel('goal')} values={skill.goal} onChange={(value) => editBasic('goal', value)} />
+            <EditableSourceListLine label={fieldLabel('required_info')} values={skill.required_info} onChange={(value) => editBasic('required_info', value)} />
+            <EditableSourceListLine label={fieldLabel('response_rules')} values={skill.response_rules} onChange={(value) => editBasic('response_rules', value)} />
           </div>
         </div>
       </SelectableTarget>
@@ -2130,12 +2162,22 @@ function SkillSource({
             >
               {selectedPaths.includes(path) && <span className="selection-mark"><CheckOutlined /></span>}
               <div className="skill-source-rendered">
-                <h3>Step {index + 1}: <InlineDiffText path={path} field="name" value={String(step.name || '-')} diffs={textDiffs} /></h3>
+                <EditableSourceStepHeading
+                  index={index}
+                  value={String(step.name || '')}
+                  fallback={stepId}
+                  onChange={(value) => editStep(index, 'name', value)}
+                />
                 <div className="skill-source-meta-list">
-                  <SourceTextLine path={path} field="step_id" label={fieldLabel('step_id')} value={stepId} diffs={textDiffs} />
-                  <SourceTextLine path={path} field="instruction" label={fieldLabel('instruction')} value={String(step.instruction || '-')} diffs={textDiffs} />
-                  <SourceListLine path={path} field="expected_user_info" label={fieldLabel('expected_user_info')} values={asStringList(step.expected_user_info)} diffs={textDiffs} />
-                  <SourceActionLine path={path} values={asStringList(step.allowed_actions)} diffs={textDiffs} toolDescriptions={toolDescriptions} toolStatuses={toolStatuses} />
+                  <EditableSourceTextLine label={fieldLabel('step_id')} value={stepId} onChange={(value) => editStep(index, 'step_id', value)} />
+                  <EditableSourceTextLine label={fieldLabel('instruction')} value={String(step.instruction || '')} multiline onChange={(value) => editStep(index, 'instruction', value)} />
+                  <EditableSourceListLine label={fieldLabel('expected_user_info')} values={asStringList(step.expected_user_info)} onChange={(value) => editStep(index, 'expected_user_info', value)} />
+                  <EditableSourceActionLine
+                    values={asStringList(step.allowed_actions)}
+                    toolDescriptions={toolDescriptions}
+                    toolStatuses={toolStatuses}
+                    onChange={(value) => editStep(index, 'allowed_actions', value)}
+                  />
                 </div>
               </div>
             </SelectableTarget>
@@ -2258,25 +2300,132 @@ function PlainChipList({ values }: { values: unknown }) {
   );
 }
 
-function SourceTextLine({
-  path,
-  field,
+function EditableSourceHeading({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <EditableSourceField>
+      <Input className="skill-source-title-input" value={value} onChange={(event) => onChange(event.target.value)} />
+    </EditableSourceField>
+  );
+}
+
+function EditableSourceStepHeading({
+  index,
+  value,
+  fallback,
+  onChange,
+}: {
+  index: number;
+  value: string;
+  fallback: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <EditableSourceField>
+      <div className="skill-source-step-title-edit">
+        <span>Step {index + 1}:</span>
+        <Input value={value || fallback} onChange={(event) => onChange(event.target.value)} />
+      </div>
+    </EditableSourceField>
+  );
+}
+
+function EditableSourceTextLine({
   label,
   value,
-  diffs,
+  multiline = false,
+  onChange,
 }: {
-  path: string;
-  field: string;
   label: string;
   value: string;
-  diffs: TextDiffAnimation[];
+  multiline?: boolean;
+  onChange: (value: string) => void;
 }) {
   return (
     <div className="skill-source-line">
       <span className="skill-source-key">{label}</span>
       <span className="skill-source-value">
-        <InlineDiffText path={path} field={field} value={value} diffs={diffs} />
+        <EditableSourceField>
+          {multiline ? (
+            <Input.TextArea
+              className="skill-source-edit-input"
+              value={value}
+              autoSize={{ minRows: 2, maxRows: 8 }}
+              onChange={(event) => onChange(event.target.value)}
+            />
+          ) : (
+            <Input className="skill-source-edit-input" value={value} onChange={(event) => onChange(event.target.value)} />
+          )}
+        </EditableSourceField>
       </span>
+    </div>
+  );
+}
+
+function EditableSourceListLine({
+  label,
+  values,
+  onChange,
+}: {
+  label: string;
+  values: string[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="skill-source-line">
+      <span className="skill-source-key">{label}</span>
+      <span className="skill-source-value">
+        <EditableSourceField>
+          <Input.TextArea
+            className="skill-source-edit-input"
+            value={values.join('\n')}
+            autoSize={{ minRows: 1, maxRows: 8 }}
+            onChange={(event) => onChange(event.target.value)}
+          />
+        </EditableSourceField>
+      </span>
+    </div>
+  );
+}
+
+function EditableSourceActionLine({
+  values,
+  toolDescriptions,
+  toolStatuses,
+  onChange,
+}: {
+  values: string[];
+  toolDescriptions: ToolDescriptionMap;
+  toolStatuses: ToolStatusMap;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="skill-source-line">
+      <span className="skill-source-key">{fieldLabel('allowed_actions')}</span>
+      <span className="skill-source-value">
+        <EditableSourceField>
+          <Input.TextArea
+            className="skill-source-edit-input"
+            value={values.join('\n')}
+            autoSize={{ minRows: 1, maxRows: 8 }}
+            onChange={(event) => onChange(event.target.value)}
+          />
+          <div className="skill-source-action-preview">
+            <ActionList actions={values} toolDescriptions={toolDescriptions} toolStatuses={toolStatuses} />
+          </div>
+        </EditableSourceField>
+      </span>
+    </div>
+  );
+}
+
+function EditableSourceField({ children }: { children: ReactNode }) {
+  function stop(event: MouseEvent<HTMLDivElement> | KeyboardEvent<HTMLDivElement>) {
+    event.stopPropagation();
+  }
+
+  return (
+    <div className="skill-source-edit-field" onClick={stop} onKeyDown={stop}>
+      {children}
     </div>
   );
 }
@@ -2309,57 +2458,6 @@ function SelectableTarget({
   return (
     <div role="button" tabIndex={0} className={className} onClick={handleClick} onKeyDown={handleKeyDown}>
       {children}
-    </div>
-  );
-}
-
-function SourceListLine({
-  path,
-  field,
-  label,
-  values,
-  diffs,
-}: {
-  path: string;
-  field: string;
-  label: string;
-  values: unknown;
-  diffs: TextDiffAnimation[];
-}) {
-  return (
-    <div className="skill-source-line">
-      <span className="skill-source-key">{label}</span>
-      <span className="skill-source-value">
-        <InlineDiffText path={path} field={field} value={joinPlain(values)} diffs={diffs} />
-      </span>
-    </div>
-  );
-}
-
-function SourceActionLine({
-  path,
-  values,
-  diffs,
-  toolDescriptions,
-  toolStatuses,
-}: {
-  path: string;
-  values: string[];
-  diffs: TextDiffAnimation[];
-  toolDescriptions: ToolDescriptionMap;
-  toolStatuses: ToolStatusMap;
-}) {
-  const activeDiff = diffs.find((diff) => diff.path === path && diff.field === 'allowed_actions');
-  return (
-    <div className="skill-source-line">
-      <span className="skill-source-key">{fieldLabel('allowed_actions')}</span>
-      <span className="skill-source-value">
-        {activeDiff ? (
-          <ActionDiffList diff={activeDiff} currentActions={values} toolDescriptions={toolDescriptions} toolStatuses={toolStatuses} />
-        ) : (
-          <ActionList actions={values} toolDescriptions={toolDescriptions} toolStatuses={toolStatuses} />
-        )}
-      </span>
     </div>
   );
 }
@@ -2934,6 +3032,13 @@ function buildDisplayAttachments(attachments: UploadAttachment[]): ChatAttachmen
 function attachmentTypeLabel(filename: string): string {
   const extension = filename.split('.').pop()?.trim().toUpperCase();
   return extension || 'FILE';
+}
+
+function splitEditableList(value: string): string[] {
+  return value
+    .split(/\n|,|，|、/)
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function formatMessageTime(value?: string): string {
