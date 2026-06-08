@@ -33,7 +33,7 @@ export type ChatTurnResponse = {
 
 export type TraceLineRead = {
   id: string;
-  kind: 'thinking' | 'decision' | 'skill' | 'tool';
+  kind: 'thinking' | 'decision' | 'skill' | 'tool' | 'code';
   text: string;
   detail?: string | null;
   state: 'running' | 'completed' | 'failed';

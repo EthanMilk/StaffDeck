@@ -64,5 +64,13 @@ class GeneralSkillExecutionPlan(BaseModel):
     expected_output: Optional[str] = None
 
 
+class GeneralSkillExecutionReview(BaseModel):
+    result_sufficient: bool = False
+    needs_retry: bool = False
+    terminal: bool = False
+    reason: str = ""
+    repair_hint: Optional[str] = None
+
+
 class GeneralSkillReply(BaseModel):
     reply: str

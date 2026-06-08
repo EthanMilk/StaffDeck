@@ -1,11 +1,11 @@
 import {
   BranchesOutlined,
   CloudSyncOutlined,
+  ConsoleSqlOutlined,
   DeleteOutlined,
   DislikeOutlined,
   DownOutlined,
   EditOutlined,
-  FunctionOutlined,
   LikeOutlined,
   LogoutOutlined,
   MenuFoldOutlined,
@@ -57,7 +57,7 @@ type TraceTool = {
 
 type TraceLine = {
   id: string;
-  kind: 'thinking' | 'decision' | 'skill' | 'tool';
+  kind: 'thinking' | 'decision' | 'skill' | 'tool' | 'code';
   text: string;
   detail?: string;
   code?: string;
@@ -432,6 +432,7 @@ function reflectionTraceDetail(data: Record<string, unknown>): string | undefine
 
 function traceLineAllowed(line: TraceLine, config: UIConfigRead): boolean {
   if (line.kind === 'thinking' || line.kind === 'decision') return config.show_thinking_trace;
+  if (line.kind === 'code') return config.show_thinking_trace;
   if (line.kind === 'skill') return config.show_skill_trace;
   if (line.kind === 'tool') return config.show_tool_trace;
   return true;
@@ -944,15 +945,31 @@ export default function ChatWindowPage() {
           const detail = isOutputChunk && existing?.detail && rawDetail
             ? `${existing.detail}${rawDetail}`
             : rawDetail;
-          const runningPhases = new Set(['planning', 'repair_planning', 'attempt_started', 'running_code', 'replying']);
+          const codePhases = new Set([
+            'plan_created',
+            'attempt_started',
+            'running_code',
+            'stdout_chunk',
+            'stderr_chunk',
+            'code_finished',
+            'code_timeout',
+          ]);
+          const runningPhases = new Set([
+            'planning',
+            'repair_planning',
+            'attempt_started',
+            'running_code',
+            'reflection_reviewing',
+            'replying',
+          ]);
           upsertTraceLine(turnId, {
             id,
-            kind: 'decision',
+            kind: codePhases.has(phase) ? 'code' : 'decision',
             text,
             detail,
             code: code || undefined,
             language: code ? 'python' : undefined,
-            state: runningPhases.has(phase) ? 'running' : phase.includes('failed') ? 'failed' : 'completed',
+            state: runningPhases.has(phase) ? 'running' : phase.includes('failed') || phase === 'code_timeout' ? 'failed' : 'completed',
             collapsible: Boolean(code),
           });
           return;
@@ -1245,6 +1262,8 @@ export default function ChatWindowPage() {
                                     <BranchesOutlined />
                                   ) : line.kind === 'tool' ? (
                                     <ToolOutlined />
+                                  ) : line.kind === 'code' ? (
+                                    <ConsoleSqlOutlined />
                                   ) : (
                                     <CloudSyncOutlined />
                                   )}
@@ -1253,7 +1272,7 @@ export default function ChatWindowPage() {
                                       {line.detail && <span className="turn-trace-detail">{line.detail}</span>}
                                       {line.code && (
                                         <details className="turn-trace-code-wrap" open>
-                                          <summary><FunctionOutlined />查看代码</summary>
+                                          <summary>查看代码</summary>
                                           <pre className="turn-trace-code">
                                             <code data-language={line.language || undefined}>{line.code}</code>
                                           </pre>

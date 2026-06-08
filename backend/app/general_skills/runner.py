@@ -15,6 +15,7 @@ from typing import Any
 from app.db.models import GeneralSkill, ModelConfig, new_id
 from app.general_skills.schema import (
     GeneralSkillExecutionPlan,
+    GeneralSkillExecutionReview,
     GeneralSkillReply,
     GeneralSkillRunResponse,
     GeneralSkillSelection,
@@ -26,6 +27,7 @@ PROMPT_DIR = Path(__file__).resolve().parents[1] / "llm" / "prompts"
 SELECTOR_PROMPT = PROMPT_DIR / "general_skill_selector_prompt.md"
 RUNNER_PROMPT = PROMPT_DIR / "general_skill_runner_prompt.md"
 REPAIR_PROMPT = PROMPT_DIR / "general_skill_repair_prompt.md"
+REVIEW_PROMPT = PROMPT_DIR / "general_skill_review_prompt.md"
 REPLY_PROMPT = PROMPT_DIR / "general_skill_reply_prompt.md"
 RUN_TIMEOUT_SECONDS = 12
 MAX_OUTPUT_CHARS = 20000
@@ -119,6 +121,18 @@ class GeneralSkillRunner:
                 attempt,
             )
             _normalize_failure_diagnostics(structured_result)
+            review = self._review_execution_result(
+                skill,
+                query,
+                model_config,
+                plan,
+                stdout,
+                stderr,
+                structured_result,
+                trace,
+                event_sink,
+                attempt,
+            )
             attempts.append(
                 {
                     "attempt": attempt,
@@ -126,18 +140,20 @@ class GeneralSkillRunner:
                     "stdout": _truncate(stdout),
                     "stderr": _truncate(stderr),
                     "structured_result": structured_result,
+                    "execution_review": review,
                 }
             )
-            needs_retry = _execution_needs_retry(stdout, stderr, structured_result)
+            needs_retry = bool(review.get("needs_retry"))
             if not needs_retry:
-                if structured_result.get("success") is False:
+                if structured_result.get("success") is False or review.get("result_sufficient") is False:
                     _emit(
                         trace,
                         {
                             "phase": "reflection_stopped",
-                            "message": f"第 {attempt} 次运行失败，但模型判断不可继续自动修复",
+                            "message": f"第 {attempt} 次运行结果不足，但模型判断不可继续自动修复",
                             "attempt": attempt,
                             "structured_result": structured_result,
+                            "review": review,
                         },
                         event_sink,
                     )
@@ -168,6 +184,7 @@ class GeneralSkillRunner:
                     "stdout_preview": stdout[:600],
                     "stderr_preview": stderr[:600],
                     "structured_result": structured_result,
+                    "review": review,
                 },
                 event_sink,
             )
@@ -410,6 +427,73 @@ class GeneralSkillRunner:
             raise LLMError("General skill reply is empty")
         _emit(trace, {"phase": "reply_created", "message": "已生成最终回复"}, event_sink)
         return reply
+
+    def _review_execution_result(
+        self,
+        skill: GeneralSkill,
+        query: str,
+        model_config: ModelConfig,
+        plan: GeneralSkillExecutionPlan,
+        stdout: str,
+        stderr: str,
+        structured_result: dict[str, Any],
+        trace: list[dict[str, Any]],
+        event_sink: TraceSink | None,
+        attempt: int,
+    ) -> dict[str, Any]:
+        _emit(
+            trace,
+            {
+                "phase": "reflection_reviewing",
+                "message": f"正在校验第 {attempt} 次运行结果",
+                "attempt": attempt,
+            },
+            event_sink,
+        )
+        payload = {
+            "query": query,
+            "skill": {
+                "slug": skill.slug,
+                "name": skill.name,
+                "description": skill.description,
+                "homepage": skill.homepage,
+                "markdown": _truncate(skill.skill_markdown, 6000),
+            },
+            "runner": {
+                "rationale": plan.rationale,
+                "expected_output": plan.expected_output,
+                "code_preview": _truncate(plan.code, 6000),
+            },
+            "attempt": attempt,
+            "stdout": _truncate(stdout),
+            "stderr": _truncate(stderr),
+            "structured_result": structured_result,
+        }
+        try:
+            raw = LLMClient(model_config).generate_json(REVIEW_PROMPT.read_text(encoding="utf-8"), payload)
+            review = GeneralSkillExecutionReview.model_validate(raw).model_dump(mode="json")
+        except Exception as exc:
+            fallback_needs_retry = _execution_needs_retry(stdout, stderr, structured_result)
+            review = {
+                "result_sufficient": not fallback_needs_retry,
+                "needs_retry": fallback_needs_retry,
+                "terminal": False,
+                "reason": f"模型校验失败，使用运行信号兜底判断：{exc}",
+                "repair_hint": "补充运行诊断或调整 runner 输出结构",
+            }
+        if review.get("terminal") is True:
+            review["needs_retry"] = False
+        _emit(
+            trace,
+            {
+                "phase": "reflection_reviewed",
+                "message": "已完成运行结果校验",
+                "attempt": attempt,
+                "review": review,
+            },
+            event_sink,
+        )
+        return review
 
 
 def _truncate(value: str, limit: int = MAX_OUTPUT_CHARS) -> str:

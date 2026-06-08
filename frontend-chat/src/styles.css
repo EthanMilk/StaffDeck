@@ -800,27 +800,22 @@ textarea,
   word-break: break-word;
 }
 
-.turn-trace-summary.running .trace-primary-text::after,
-.turn-trace-line.running .trace-primary-text::after {
-  content: attr(data-text);
-  position: absolute;
-  inset: 0;
+.turn-trace-summary.running .trace-primary-text,
+.turn-trace-line.running .trace-primary-text {
   color: transparent;
   background: linear-gradient(
     90deg,
-    transparent 0%,
-    rgba(126, 139, 134, 0.04) 28%,
-    rgba(88, 101, 95, 0.42) 50%,
-    rgba(126, 139, 134, 0.04) 72%,
-    transparent 100%
+    #8b9691 0%,
+    #8b9691 36%,
+    #56625d 50%,
+    #8b9691 64%,
+    #8b9691 100%
   );
   background-repeat: no-repeat;
-  background-size: 150% 100%;
+  background-size: 240% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   animation: trace-text-flow 3s linear infinite;
-  opacity: 0.72;
-  pointer-events: none;
 }
 
 .turn-trace-summary.completed .anticon:first-child,
@@ -918,26 +913,21 @@ textarea,
   color: var(--muted);
 }
 
-.process-live span::after {
-  content: attr(data-text);
-  position: absolute;
-  inset: 0;
+.process-live span {
   color: transparent;
   background: linear-gradient(
     90deg,
-    transparent 0%,
-    rgba(126, 139, 134, 0.04) 28%,
-    rgba(88, 101, 95, 0.42) 50%,
-    rgba(126, 139, 134, 0.04) 72%,
-    transparent 100%
+    #8b9691 0%,
+    #8b9691 36%,
+    #56625d 50%,
+    #8b9691 64%,
+    #8b9691 100%
   );
   background-repeat: no-repeat;
-  background-size: 150% 100%;
+  background-size: 240% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   animation: trace-text-flow 3s linear infinite;
-  opacity: 0.72;
-  pointer-events: none;
 }
 
 @keyframes spin-soft {
@@ -948,13 +938,13 @@ textarea,
 
 @keyframes trace-text-flow {
   0% {
-    background-position: -180% 0;
+    background-position: 120% 0;
   }
   33.333% {
-    background-position: 180% 0;
+    background-position: -120% 0;
   }
   100% {
-    background-position: 180% 0;
+    background-position: -120% 0;
   }
 }
 
