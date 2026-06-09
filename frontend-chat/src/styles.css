@@ -803,7 +803,8 @@ textarea,
 .turn-trace-summary.running .trace-primary-text,
 .turn-trace-line.running .trace-primary-text {
   color: transparent;
-  background: linear-gradient(
+  background-color: #8b9691;
+  background-image: linear-gradient(
     90deg,
     #8b9691 0%,
     #8b9691 36%,
@@ -811,10 +812,11 @@ textarea,
     #8b9691 64%,
     #8b9691 100%
   );
-  background-repeat: no-repeat;
-  background-size: 240% 100%;
+  background-repeat: repeat-x;
+  background-size: 220% 100%;
   -webkit-background-clip: text;
   background-clip: text;
+  -webkit-text-fill-color: transparent;
   animation: trace-text-flow 3s linear infinite;
 }
 
@@ -915,7 +917,8 @@ textarea,
 
 .process-live span {
   color: transparent;
-  background: linear-gradient(
+  background-color: #8b9691;
+  background-image: linear-gradient(
     90deg,
     #8b9691 0%,
     #8b9691 36%,
@@ -923,10 +926,11 @@ textarea,
     #8b9691 64%,
     #8b9691 100%
   );
-  background-repeat: no-repeat;
-  background-size: 240% 100%;
+  background-repeat: repeat-x;
+  background-size: 220% 100%;
   -webkit-background-clip: text;
   background-clip: text;
+  -webkit-text-fill-color: transparent;
   animation: trace-text-flow 3s linear infinite;
 }
 
@@ -938,13 +942,13 @@ textarea,
 
 @keyframes trace-text-flow {
   0% {
-    background-position: 120% 0;
+    background-position: 115% 0;
   }
   33.333% {
-    background-position: -120% 0;
+    background-position: 0 0;
   }
   100% {
-    background-position: -120% 0;
+    background-position: 0 0;
   }
 }
 
