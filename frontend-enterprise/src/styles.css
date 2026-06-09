@@ -3,25 +3,29 @@
 }
 
 :root {
-  --background: #fbfaf7;
-  --foreground: #1d1d1b;
+  --background: #f7f5ef;
+  --foreground: #20201d;
   --surface: #ffffff;
-  --surface-muted: #f2f0eb;
-  --surface-subtle: #f8f7f4;
-  --border: #e7e1d8;
-  --border-strong: #d6cec2;
-  --muted: #737373;
-  --muted-soft: #a3a3a3;
-  --accent: #04756f;
-  --accent-soft: #e5f4ef;
+  --surface-muted: #eeece4;
+  --surface-subtle: #fbfaf6;
+  --border: #ded7cc;
+  --border-strong: #cfc5b7;
+  --muted: #6d726e;
+  --muted-soft: #9a9b95;
+  --accent: #0f766e;
+  --accent-soft: #e1f1ed;
   --accent-foreground: #ffffff;
   --danger: #dc2626;
   --warning: #b45309;
   --success: #138a55;
-  --shadow-float: 0 18px 44px rgba(45, 39, 30, 0.08);
-  --shadow-soft: 0 8px 26px rgba(45, 39, 30, 0.045);
-  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --ink-soft: #343633;
+  --copper: #a85d32;
+  --olive: #6f7b42;
+  --shadow-float: 0 20px 54px rgba(37, 32, 24, 0.1);
+  --shadow-soft: 0 10px 30px rgba(37, 32, 24, 0.055);
+  --font-body: "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-display: "Avenir Next Condensed", "DIN Alternate", "PingFang SC", system-ui, sans-serif;
+  --font-mono: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
 }
 
 html,
@@ -32,7 +36,9 @@ body,
 
 body {
   margin: 0;
-  background: var(--background);
+  background:
+    linear-gradient(135deg, rgba(15, 118, 110, 0.055), transparent 30%),
+    linear-gradient(180deg, #fbfaf6 0%, var(--background) 58%, #f3f0e8 100%);
   color: var(--foreground);
   font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
@@ -2378,6 +2384,231 @@ code {
   line-height: 1.55;
 }
 
+/* frontend-design polish: distinctive workspace shell, resilient layout, adaptive code surfaces */
+::selection {
+  color: #ffffff;
+  background: var(--accent);
+}
+
+.app-shell,
+.content,
+.skill-distill-page,
+.skill-workbench,
+.general-skill-workbench {
+  max-width: 100%;
+}
+
+.app-shell {
+  background:
+    linear-gradient(90deg, rgba(32, 32, 29, 0.025) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(32, 32, 29, 0.018) 1px, transparent 1px),
+    var(--background);
+  background-size: 28px 28px, 28px 28px, auto;
+}
+
+.content {
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+}
+
+.brand-title,
+.page-title h1,
+.page-title h2,
+.page-title h3,
+.page-title h4,
+.page-title .ant-typography {
+  font-family: var(--font-display);
+}
+
+.brand-mark {
+  border-radius: 8px;
+  background:
+    linear-gradient(145deg, #1f2421, #0f766e);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.sidebar,
+.topbar {
+  background: rgba(249, 247, 241, 0.82) !important;
+}
+
+.ant-card,
+.chat-panel,
+.skill-chat-card,
+.skill-source-card,
+.general-skill-main,
+.general-skill-side {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.75), var(--shadow-soft);
+}
+
+.ant-card:hover {
+  box-shadow: var(--shadow-float);
+}
+
+.ant-btn {
+  letter-spacing: 0;
+}
+
+.ant-btn:not(.ant-btn-link):not(.ant-btn-text) {
+  border-color: var(--border);
+}
+
+.ant-btn-primary {
+  background: #20201d;
+  border-color: #20201d;
+}
+
+.ant-btn-primary:hover,
+.ant-btn-primary:focus {
+  background: #0f766e !important;
+  border-color: #0f766e !important;
+}
+
+.skill-chat-messages,
+.skill-source-md,
+.skill-flow,
+.general-trace-list,
+.general-skill-source-input.ant-input {
+  scrollbar-gutter: stable;
+}
+
+.skill-chat-bubble,
+.feedback-message-bubble,
+.bubble,
+.general-reply-panel,
+.general-trace-item,
+.skill-tool-suggestion {
+  overflow-wrap: anywhere;
+}
+
+.skill-chat-bubble *,
+.feedback-message-bubble *,
+.bubble *,
+.general-trace-item *,
+.skill-tool-suggestion * {
+  max-width: 100%;
+}
+
+.skill-chat-messages {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.24)),
+    #f8f6ef;
+}
+
+.skill-chat-row.user .skill-chat-bubble,
+.skill-chat-row.user .skill-chat-bubble.has-attachments .skill-chat-content {
+  background: #eeece6;
+  border: 1px solid rgba(222, 215, 204, 0.72);
+}
+
+.skill-chat-thinking-details,
+.skill-chat-warning,
+.skill-tool-suggestion,
+.general-trace-item,
+.general-reply-panel,
+.skill-source-section,
+.skill-flow-node {
+  box-shadow: 0 8px 24px rgba(37, 32, 24, 0.035);
+}
+
+.skill-tool-suggestion {
+  padding: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(255, 253, 248, 0.94)),
+    var(--surface);
+}
+
+.skill-tool-suggestion-main {
+  padding-right: 148px;
+}
+
+.skill-tool-suggestion-actions.top {
+  top: 12px;
+  right: 12px;
+  gap: 10px;
+}
+
+.skill-tool-action-group {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: var(--border);
+  box-shadow: 0 4px 12px rgba(37, 32, 24, 0.045);
+}
+
+.skill-tool-action-group.detail {
+  margin-right: 4px;
+}
+
+.skill-tool-action.ant-btn {
+  border: 0 !important;
+  box-shadow: none;
+}
+
+.skill-source-md,
+.skill-flow {
+  padding-right: clamp(6px, 1vw, 14px);
+}
+
+.skill-flow {
+  align-items: center;
+}
+
+.skill-flow-node {
+  width: min(760px, 100%);
+  min-width: 0;
+}
+
+.skill-flow-node p,
+.skill-flow-node small,
+.skill-source-value,
+.general-trace-message {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.general-result-layout,
+.general-trace-detail,
+.general-code-block,
+.general-json-block,
+.tool-suggestion-detail pre,
+.skill-source-section pre,
+pre {
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.general-code-block,
+.general-json-block,
+.tool-suggestion-detail pre,
+.skill-source-section pre {
+  background: #171917;
+  color: #f4f1e8;
+  border-color: rgba(32, 32, 29, 0.18);
+}
+
+.general-code-block code,
+.general-json-block code {
+  color: inherit;
+}
+
+.general-skill-workbench {
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
+}
+
+.general-skill-source-input.ant-input {
+  background:
+    linear-gradient(90deg, rgba(15, 118, 110, 0.035), transparent 18%),
+    #fcfbf7;
+}
+
+.general-trace-list {
+  padding-right: 4px;
+}
+
+.general-trace-code {
+  max-width: 100%;
+}
+
 @media (max-width: 1180px) {
   body.skill-distill-fixed {
     overflow: auto;
@@ -2460,6 +2691,21 @@ code {
 
   .general-skill-side {
     position: static;
+  }
+}
+
+@media (max-width: 980px) {
+  .content {
+    padding: 16px;
+  }
+
+  .general-skill-workbench,
+  .grid-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .card-header-actions {
+    justify-content: flex-start;
   }
 }
 
@@ -2621,6 +2867,51 @@ code {
 
   .skill-flow-node {
     min-height: auto;
+  }
+}
+
+@media (max-width: 560px) {
+  .page-title {
+    align-items: flex-start;
+  }
+
+  .page-title h1,
+  .page-title h2,
+  .page-title h3,
+  .page-title h4,
+  .page-title .ant-typography {
+    font-size: 20px !important;
+  }
+
+  .ant-card-body {
+    padding: 14px !important;
+  }
+
+  .skill-distill-page .skill-chat-card .ant-card-body,
+  .skill-distill-page .skill-source-card .ant-card-body,
+  .general-skill-editor .ant-card-body,
+  .data-card .ant-card-body {
+    padding: 0 !important;
+  }
+
+  .skill-tool-suggestion {
+    padding: 12px;
+  }
+
+  .skill-tool-suggestion-actions {
+    margin-left: 0;
+  }
+
+  .skill-tool-action-group.detail {
+    margin-right: 0;
+  }
+
+  .general-trace-detail,
+  .general-code-block,
+  .general-json-block,
+  .tool-suggestion-detail pre {
+    font-size: 11px;
+    line-height: 1.58;
   }
 }
 

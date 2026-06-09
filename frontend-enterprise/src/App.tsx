@@ -122,7 +122,7 @@ export default function App() {
           colorTextSecondary: '#737373',
           colorBorder: '#e7e1d8',
           fontFamily:
-            '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+            '"Avenir Next", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif',
         },
       }}
     >
