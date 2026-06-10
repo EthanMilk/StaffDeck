@@ -181,6 +181,7 @@ textarea,
 
 .session-pane {
   --sidebar-head-control-size: 32px;
+  --sidebar-head-icon-size: 17px;
   container-type: inline-size;
   min-width: 0;
   height: 100vh;
@@ -221,6 +222,7 @@ textarea,
 
 .sidebar-actions {
   min-width: 0;
+  height: var(--sidebar-head-control-size);
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
@@ -228,19 +230,25 @@ textarea,
   gap: 6px;
 }
 
+.sidebar-head > .ant-btn.icon-button,
 .sidebar-actions .ant-btn.icon-button {
   inline-size: var(--sidebar-head-control-size) !important;
   block-size: var(--sidebar-head-control-size) !important;
   min-inline-size: var(--sidebar-head-control-size) !important;
   max-inline-size: var(--sidebar-head-control-size) !important;
+  min-block-size: var(--sidebar-head-control-size) !important;
+  max-block-size: var(--sidebar-head-control-size) !important;
   flex: 0 0 var(--sidebar-head-control-size);
   display: grid !important;
   place-items: center !important;
   padding: 0 !important;
   line-height: 0 !important;
+  align-self: center;
+  justify-self: center;
   overflow: hidden;
 }
 
+.sidebar-head > .ant-btn.icon-button .ant-btn-icon,
 .sidebar-actions .ant-btn.icon-button .ant-btn-icon {
   width: 100%;
   height: 100%;
@@ -249,6 +257,7 @@ textarea,
   line-height: 0 !important;
 }
 
+.sidebar-head > .ant-btn.icon-button .anticon,
 .sidebar-actions .ant-btn.icon-button .anticon {
   width: 100%;
   height: 100%;
@@ -258,13 +267,10 @@ textarea,
   color: inherit !important;
 }
 
+.sidebar-head > .ant-btn.icon-button .anticon svg,
 .sidebar-actions .ant-btn.icon-button .anticon svg {
-  width: 19px;
-  height: 19px;
-}
-
-.sidebar-actions .sidebar-logout {
-  display: none !important;
+  width: var(--sidebar-head-icon-size);
+  height: var(--sidebar-head-icon-size);
 }
 
 .chat-layout.sidebar-collapsed .sidebar-actions,
@@ -310,6 +316,7 @@ textarea,
   width: var(--sidebar-head-control-size);
   height: var(--sidebar-head-control-size);
   flex: 0 0 var(--sidebar-head-control-size);
+  box-sizing: border-box;
   display: grid;
   place-items: center;
   border-radius: 9px;
