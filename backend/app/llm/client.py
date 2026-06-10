@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast
 from collections.abc import Iterator
 import copy
 import json
+import re
 from typing import Any
 
 from openai import OpenAI
@@ -98,7 +100,7 @@ class LLMClient:
                 text = self.generate_text(system_prompt, next_payload)
             outputs.append(text)
             try:
-                return json.loads(_extract_json(text))
+                return _loads_llm_json(text)
             except json.JSONDecodeError as exc:
                 last_error = exc
                 if attempt >= JSON_REPAIR_ATTEMPTS:
@@ -153,6 +155,92 @@ def _extract_json(text: str) -> str:
     if start >= 0 and end >= start:
         return stripped[start : end + 1]
     return stripped
+
+
+def _loads_llm_json(text: str) -> Any:
+    candidate = _extract_json(text)
+    last_error: json.JSONDecodeError | None = None
+    seen: set[str] = set()
+    for variant in _json_candidate_variants(candidate):
+        if variant in seen:
+            continue
+        seen.add(variant)
+        try:
+            return json.loads(variant)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+    try:
+        literal = ast.literal_eval(candidate)
+    except (SyntaxError, ValueError):
+        literal = None
+    if isinstance(literal, (dict, list)):
+        return literal
+    if last_error is not None:
+        raise last_error
+    raise json.JSONDecodeError("Could not decode JSON", candidate, 0)
+
+
+def _json_candidate_variants(text: str) -> tuple[str, ...]:
+    stripped = text.strip()
+    no_trailing_commas = _remove_trailing_commas(stripped)
+    repaired_strings = _repair_json_string_content(stripped)
+    repaired_strings_no_trailing = _remove_trailing_commas(repaired_strings)
+    return (
+        stripped,
+        no_trailing_commas,
+        repaired_strings,
+        repaired_strings_no_trailing,
+    )
+
+
+def _remove_trailing_commas(text: str) -> str:
+    return re.sub(r",\s*([}\]])", r"\1", text)
+
+
+def _repair_json_string_content(text: str) -> str:
+    output: list[str] = []
+    in_string = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if not in_string:
+            output.append(char)
+            if char == '"':
+                in_string = True
+            index += 1
+            continue
+        if char == "\\":
+            output.append(char)
+            index += 1
+            if index < len(text):
+                output.append(text[index])
+                index += 1
+            continue
+        if char == '"':
+            if _quote_likely_closes_string(text, index):
+                output.append(char)
+                in_string = False
+            else:
+                output.append('\\"')
+            index += 1
+            continue
+        if char == "\n":
+            output.append("\\n")
+        elif char == "\r":
+            output.append("\\r")
+        elif char == "\t":
+            output.append("\\t")
+        else:
+            output.append(char)
+        index += 1
+    return "".join(output)
+
+
+def _quote_likely_closes_string(text: str, quote_index: int) -> bool:
+    index = quote_index + 1
+    while index < len(text) and text[index].isspace():
+        index += 1
+    return index >= len(text) or text[index] in {":", ",", "}", "]"}
 
 
 def _preview(text: str, limit: int = 1200) -> str:

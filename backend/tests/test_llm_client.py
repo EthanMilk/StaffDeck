@@ -180,10 +180,47 @@ def test_generate_json_retry_keeps_original_payload(monkeypatch):
     assert payloads[1]["_json_repair"]["previous_output"] == "not json"
 
 
+def test_generate_json_repairs_unescaped_string_quotes_without_retry(monkeypatch):
+    client = object.__new__(LLMClient)
+    payloads = []
+
+    def fake_generate_text(_system_prompt, payload, response_format=None):  # noqa: ANN001, ARG001
+        payloads.append(payload)
+        return (
+            '{"decision": "start_new_task", "target_skill_id": "purchase", '
+            '"reason": "user_name 在 memory 中已明确为"hm"，不需要追问", '
+            '"slot_hints": {"user_name": "hm"}}'
+        )
+
+    monkeypatch.setattr(client, "generate_text", fake_generate_text)
+
+    result = client.generate_json("prompt", {"query": "我想买东西"})
+
+    assert result == {
+        "decision": "start_new_task",
+        "target_skill_id": "purchase",
+        "reason": 'user_name 在 memory 中已明确为"hm"，不需要追问',
+        "slot_hints": {"user_name": "hm"},
+    }
+    assert len(payloads) == 1
+    assert "_json_repair" not in payloads[0]
+
+
+def test_generate_json_repairs_trailing_commas_and_string_newlines(monkeypatch):
+    client = object.__new__(LLMClient)
+
+    def fake_generate_text(_system_prompt, _payload, response_format=None):  # noqa: ANN001, ARG001
+        return '{"ok": true, "reason": "第一行\n第二行",}'
+
+    monkeypatch.setattr(client, "generate_text", fake_generate_text)
+
+    assert client.generate_json("prompt", {}) == {"ok": True, "reason": "第一行\n第二行"}
+
+
 def test_generate_json_allows_multiple_repair_attempts(monkeypatch):
     client = object.__new__(LLMClient)
     payloads = []
-    calls = iter(["not json", '{"reason": "用户称呼为"hm""}', '{"ok": true}'])
+    calls = iter(["not json", '{"reason": "用户称呼为"', '{"ok": true}'])
 
     def fake_generate_text(_system_prompt, payload):
         payloads.append(payload)
