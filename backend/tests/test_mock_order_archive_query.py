@@ -125,10 +125,11 @@ def test_product_price_query_accepts_display_name_alias() -> None:
     assert result["price"] == 239.0
 
 
-def test_product_price_query_is_not_seeded_as_configured_tool() -> None:
-    tool_names = {tool["name"] for tool in DEMO_TOOLS}
+def test_product_price_query_is_seeded_for_price_compare_skill() -> None:
+    price_tool = next(tool for tool in DEMO_TOOLS if tool["name"] == "product.price_query")
 
-    assert "product.price_query" not in tool_names
+    assert price_tool["allowed_skills_json"] == ["skill_price_compare_001"]
+    assert price_tool["url"].endswith("/api/mock/product/price-query")
 
 
 def test_member_benefit_reconcile_returns_missing_benefits() -> None:

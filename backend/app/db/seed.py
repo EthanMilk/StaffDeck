@@ -201,6 +201,76 @@ PURCHASE_SKILL = {
     ],
 }
 
+PRICE_COMPARE_SKILL = {
+    "skill_id": "skill_price_compare_001",
+    "name": "商品比价服务",
+    "version": "1.0.0",
+    "business_domain": "commerce",
+    "description": "根据用户提供的两个商品名称，查询价格、品牌和规格后给出比价结果。",
+    "trigger_intents": ["商品比价", "价格对比", "比下价格", "比较价格", "哪个更便宜"],
+    "user_utterance_examples": [
+        "帮我比一下 A1 和 A3 的价格",
+        "买之前想看看 A1 和 iPhone 15 哪个更划算",
+        "A1 跟 A3 价格差多少",
+    ],
+    "goal": ["收集两个待比价商品", "分别查询商品价格", "基于工具结果给出比价结论"],
+    "required_info": ["product_name_1", "product_name_2"],
+    "slot_filling_policy": {
+        "enabled": True,
+        "multi_slot_per_turn": True,
+        "extract_scope": "all_skill_expected_user_info",
+        "skip_satisfied_steps": True,
+        "description": "每轮同时抽取用户提到的两个待比较商品名称；如果只给出一个商品，应只追问另一个。",
+        "target_info": ["product_name_1", "product_name_2"],
+    },
+    "steps": [
+        {
+            "step_id": "collect_products",
+            "name": "收集待比价商品",
+            "instruction": (
+                "将本步骤作为目标而不是固定话术；从当前消息、历史对话和 slots 中识别两个待比价商品。"
+                "用户一次给出两个商品时，必须同时写入 product_name_1 和 product_name_2 并继续；"
+                "只缺一个商品时只追问缺失的那个，不要重复确认已给出的商品。"
+            ),
+            "expected_user_info": ["product_name_1", "product_name_2"],
+            "allowed_actions": ["ask_user", "continue_flow"],
+        },
+        {
+            "step_id": "query_prices",
+            "name": "查询商品价格",
+            "instruction": (
+                "当 product_name_1 和 product_name_2 都已获得时，依次调用 product.price_query 查询两个商品。"
+                "不要编造价格；如果只查到一个商品，应继续调用工具查询另一个商品；"
+                "两个工具结果都齐全后进入结果回复。"
+            ),
+            "expected_user_info": [],
+            "allowed_actions": ["call_tool:product.price_query", "continue_flow"],
+        },
+        {
+            "step_id": "reply_compare_result",
+            "name": "反馈比价结果",
+            "instruction": (
+                "基于累计工具结果对比两个商品的价格、品牌和规格，说明哪个更便宜、差价多少；"
+                "如果某个商品未找到或工具失败，应明确说明无法完成该商品的比价，并给出下一步建议。"
+            ),
+            "expected_user_info": [],
+            "allowed_actions": ["answer_user"],
+        },
+    ],
+    "interruption_policy": {
+        "related_question": "可以临时回答，回答后回到当前比价流程。",
+        "unrelated_business": "可以切换到新技能，并保存当前流程进度。",
+        "chitchat": "简短回应后，引导用户继续比价流程。",
+        "user_wants_human": "直接转人工。",
+    },
+    "response_rules": [
+        "不要在没有工具结果时编造价格。",
+        "若工具未查到商品，应明确说明并请用户更换商品名或转人工。",
+        "比价结论必须引用工具返回的价格、品牌或规格信息。",
+        ADAPTIVE_FLOW_RULE,
+    ],
+}
+
 ORDER_QUERY_TOOL = {
     "name": "order.query",
     "display_name": "订单查询",
@@ -336,11 +406,44 @@ ORDER_ADD_TOOL = {
     "enabled": True,
 }
 
+PRODUCT_PRICE_QUERY_TOOL = {
+    "name": "product.price_query",
+    "display_name": "商品价格查询",
+    "description": "根据商品名称查询商品价格、品牌、规格和更新时间，用于商品比价。",
+    "method": "POST",
+    "url": "http://localhost:8000/api/mock/product/price-query",
+    "headers_json": {},
+    "auth_json": {},
+    "input_schema": {
+        "type": "object",
+        "properties": {"product_name": {"type": "string", "description": "商品名称或商品别名，如 A1、A3、iPhone 15"}},
+        "required": ["product_name"],
+    },
+    "output_schema": {
+        "type": "object",
+        "properties": {
+            "product_name": {"type": "string"},
+            "found": {"type": "boolean"},
+            "source": {"type": "string"},
+            "product_id": {"type": "string"},
+            "display_name": {"type": "string"},
+            "brand": {"type": "string"},
+            "price": {"type": "number"},
+            "currency": {"type": "string"},
+            "spec": {"type": "string"},
+            "updated_at": {"type": "string"},
+        },
+    },
+    "allowed_skills_json": ["skill_price_compare_001"],
+    "enabled": True,
+}
+
 DEMO_TOOLS = (
     ORDER_QUERY_TOOL,
     ORDER_ARCHIVE_QUERY_TOOL,
     PRODUCT_PURCHASE_TOOL,
     ORDER_ADD_TOOL,
+    PRODUCT_PRICE_QUERY_TOOL,
 )
 DEFAULT_PERSONA_PROMPT = (
     "你是面壁智能的智能客服，语气专业、清晰、友好。"
@@ -371,7 +474,7 @@ def seed_demo_data(session: Session) -> None:
             )
         )
 
-    for content in (REFUND_SKILL, EXCHANGE_SKILL, PURCHASE_SKILL):
+    for content in (REFUND_SKILL, EXCHANGE_SKILL, PURCHASE_SKILL, PRICE_COMPARE_SKILL):
         existing = session.exec(
             select(Skill).where(
                 Skill.tenant_id == "tenant_demo", Skill.skill_id == content["skill_id"]

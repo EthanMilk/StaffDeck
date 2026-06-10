@@ -40,6 +40,7 @@ class ReflectionAgent:
         if not action_needs_reflection(router_decision, step_result, tool_result):
             return ReflectionDecision()
 
+        available_skill_ids = {skill.skill_id for skill in available_skills}
         payload = {
             "user_message": message,
             "conversation_context": conversation_context or {},
@@ -67,17 +68,7 @@ class ReflectionAgent:
                 }
                 for skill in available_skills
             ],
-            "available_tools": [
-                {
-                    "name": tool.name,
-                    "display_name": tool.display_name,
-                    "description": tool.description,
-                    "input_schema": tool.input_schema,
-                    "allowed_skills": tool.allowed_skills_json,
-                }
-                for tool in available_tools
-                if tool.enabled
-            ],
+            "available_tools": self._available_tool_payload(available_tools, available_skill_ids),
         }
         try:
             raw = LLMClient(model_config).generate_json(PROMPT_PATH.read_text(encoding="utf-8"), payload)
@@ -86,6 +77,34 @@ class ReflectionAgent:
             if isinstance(exc, LLMError):
                 raise
             raise LLMError(f"Reflection agent returned invalid JSON schema: {exc}") from exc
+
+    def _available_tool_payload(
+        self,
+        available_tools: list[Tool],
+        available_skill_ids: set[str],
+    ) -> list[dict[str, object]]:
+        payload: list[dict[str, object]] = []
+        for tool in available_tools:
+            if not tool.enabled:
+                continue
+            raw_allowed = [
+                str(skill_id)
+                for skill_id in (tool.allowed_skills_json or [])
+                if str(skill_id).strip()
+            ]
+            allowed_skills = [skill_id for skill_id in raw_allowed if skill_id in available_skill_ids]
+            if raw_allowed and not allowed_skills:
+                continue
+            payload.append(
+                {
+                    "name": tool.name,
+                    "display_name": tool.display_name,
+                    "description": tool.description,
+                    "input_schema": tool.input_schema,
+                    "allowed_skills": allowed_skills,
+                }
+            )
+        return payload
 
 
 def action_needs_reflection(

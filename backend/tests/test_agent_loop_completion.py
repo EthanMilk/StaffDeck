@@ -1163,6 +1163,26 @@ def _price_query_tool() -> Tool:
     )
 
 
+def test_step_agent_tools_are_scoped_to_active_skill() -> None:
+    loop = object.__new__(AgentLoop)
+    purchase_skill = _purchase_skill()
+    price_skill = _price_compare_skill()
+    price_tool = _price_query_tool()
+    price_tool.allowed_skills_json = [price_skill.skill_id]
+    global_tool = _order_add_tool()
+
+    purchase_tool_names = {
+        tool.name for tool in loop._step_agent_tools(purchase_skill, [price_tool, global_tool])
+    }
+    price_tool_names = {
+        tool.name for tool in loop._step_agent_tools(price_skill, [price_tool, global_tool])
+    }
+
+    assert purchase_tool_names == {"order.add"}
+    assert price_tool_names == {"product.price_query", "order.add"}
+    assert loop._step_agent_tools(None, [price_tool, global_tool]) == []
+
+
 def _refund_skill_with_tool_collect_step() -> Skill:
     return Skill(
         tenant_id="tenant_demo",

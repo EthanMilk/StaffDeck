@@ -218,68 +218,6 @@ class AgentLoop:
             session_state=public_session(chat_session),
         )
 
-    def _try_handle_general_skill_turn(self, request: ChatTurnRequest) -> ChatTurnResponse | None:
-        model_config = self._get_default_model(request.tenant_id)
-        if not model_config:
-            return None
-        selected = self._select_general_skill(request.message, model_config)
-        if not selected:
-            return None
-        skill, selection = selected
-        chat_session = self._get_or_create_session(request)
-        self._append_message(request.tenant_id, chat_session.id, "user", request.message)
-        self.events.record(
-            request.tenant_id,
-            chat_session.id,
-            "user_message_received",
-            {"message": request.message, "channel": request.channel, "user_id": request.user_id},
-        )
-        self.events.record(
-            request.tenant_id,
-            chat_session.id,
-            "general_skill_selected",
-            {
-                "skill_slug": skill.slug,
-                "skill_name": skill.name,
-                "confidence": selection.confidence,
-                "reason": selection.reason,
-            },
-        )
-        run_response = self.general_skill_runner.run(skill, request.message, model_config, request.user_id)
-        self._record_general_skill_run_events(request.tenant_id, chat_session, run_response)
-        step_result, tool_result = self._general_skill_agent_outputs(run_response)
-        reply = self._generate_reply_segment(
-            request.message,
-            chat_session,
-            self._get_active_skill(request.tenant_id, chat_session.active_skill_id),
-            RouterDecision(decision="answer_only", user_intent="通用技能执行结果回复"),
-            step_result,
-            tool_result,
-            model_config,
-            self._get_persona_prompt(request.tenant_id),
-            [],
-            self._conversation_context(chat_session),
-        )
-        self._finalize_turn(chat_session, request.tenant_id, reply)
-        self.db.commit()
-        self.db.refresh(chat_session)
-        self._enqueue_memory_capture(
-            request,
-            chat_session,
-            reply,
-            step_result,
-            tool_result,
-            model_config,
-            self._recent_messages(chat_session),
-        )
-        return ChatTurnResponse(
-            reply=reply,
-            session_id=chat_session.id,
-            step_result=step_result,
-            tool_result=tool_result,
-            session_state=public_session(chat_session),
-        )
-
     def _try_handle_general_skill_after_scene_router(
         self,
         request: ChatTurnRequest,
@@ -2372,7 +2310,24 @@ class AgentLoop:
     def _step_agent_tools(self, active_skill: Skill | None, tools: list[Tool]) -> list[Tool]:
         if active_skill is None:
             return []
-        return tools
+        active_skill_id = active_skill.skill_id
+        scoped_tools: list[Tool] = []
+        for tool in tools:
+            if not getattr(tool, "enabled", False):
+                continue
+            tool_name = str(getattr(tool, "name", "") or "")
+            if tool_name.startswith(GENERAL_SKILL_TOOL_PREFIX):
+                scoped_tools.append(tool)
+                continue
+            allowed_skills = [
+                str(skill_id)
+                for skill_id in (getattr(tool, "allowed_skills_json", None) or [])
+                if str(skill_id).strip()
+            ]
+            if allowed_skills and active_skill_id not in allowed_skills:
+                continue
+            scoped_tools.append(tool)
+        return scoped_tools
 
     def _apply_step_result(
         self,
