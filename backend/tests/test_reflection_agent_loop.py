@@ -351,7 +351,10 @@ def _skill(skill_id: str) -> Skill:
         content_json={
             "skill_id": skill_id,
             "name": skill_id,
-            "steps": [{"step_id": "start", "name": "开始", "allowed_actions": ["ask_user"]}],
+            "nodes": [{"node_id": "start", "type": "collect_info", "name": "开始", "allowed_actions": ["ask_user"]}],
+            "edges": [],
+            "start_node_id": "start",
+            "terminal_node_ids": ["start"],
         },
         status="published",
     )
@@ -365,13 +368,17 @@ def _purchase_skill() -> Skill:
         content_json={
             "skill_id": "purchase",
             "name": "购买商品",
-            "steps": [
+            "nodes": [
                 {
-                    "step_id": "collect_purchase",
+                    "node_id": "collect_purchase",
+                    "type": "collect_info",
                     "name": "收集购买信息",
                     "allowed_actions": ["ask_user", "continue_flow"],
                 }
             ],
+            "edges": [],
+            "start_node_id": "collect_purchase",
+            "terminal_node_ids": ["collect_purchase"],
         },
         status="published",
     )
@@ -385,18 +392,30 @@ def _price_compare_skill() -> Skill:
         content_json={
             "skill_id": "price_compare",
             "name": "商品比价",
-            "steps": [
+            "nodes": [
                 {
-                    "step_id": "collect_products",
+                    "node_id": "collect_products",
+                    "type": "collect_info",
                     "name": "收集待比价商品",
                     "allowed_actions": ["ask_user", "continue_flow"],
                 },
                 {
-                    "step_id": "query_prices",
+                    "node_id": "query_prices",
+                    "type": "tool_call",
                     "name": "查询商品价格",
                     "allowed_actions": ["call_tool:product.price_query", "continue_flow"],
                 },
             ],
+            "edges": [
+                {
+                    "source_node_id": "collect_products",
+                    "next_node_id": "query_prices",
+                    "priority": 0,
+                    "label": "默认推进",
+                }
+            ],
+            "start_node_id": "collect_products",
+            "terminal_node_ids": ["query_prices"],
         },
         status="published",
     )

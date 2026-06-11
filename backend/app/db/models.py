@@ -92,11 +92,26 @@ class GeneralSkill(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class KnowledgeBase(SQLModel, table=True):
+    __tablename__ = "knowledge_bases"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_knowledge_base_tenant_name"),)
+
+    id: str = Field(default_factory=lambda: new_id("kb"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    name: str
+    description: Optional[str] = None
+    status: str = Field(default="active", index=True)
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class KnowledgeDocument(SQLModel, table=True):
     __tablename__ = "knowledge_documents"
 
     id: str = Field(default_factory=lambda: new_id("kdoc"), primary_key=True)
     tenant_id: str = Field(index=True)
+    knowledge_base_id: str = Field(index=True)
     filename: str
     file_type: str = Field(index=True)
     title: Optional[str] = None
@@ -114,6 +129,7 @@ class KnowledgeBucket(SQLModel, table=True):
 
     id: str = Field(default_factory=lambda: new_id("kbucket"), primary_key=True)
     tenant_id: str = Field(index=True)
+    knowledge_base_id: str = Field(index=True)
     document_id: str = Field(index=True)
     bucket_key: str = Field(index=True)
     title: str
@@ -129,6 +145,7 @@ class KnowledgeChunk(SQLModel, table=True):
 
     id: str = Field(default_factory=lambda: new_id("kchunk"), primary_key=True)
     tenant_id: str = Field(index=True)
+    knowledge_base_id: str = Field(index=True)
     document_id: str = Field(index=True)
     bucket_id: str = Field(index=True)
     chunk_index: int = Field(index=True)
@@ -145,6 +162,7 @@ class KnowledgeDiscoverySuggestion(SQLModel, table=True):
 
     id: str = Field(default_factory=lambda: new_id("kdisc"), primary_key=True)
     tenant_id: str = Field(index=True)
+    knowledge_base_id: str = Field(index=True)
     document_id: str = Field(index=True)
     bucket_id: Optional[str] = Field(default=None, index=True)
     suggestion_type: str = Field(index=True)
@@ -162,6 +180,7 @@ class KnowledgeIngestJob(SQLModel, table=True):
 
     id: str = Field(default_factory=lambda: new_id("kjob"), primary_key=True)
     tenant_id: str = Field(index=True)
+    knowledge_base_id: str = Field(index=True)
     document_id: Optional[str] = Field(default=None, index=True)
     filename: str
     status: str = Field(default="queued", index=True)
@@ -215,6 +234,39 @@ class UIConfig(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class AgentProfile(SQLModel, table=True):
+    __tablename__ = "agent_profiles"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_agent_profile_tenant_name"),)
+
+    id: str = Field(default_factory=lambda: new_id("agent"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    name: str
+    description: Optional[str] = None
+    persona_prompt: Optional[str] = None
+    is_overall: bool = Field(default=False, index=True)
+    status: str = Field(default="active", index=True)
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AgentResourceBinding(SQLModel, table=True):
+    __tablename__ = "agent_resource_bindings"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "agent_id", "resource_type", "resource_id", name="uq_agent_resource"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("agentres"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    resource_type: str = Field(index=True)
+    resource_id: str = Field(index=True)
+    status: str = Field(default="active", index=True)
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class Tool(SQLModel, table=True):
     __tablename__ = "tools"
     __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_tool_tenant_name"),)
@@ -262,6 +314,7 @@ class ChatSession(SQLModel, table=True):
     id: str = Field(primary_key=True)
     tenant_id: str = Field(index=True)
     user_id: Optional[str] = Field(default=None, index=True)
+    agent_id: Optional[str] = Field(default=None, index=True)
     title: Optional[str] = None
     active_skill_id: Optional[str] = None
     active_step_id: Optional[str] = None

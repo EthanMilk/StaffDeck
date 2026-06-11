@@ -37,17 +37,23 @@ class Router:
                     "business_domain": skill.content_json.get("business_domain"),
                     "trigger_intents": skill.content_json.get("trigger_intents", []),
                     "required_info": skill.content_json.get("required_info", []),
-                    "steps": [
+                    "nodes": [
                         {
-                            "step_id": step.get("step_id"),
-                            "name": step.get("name"),
-                            "instruction": step.get("instruction"),
-                            "expected_user_info": step.get("expected_user_info", []),
-                            "allowed_actions": step.get("allowed_actions", []),
+                            "node_id": node.get("node_id"),
+                            "type": node.get("type"),
+                            "name": node.get("name"),
+                            "instruction": node.get("instruction"),
+                            "optional": node.get("optional"),
+                            "condition": node.get("condition"),
+                            "expected_user_info": node.get("expected_user_info", []),
+                            "allowed_actions": node.get("allowed_actions", []),
                         }
-                        for step in skill.content_json.get("steps", [])
-                        if isinstance(step, dict)
+                        for node in skill.content_json.get("nodes", [])
+                        if isinstance(node, dict)
                     ],
+                    "edges": skill.content_json.get("edges", []),
+                    "start_node_id": skill.content_json.get("start_node_id"),
+                    "terminal_node_ids": skill.content_json.get("terminal_node_ids", []),
                 }
                 for skill in available_skills
             ],
@@ -88,17 +94,23 @@ class Router:
                     "business_domain": skill.content_json.get("business_domain"),
                     "trigger_intents": skill.content_json.get("trigger_intents", []),
                     "required_info": skill.content_json.get("required_info", []),
-                    "steps": [
+                    "nodes": [
                         {
-                            "step_id": step.get("step_id"),
-                            "name": step.get("name"),
-                            "instruction": step.get("instruction"),
-                            "expected_user_info": step.get("expected_user_info", []),
-                            "allowed_actions": step.get("allowed_actions", []),
+                            "node_id": node.get("node_id"),
+                            "type": node.get("type"),
+                            "name": node.get("name"),
+                            "instruction": node.get("instruction"),
+                            "optional": node.get("optional"),
+                            "condition": node.get("condition"),
+                            "expected_user_info": node.get("expected_user_info", []),
+                            "allowed_actions": node.get("allowed_actions", []),
                         }
-                        for step in skill.content_json.get("steps", [])
-                        if isinstance(step, dict)
+                        for node in skill.content_json.get("nodes", [])
+                        if isinstance(node, dict)
                     ],
+                    "edges": skill.content_json.get("edges", []),
+                    "start_node_id": skill.content_json.get("start_node_id"),
+                    "terminal_node_ids": skill.content_json.get("terminal_node_ids", []),
                 }
                 for skill in available_skills
             ],
@@ -204,9 +216,8 @@ class Router:
             decision.target_skill_id = session.active_skill_id
         if decision.target_skill_id and not decision.target_step_id:
             target_skill = skills.get(decision.target_skill_id)
-            steps: list[dict[str, Any]] = target_skill.content_json.get("steps", []) if target_skill else []
-            if steps:
-                decision.target_step_id = steps[0].get("step_id")
+            if target_skill:
+                decision.target_step_id = _first_node_id(target_skill)
         normalized_tasks = self._normalize_tasks(decision.pending_tasks, skills)
         decision.pending_tasks = normalized_tasks
         decision.created_tasks = self._normalize_tasks(decision.created_tasks, skills)
@@ -219,9 +230,8 @@ class Router:
                 continue
             if not task.target_step_id:
                 target_skill = skills.get(task.target_skill_id)
-                steps = target_skill.content_json.get("steps", []) if target_skill else []
-                if steps:
-                    task.target_step_id = steps[0].get("step_id")
+                if target_skill:
+                    task.target_step_id = _first_node_id(target_skill)
             normalized_tasks.append(task)
         return normalized_tasks
 
@@ -268,3 +278,16 @@ class Router:
                     }
                 )
         return frames
+
+
+def _first_node_id(skill: Skill) -> str | None:
+    content = skill.content_json or {}
+    start_node_id = content.get("start_node_id")
+    if isinstance(start_node_id, str) and start_node_id.strip():
+        return start_node_id
+    nodes = content.get("nodes")
+    if isinstance(nodes, list):
+        for node in nodes:
+            if isinstance(node, dict) and node.get("node_id"):
+                return str(node["node_id"])
+    return None

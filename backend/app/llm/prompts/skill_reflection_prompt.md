@@ -15,9 +15,9 @@
 - 不要输出 Markdown、解释、注释或代码围栏，只输出 JSON。
 
 Rubric 定义：
-1. source_alignment：技能目标、触发意图、步骤和必要字段是否与用户原始文档/改写要求一致；是否避免添加 source 未要求的无关流程。
+1. source_alignment：技能目标、触发意图、graph 节点/边和必要字段是否与用户原始文档/改写要求一致；是否避免添加 source 未要求的无关流程。
 2. closed_loop：流程是否能走到明确最终回复；是否避免把“请稍候/正在处理/稍后反馈”作为最终可见结果。
-3. adaptive_progression：是否支持一次用户消息抽取多个字段，已满足字段不重复追问，步骤是目标而不是固定脚本。
+3. adaptive_progression：是否支持一次用户消息抽取多个字段，已满足字段不重复追问，节点是目标而不是固定脚本。
 4. tool_grounding：工具调用是否只使用 available_tools，或使用 tool_suggestions 中 resolution_status 为 existing/new_candidate 且来源明确的工具。若 allowed_actions 引用的工具已出现在 tool_suggestions 中，不得仅因不在 available_tools 而判失败；只有既不在 available_tools、也不在 tool_suggestions(existing/new_candidate) 中的工具才是 grounding 失败。
 5. tool_call_format：allowed_actions 中的工具调用是否完整规范；需要调用工具时必须写成 `call_tool:<tool_name>`，其中 `<tool_name>` 必须是具体工具名；不得只写 `call_tool`、`call_tool:` 或把工具名只写在 instruction 里。
 6. side_effect_confirmation：涉及写入、提交、权益/资产/状态变更、不可逆操作时，是否在调用工具或处理前确认关键对象和操作。

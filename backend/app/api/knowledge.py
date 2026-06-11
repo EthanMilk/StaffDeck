@@ -12,6 +12,7 @@ from app.db.models import (
     KnowledgeDiscoverySuggestion,
     KnowledgeDocument,
     KnowledgeIngestJob,
+    KnowledgeBase,
     ModelConfig,
 )
 from app.knowledge.schema import (
@@ -36,10 +37,14 @@ def upload_document(
     db: Session = Depends(get_session),
 ) -> KnowledgeIngestJobRead:
     ensure_tenant(db, request.tenant_id)
+    knowledge_base = db.get(KnowledgeBase, request.knowledge_base_id)
+    if not knowledge_base or knowledge_base.tenant_id != request.tenant_id or knowledge_base.status == "archived":
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
     service = KnowledgeService(db)
     job = service.create_ingest_job(
         IngestPayload(
             tenant_id=request.tenant_id,
+            knowledge_base_id=request.knowledge_base_id,
             filename=request.filename,
             content_base64=request.content_base64,
             title=request.title,
@@ -67,14 +72,14 @@ def get_job(job_id: str, tenant_id: str = Query(...), db: Session = Depends(get_
 @router.get("/documents", response_model=list[KnowledgeDocumentRead])
 def list_documents(
     tenant_id: str = Query(...),
+    knowledge_base_id: str | None = Query(None),
     db: Session = Depends(get_session),
 ) -> list[KnowledgeDocumentRead]:
     ensure_tenant(db, tenant_id)
-    rows = db.exec(
-        select(KnowledgeDocument)
-        .where(KnowledgeDocument.tenant_id == tenant_id)
-        .order_by(KnowledgeDocument.created_at.desc())
-    ).all()
+    stmt = select(KnowledgeDocument).where(KnowledgeDocument.tenant_id == tenant_id)
+    if knowledge_base_id:
+        stmt = stmt.where(KnowledgeDocument.knowledge_base_id == knowledge_base_id)
+    rows = db.exec(stmt.order_by(KnowledgeDocument.created_at.desc())).all()
     return [document_read(row) for row in rows]
 
 
@@ -147,11 +152,14 @@ def search_knowledge(
 @router.get("/discoveries", response_model=list[KnowledgeDiscoveryRead])
 def list_discoveries(
     tenant_id: str = Query(...),
+    knowledge_base_id: str | None = Query(None),
     status: str | None = Query(None),
     db: Session = Depends(get_session),
 ) -> list[KnowledgeDiscoveryRead]:
     ensure_tenant(db, tenant_id)
     stmt = select(KnowledgeDiscoverySuggestion).where(KnowledgeDiscoverySuggestion.tenant_id == tenant_id)
+    if knowledge_base_id:
+        stmt = stmt.where(KnowledgeDiscoverySuggestion.knowledge_base_id == knowledge_base_id)
     if status:
         stmt = stmt.where(KnowledgeDiscoverySuggestion.status == status)
     rows = db.exec(stmt.order_by(KnowledgeDiscoverySuggestion.created_at.desc())).all()
@@ -184,6 +192,7 @@ def job_read(row: KnowledgeIngestJob) -> KnowledgeIngestJobRead:
     return KnowledgeIngestJobRead(
         id=row.id,
         tenant_id=row.tenant_id,
+        knowledge_base_id=row.knowledge_base_id,
         document_id=row.document_id,
         filename=row.filename,
         status=row.status,
@@ -202,6 +211,7 @@ def document_read(row: KnowledgeDocument) -> KnowledgeDocumentRead:
     return KnowledgeDocumentRead(
         id=row.id,
         tenant_id=row.tenant_id,
+        knowledge_base_id=row.knowledge_base_id,
         filename=row.filename,
         file_type=row.file_type,
         title=row.title,
@@ -226,6 +236,7 @@ def discovery_read(row: KnowledgeDiscoverySuggestion) -> KnowledgeDiscoveryRead:
     return KnowledgeDiscoveryRead(
         id=row.id,
         tenant_id=row.tenant_id,
+        knowledge_base_id=row.knowledge_base_id,
         document_id=row.document_id,
         bucket_id=row.bucket_id,
         suggestion_type=row.suggestion_type,  # type: ignore[arg-type]

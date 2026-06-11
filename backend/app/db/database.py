@@ -64,6 +64,8 @@ def _migrate_sqlite_skill_schema() -> None:
     with engine.begin() as conn:
         if "sessions" in tables:
             session_columns = {column["name"] for column in inspector.get_columns("sessions")}
+            if "agent_id" not in session_columns:
+                conn.execute(text("ALTER TABLE sessions ADD COLUMN agent_id VARCHAR"))
             if "title" not in session_columns:
                 conn.execute(text("ALTER TABLE sessions ADD COLUMN title VARCHAR"))
             if "active_skill_id" not in session_columns:
@@ -137,6 +139,9 @@ def _migrate_sqlite_skill_schema() -> None:
             if "metadata_json" not in general_skill_columns:
                 conn.execute(text("ALTER TABLE general_skills ADD COLUMN metadata_json JSON"))
                 conn.execute(text("UPDATE general_skills SET metadata_json = '{}' WHERE metadata_json IS NULL"))
+
+        _migrate_knowledge_base_schema(conn, inspector, tables)
+        _seed_default_agents(conn, tables)
 
         if legacy_table in tables and "skills" in tables:
             rows = conn.execute(text(f"SELECT * FROM {legacy_table}")).mappings().all()
@@ -277,8 +282,7 @@ def _ensure_skill_graph(content: dict[str, object]) -> dict[str, object]:
     nodes = content.get("nodes")
     steps = content.get("steps")
     if isinstance(nodes, list) and nodes:
-        if not isinstance(steps, list) or not steps:
-            content["steps"] = [_node_to_step_dict(node) for node in nodes if isinstance(node, dict)]
+        content.pop("steps", None)
         content.setdefault("start_node_id", _first_node_id(nodes))
         content.setdefault("terminal_node_ids", [_last_node_id(nodes)] if _last_node_id(nodes) else [])
         return content
@@ -286,9 +290,9 @@ def _ensure_skill_graph(content: dict[str, object]) -> dict[str, object]:
         content.setdefault("nodes", [])
         content.setdefault("edges", [])
         content.setdefault("terminal_node_ids", [])
+        content.pop("steps", None)
         return content
     normalized_steps = [step for step in steps if isinstance(step, dict)]
-    content["steps"] = normalized_steps
     content["nodes"] = [_step_to_node_dict(step) for step in normalized_steps]
     content["edges"] = [
         {
@@ -304,6 +308,7 @@ def _ensure_skill_graph(content: dict[str, object]) -> dict[str, object]:
         content["terminal_node_ids"] = content.get("terminal_node_ids") or [
             str(normalized_steps[-1].get("step_id") or f"step_{len(normalized_steps)}")
         ]
+    content.pop("steps", None)
     return content
 
 
@@ -327,16 +332,6 @@ def _step_to_node_dict(step: dict[str, object]) -> dict[str, object]:
         "knowledge_scope": step.get("knowledge_scope") if isinstance(step.get("knowledge_scope"), dict) else {},
         "retry_policy": step.get("retry_policy") if isinstance(step.get("retry_policy"), dict) else {},
         "metadata": step.get("metadata") if isinstance(step.get("metadata"), dict) else {},
-    }
-
-
-def _node_to_step_dict(node: dict[str, object]) -> dict[str, object]:
-    return {
-        "step_id": str(node.get("node_id") or node.get("step_id") or "step"),
-        "name": str(node.get("name") or node.get("node_id") or "步骤"),
-        "instruction": str(node.get("instruction") or ""),
-        "expected_user_info": node.get("expected_user_info") if isinstance(node.get("expected_user_info"), list) else [],
-        "allowed_actions": node.get("allowed_actions") if isinstance(node.get("allowed_actions"), list) else [],
     }
 
 
@@ -408,6 +403,178 @@ def _normalize_skill_identifier(value: object, legacy_id_prefix: str) -> str:
     if value.startswith(legacy_id_prefix):
         return f"skill_{value[len(legacy_id_prefix):]}"
     return value
+
+
+def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
+    tenant_ids = _tenant_ids(conn, tables)
+    if "knowledge_bases" in tables:
+        for tenant_id in tenant_ids:
+            default_id = _default_knowledge_base_id(tenant_id)
+            existing = conn.execute(
+                text("SELECT id FROM knowledge_bases WHERE id = :id"),
+                {"id": default_id},
+            ).first()
+            if not existing:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO knowledge_bases (
+                            id, tenant_id, name, description, status, metadata_json, created_at, updated_at
+                        )
+                        VALUES (
+                            :id, :tenant_id, :name, :description, 'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    {
+                        "id": default_id,
+                        "tenant_id": tenant_id,
+                        "name": "默认知识库",
+                        "description": "系统默认知识库",
+                    },
+                )
+
+    table_names = {
+        "knowledge_documents": "knowledge_base_id",
+        "knowledge_buckets": "knowledge_base_id",
+        "knowledge_chunks": "knowledge_base_id",
+        "knowledge_discovery_suggestions": "knowledge_base_id",
+        "knowledge_ingest_jobs": "knowledge_base_id",
+    }
+    for table_name, column_name in table_names.items():
+        if table_name not in tables:
+            continue
+        columns = {column["name"] for column in inspector.get_columns(table_name)}
+        if column_name not in columns:
+            conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} VARCHAR"))
+        rows = conn.execute(
+            text(f"SELECT DISTINCT tenant_id FROM {table_name} WHERE {column_name} IS NULL OR {column_name} = ''")
+        ).mappings().all()
+        for row in rows:
+            tenant_id = str(row.get("tenant_id") or "")
+            if tenant_id:
+                conn.execute(
+                    text(f"UPDATE {table_name} SET {column_name} = :knowledge_base_id WHERE tenant_id = :tenant_id AND ({column_name} IS NULL OR {column_name} = '')"),
+                    {"tenant_id": tenant_id, "knowledge_base_id": _default_knowledge_base_id(tenant_id)},
+                )
+
+
+def _seed_default_agents(conn, tables: set[str]) -> None:
+    if "agent_profiles" not in tables:
+        return
+    tenant_ids = _tenant_ids(conn, tables)
+    for tenant_id in tenant_ids:
+        for agent_id, name, is_overall in (
+            (_overall_agent_id(tenant_id), "整体智能体", True),
+            (_default_agent_id(tenant_id), "默认智能体", False),
+        ):
+            existing = conn.execute(text("SELECT id FROM agent_profiles WHERE id = :id"), {"id": agent_id}).first()
+            if existing:
+                continue
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO agent_profiles (
+                        id, tenant_id, name, description, persona_prompt, is_overall,
+                        status, metadata_json, created_at, updated_at
+                    )
+                    VALUES (
+                        :id, :tenant_id, :name, :description, NULL, :is_overall,
+                        'active', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    )
+                    """
+                ),
+                {
+                    "id": agent_id,
+                    "tenant_id": tenant_id,
+                    "name": name,
+                    "description": "全局资源池" if is_overall else "默认对话可见域",
+                    "is_overall": 1 if is_overall else 0,
+                },
+            )
+        if "sessions" in tables:
+            conn.execute(
+                text("UPDATE sessions SET agent_id = :agent_id WHERE tenant_id = :tenant_id AND (agent_id IS NULL OR agent_id = '')"),
+                {"tenant_id": tenant_id, "agent_id": _default_agent_id(tenant_id)},
+            )
+        if "agent_resource_bindings" in tables:
+            _seed_default_agent_bindings(conn, tenant_id)
+
+
+def _seed_default_agent_bindings(conn, tenant_id: str) -> None:
+    default_agent = _default_agent_id(tenant_id)
+    resource_queries = (
+        ("skill", "SELECT id FROM skills WHERE tenant_id = :tenant_id AND status != 'archived'"),
+        ("general_skill", "SELECT id FROM general_skills WHERE tenant_id = :tenant_id AND status != 'archived'"),
+        ("knowledge_base", "SELECT id FROM knowledge_bases WHERE tenant_id = :tenant_id AND status != 'archived'"),
+    )
+    for resource_type, sql in resource_queries:
+        rows = conn.execute(text(sql), {"tenant_id": tenant_id}).mappings().all()
+        for row in rows:
+            resource_id = str(row.get("id") or "")
+            if not resource_id:
+                continue
+            existing = conn.execute(
+                text(
+                    """
+                    SELECT id FROM agent_resource_bindings
+                    WHERE tenant_id = :tenant_id AND agent_id = :agent_id
+                      AND resource_type = :resource_type AND resource_id = :resource_id
+                    """
+                ),
+                {
+                    "tenant_id": tenant_id,
+                    "agent_id": default_agent,
+                    "resource_type": resource_type,
+                    "resource_id": resource_id,
+                },
+            ).first()
+            if existing:
+                continue
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO agent_resource_bindings (
+                        id, tenant_id, agent_id, resource_type, resource_id, status,
+                        metadata_json, created_at, updated_at
+                    )
+                    VALUES (
+                        :id, :tenant_id, :agent_id, :resource_type, :resource_id, 'active',
+                        '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    )
+                    """
+                ),
+                {
+                    "id": f"agentres_{abs(hash((tenant_id, default_agent, resource_type, resource_id)))}",
+                    "tenant_id": tenant_id,
+                    "agent_id": default_agent,
+                    "resource_type": resource_type,
+                    "resource_id": resource_id,
+                },
+            )
+
+
+def _tenant_ids(conn, tables: set[str]) -> list[str]:
+    ids: set[str] = set()
+    if "tenants" in tables:
+        ids.update(str(row[0]) for row in conn.execute(text("SELECT id FROM tenants")).all() if row[0])
+    for table_name in ("skills", "general_skills", "knowledge_documents", "sessions"):
+        if table_name not in tables:
+            continue
+        ids.update(str(row[0]) for row in conn.execute(text(f"SELECT DISTINCT tenant_id FROM {table_name}")).all() if row[0])
+    return sorted(ids)
+
+
+def _default_knowledge_base_id(tenant_id: str) -> str:
+    return f"kb_{tenant_id}_default"
+
+
+def _overall_agent_id(tenant_id: str) -> str:
+    return f"agent_{tenant_id}_overall"
+
+
+def _default_agent_id(tenant_id: str) -> str:
+    return f"agent_{tenant_id}_default"
 
 
 def get_session() -> Generator[Session, None, None]:

@@ -2,6 +2,51 @@ from app.skills.skill_distiller import SkillDistiller
 from app.skills.skill_schema import SkillDistillRequest
 
 
+def _normalize(raw: dict, request: SkillDistillRequest):
+    return SkillDistiller()._normalize_response(_graph_raw(raw), request)  # noqa: SLF001
+
+
+def _graph_raw(raw: dict) -> dict:
+    converted = dict(raw)
+    draft = converted.get("draft_skill") if isinstance(converted.get("draft_skill"), dict) else None
+    if draft is None:
+        return converted
+    draft = dict(draft)
+    legacy_steps = draft.pop("steps", None)
+    if isinstance(legacy_steps, list):
+        nodes = []
+        for index, step in enumerate(legacy_steps):
+            if not isinstance(step, dict):
+                continue
+            node_id = str(step.get("step_id") or step.get("node_id") or f"node_{index + 1}")
+            actions = [str(action) for action in step.get("allowed_actions", [])]
+            nodes.append(
+                {
+                    "node_id": node_id,
+                    "type": "tool_call" if any(action.startswith("call_tool:") for action in actions) else "collect_info",
+                    "name": step.get("name") or node_id,
+                    "instruction": step.get("instruction") or "",
+                    "expected_user_info": step.get("expected_user_info") or [],
+                    "allowed_actions": actions,
+                }
+            )
+        draft["nodes"] = nodes
+        draft["edges"] = [
+            {
+                "source_node_id": nodes[index]["node_id"],
+                "next_node_id": nodes[index + 1]["node_id"],
+                "priority": index,
+                "label": "默认推进",
+            }
+            for index in range(len(nodes) - 1)
+        ]
+        if nodes:
+            draft["start_node_id"] = nodes[0]["node_id"]
+            draft["terminal_node_ids"] = [nodes[-1]["node_id"]]
+    converted["draft_skill"] = draft
+    return converted
+
+
 def test_fallback_card_is_not_domain_hardcoded_for_commerce_text() -> None:
     request = SkillDistillRequest(
         tenant_id="tenant_demo",
@@ -17,10 +62,10 @@ def test_fallback_card_is_not_domain_hardcoded_for_commerce_text() -> None:
 
     assert card.skill_id != "purchase_product"
     assert card.required_info == []
-    assert all("operation_confirmed" not in step.expected_user_info for step in card.steps)
+    assert all("operation_confirmed" not in node.expected_user_info for node in card.nodes)
     assert all(
-        not any(action.startswith("call_tool:") for action in step.allowed_actions)
-        for step in card.steps
+        not any(action.startswith("call_tool:") for action in node.allowed_actions)
+        for node in card.nodes
     )
 
 
@@ -47,7 +92,7 @@ def test_slot_policy_targets_model_generated_fields() -> None:
         }
     }
 
-    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
+    response = _normalize(raw, request)
 
     assert response.draft_skill.slot_filling_policy["target_info"] == ["asset_id", "issue_desc"]
 
@@ -82,19 +127,19 @@ def test_normalize_response_does_not_infer_tool_or_confirmation_from_raw_words()
         }
     }
 
-    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
-    steps = response.draft_skill.steps
+    response = _normalize(raw, request)
+    nodes = response.draft_skill.nodes
 
     assert all(
-        not any(action.startswith("call_tool:") for action in step.allowed_actions)
-        for step in steps
+        not any(action.startswith("call_tool:") for action in node.allowed_actions)
+        for node in nodes
     )
-    assert all("operation_confirmed" not in step.expected_user_info for step in steps)
-    assert "answer_user" in steps[-1].allowed_actions
+    assert all("operation_confirmed" not in node.expected_user_info for node in nodes)
+    assert "answer_user" in nodes[-1].allowed_actions
     assert any("不得把" in rule and "请稍候" in rule for rule in response.draft_skill.response_rules)
     assert any("自适应推进" in rule for rule in response.draft_skill.response_rules)
     assert not any("确认关键对象" in rule for rule in response.draft_skill.response_rules)
-    assert all("目标而不是固定话术" in step.instruction for step in steps)
+    assert all("目标而不是固定话术" in node.instruction for node in nodes)
 
 
 def test_normalize_response_preserves_model_declared_tool_and_confirmation() -> None:
@@ -141,25 +186,25 @@ def test_normalize_response_preserves_model_declared_tool_and_confirmation() -> 
         }
     }
 
-    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
-    steps = response.draft_skill.steps
+    response = _normalize(raw, request)
+    nodes = response.draft_skill.nodes
 
-    assert any("call_tool:order.query" in step.allowed_actions for step in steps)
+    assert any("call_tool:order.query" in node.allowed_actions for node in nodes)
     confirm_index = next(
-        index for index, step in enumerate(steps) if "operation_confirmed" in step.expected_user_info
+        index for index, node in enumerate(nodes) if "operation_confirmed" in node.expected_user_info
     )
     tool_index = next(
         index
-        for index, step in enumerate(steps)
-        if any(action.startswith("call_tool:") for action in step.allowed_actions)
+        for index, node in enumerate(nodes)
+        if any(action.startswith("call_tool:") for action in node.allowed_actions)
     )
     assert confirm_index < tool_index
-    assert "operation_confirmed=true" in steps[tool_index].instruction
-    assert "answer_user" in steps[-1].allowed_actions
+    assert "operation_confirmed=true" in nodes[tool_index].instruction
+    assert "answer_user" in nodes[-1].allowed_actions
     assert any("不得把" in rule and "请稍候" in rule for rule in response.draft_skill.response_rules)
     assert any("自适应推进" in rule for rule in response.draft_skill.response_rules)
     assert any("确认关键对象" in rule for rule in response.draft_skill.response_rules)
-    assert all("目标而不是固定话术" in step.instruction for step in steps)
+    assert all("目标而不是固定话术" in node.instruction for node in nodes)
 
 
 def test_normalize_response_makes_duplicate_step_ids_unique() -> None:
@@ -192,13 +237,13 @@ def test_normalize_response_makes_duplicate_step_ids_unique() -> None:
         }
     }
 
-    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
-    step_ids = [step.step_id for step in response.draft_skill.steps]
+    response = _normalize(raw, request)
+    step_ids = [node.node_id for node in response.draft_skill.nodes]
 
     assert len(step_ids) == len(set(step_ids))
     assert "reply_result" in step_ids
     assert "reply_result_2" in step_ids
-    assert any("step_id" in warning for warning in response.warnings)
+    assert any("node_id" in warning for warning in response.warnings)
 
 
 def test_normalize_response_turns_steps_into_adaptive_goals() -> None:
@@ -232,11 +277,11 @@ def test_normalize_response_turns_steps_into_adaptive_goals() -> None:
         }
     }
 
-    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
+    response = _normalize(raw, request)
 
     assert response.draft_skill.slot_filling_policy["multi_slot_per_turn"] is True
     assert response.draft_skill.slot_filling_policy["skip_satisfied_steps"] is True
-    assert all("目标而不是固定话术" in step.instruction for step in response.draft_skill.steps)
+    assert all("目标而不是固定话术" in node.instruction for node in response.draft_skill.nodes)
 
 
 def test_fallback_card_uses_conservative_adaptive_steps() -> None:
@@ -250,10 +295,10 @@ def test_fallback_card_uses_conservative_adaptive_steps() -> None:
 
     assert card.required_info == []
     assert all(
-        not any(action.startswith("call_tool:") for action in step.allowed_actions)
-        for step in card.steps
+        not any(action.startswith("call_tool:") for action in node.allowed_actions)
+        for node in card.nodes
     )
-    assert any("目标而不是固定话术" in step.instruction for step in card.steps)
+    assert any("目标而不是固定话术" in node.instruction for node in card.nodes)
 
 
 def test_normalize_response_removes_unknown_actions_without_default_tool_suggestion() -> None:
@@ -288,11 +333,11 @@ def test_normalize_response_removes_unknown_actions_without_default_tool_suggest
         }
     }
 
-    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
+    response = _normalize(raw, request)
 
     assert all(
-        "call_tool:product.compare" not in step.allowed_actions
-        for step in response.draft_skill.steps
+        "call_tool:product.compare" not in node.allowed_actions
+        for node in response.draft_skill.nodes
     )
     assert response.tool_suggestions == []
     assert any("未配置工具 product.compare" in warning for warning in response.warnings)
@@ -354,9 +399,9 @@ def test_normalize_response_resolves_tool_mentions_as_new_candidates() -> None:
         ],
     }
 
-    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
+    response = _normalize(raw, request)
 
-    assert "call_tool:product.compare" in response.draft_skill.steps[0].allowed_actions
+    assert "call_tool:product.compare" in response.draft_skill.nodes[0].allowed_actions
     assert [item.name for item in response.tool_suggestions] == ["product.compare"]
     assert response.tool_suggestions[0].resolution_status == "new_candidate"
     assert response.tool_suggestions[0].input_schema["required"] == ["product_name_1", "product_name_2"]
@@ -442,13 +487,13 @@ def test_normalize_response_resolves_tool_mentions_as_existing_tools() -> None:
         ],
     }
 
-    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
+    response = _normalize(raw, request)
 
     assert response.tool_suggestions[0].resolution_status == "existing"
     assert response.tool_suggestions[0].matched_tool_name == "product.compare"
     assert response.tool_suggestions[0].matched_tool_id == "tool_1"
     assert response.tool_suggestions[0].url == "/api/mock/product/compare"
-    assert "call_tool:product.compare" in response.draft_skill.steps[0].allowed_actions
+    assert "call_tool:product.compare" in response.draft_skill.nodes[0].allowed_actions
 
 
 def test_normalize_response_drops_tool_suggestion_when_url_not_in_source() -> None:
@@ -507,11 +552,11 @@ def test_normalize_response_drops_tool_suggestion_when_url_not_in_source() -> No
         ],
     }
 
-    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
+    response = _normalize(raw, request)
 
     assert all(
-        "call_tool:member.issue_benefit" not in step.allowed_actions
-        for step in response.draft_skill.steps
+        "call_tool:member.issue_benefit" not in node.allowed_actions
+        for node in response.draft_skill.nodes
     )
     assert response.tool_suggestions == []
     assert any("未配置工具 member.issue_benefit" in warning for warning in response.warnings)
@@ -550,7 +595,7 @@ def test_normalize_response_does_not_suggest_tool_from_raw_text_only() -> None:
         }
     }
 
-    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
+    response = _normalize(raw, request)
 
     assert response.tool_suggestions == []
 
@@ -581,12 +626,12 @@ def test_normalize_response_drops_incomplete_model_tool_suggestion() -> None:
         "tool_suggestions": [{"name": "product.compare"}],
     }
 
-    response = SkillDistiller()._normalize_response(raw, request)  # noqa: SLF001
+    response = _normalize(raw, request)
 
     assert response.tool_suggestions == []
 
 
-def test_skill_card_serializes_response_rules_before_steps() -> None:
+def test_skill_card_serializes_response_rules_before_nodes() -> None:
     request = SkillDistillRequest(
         tenant_id="tenant_demo",
         title="资料审核",
@@ -596,4 +641,5 @@ def test_skill_card_serializes_response_rules_before_steps() -> None:
     card = SkillDistiller()._fallback_card(request)  # noqa: SLF001
     keys = list(card.model_dump().keys())
 
-    assert keys.index("response_rules") < keys.index("steps")
+    assert "steps" not in keys
+    assert keys.index("response_rules") < keys.index("nodes")

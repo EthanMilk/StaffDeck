@@ -349,6 +349,26 @@ textarea,
   white-space: nowrap;
 }
 
+.agent-switcher {
+  width: 100%;
+  min-width: 0;
+  padding: 0 2px 6px;
+}
+
+.agent-switcher .ant-select {
+  width: 100%;
+}
+
+.agent-switcher .ant-select-selector {
+  border-radius: 10px !important;
+  background: var(--surface) !important;
+  border-color: var(--border) !important;
+}
+
+.chat-layout.sidebar-collapsed .agent-switcher {
+  display: none;
+}
+
 .icon-button,
 .ant-btn.icon-button {
   width: var(--sidebar-head-control-size);
@@ -1785,6 +1805,7 @@ textarea,
   }
 
   .brand-block > div,
+  .agent-switcher,
   .session-section-label,
   .session-summary,
   .session-actions,

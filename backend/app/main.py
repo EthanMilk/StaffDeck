@@ -5,11 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session
 
 from app.api import (
+    agents,
     auth,
     chat,
     feedback,
     general_skills,
     knowledge,
+    knowledge_bases,
     memories,
     mock,
     model_configs,
@@ -56,9 +58,12 @@ def health() -> dict[str, str]:
 
 
 app.include_router(chat.router)
+app.include_router(agents.chat_router)
 app.include_router(ui_config.chat_router)
 app.include_router(auth.router)
+app.include_router(agents.enterprise_router)
 app.include_router(general_skills.router)
+app.include_router(knowledge_bases.router)
 app.include_router(knowledge.router)
 app.include_router(skills.router)
 app.include_router(model_configs.router)

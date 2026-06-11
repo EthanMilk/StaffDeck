@@ -2,34 +2,55 @@ from __future__ import annotations
 
 import base64
 
+import pytest
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.db.models import KnowledgeBucket, KnowledgeDiscoverySuggestion, Skill, Tenant, Tool
+from app.db.models import KnowledgeBase, KnowledgeBucket, KnowledgeDiscoverySuggestion, Skill, Tenant, Tool
 from app.knowledge.schema import KnowledgeSearchRequest
 from app.knowledge.service import IngestPayload, KnowledgeService
 from app.skills.skill_schema import SkillCard
 
 
-def test_skill_card_projects_legacy_steps_to_graph() -> None:
+def test_skill_card_rejects_legacy_steps_and_accepts_graph() -> None:
+    with pytest.raises(Exception):
+        SkillCard(
+            skill_id="skill_test",
+            name="测试技能",
+            steps=[
+                {
+                    "step_id": "collect",
+                    "name": "收集信息",
+                    "instruction": "收集用户信息",
+                    "expected_user_info": ["name"],
+                    "allowed_actions": ["ask_user", "continue_flow"],
+                }
+            ],
+        )
+
     card = SkillCard(
         skill_id="skill_test",
         name="测试技能",
-        steps=[
+        nodes=[
             {
-                "step_id": "collect",
+                "node_id": "collect",
+                "type": "collect_info",
                 "name": "收集信息",
                 "instruction": "收集用户信息",
                 "expected_user_info": ["name"],
                 "allowed_actions": ["ask_user", "continue_flow"],
             },
             {
-                "step_id": "reply",
+                "node_id": "reply",
+                "type": "response",
                 "name": "回复",
                 "instruction": "回复用户",
                 "allowed_actions": ["answer_user"],
             },
         ],
+        edges=[{"source_node_id": "collect", "next_node_id": "reply"}],
+        start_node_id="collect",
+        terminal_node_ids=["reply"],
     )
 
     assert card.start_node_id == "collect"
@@ -42,11 +63,13 @@ def test_skill_card_projects_legacy_steps_to_graph() -> None:
 def test_knowledge_ingest_creates_document_buckets_and_chunks_without_auto_discovery() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
         db.commit()
         service = KnowledgeService(db)
         job = service.create_ingest_job(
             IngestPayload(
                 tenant_id="tenant_demo",
+                knowledge_base_id="kb_demo",
                 filename="policy.md",
                 content_base64=_b64("# 售后政策\n用户可查询订单。\n\n# 配送\n根据地址评估配送。"),
             )
@@ -60,7 +83,9 @@ def test_knowledge_ingest_creates_document_buckets_and_chunks_without_auto_disco
         assert job.document_id
         buckets = db.exec(select(KnowledgeBucket).where(KnowledgeBucket.document_id == job.document_id)).all()
         assert buckets
-        response = service.search(KnowledgeSearchRequest(tenant_id="tenant_demo", query="配送怎么处理"))
+        response = service.search(
+            KnowledgeSearchRequest(tenant_id="tenant_demo", knowledge_base_ids=["kb_demo"], query="配送怎么处理")
+        )
         assert response.chunks
         assert db.exec(select(KnowledgeDiscoverySuggestion)).all() == []
 
@@ -68,8 +93,10 @@ def test_knowledge_ingest_creates_document_buckets_and_chunks_without_auto_disco
 def test_confirm_discovery_is_required_before_tool_or_skill_enters_runtime() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
         suggestion = KnowledgeDiscoverySuggestion(
             tenant_id="tenant_demo",
+            knowledge_base_id="kb_demo",
             document_id="doc_1",
             suggestion_type="tool",
             title="会员权益核对",

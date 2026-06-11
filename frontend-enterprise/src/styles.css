@@ -3596,6 +3596,48 @@ pre {
   border-bottom-color: var(--border-soft);
 }
 
+.knowledge-base-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.knowledge-base-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.knowledge-base-card .ant-typography {
+  margin-bottom: 0;
+}
+
+.knowledge-upload-controls {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.knowledge-upload-controls > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.knowledge-base-select {
+  min-width: min(260px, 100%);
+}
+
+.knowledge-base-create-input {
+  width: min(240px, 100%);
+}
+
 .knowledge-upload-card .ant-card-body {
   padding: 18px;
 }
@@ -3793,10 +3835,117 @@ pre {
   font-size: 12px;
 }
 
+.agents-page {
+  display: grid;
+  gap: 18px;
+}
+
+.agents-hero {
+  margin-bottom: 0;
+}
+
+.agent-card {
+  border-color: var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 18px 46px rgba(30, 24, 16, 0.045);
+}
+
+.agent-list-card {
+  min-height: 460px;
+}
+
+.agent-list,
+.agent-detail-stack {
+  width: 100%;
+}
+
+.agent-list-item {
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  background: var(--surface-soft);
+  color: var(--foreground);
+  cursor: pointer;
+}
+
+.agent-list-item.active {
+  border-color: rgba(4, 117, 111, 0.42);
+  background: rgba(4, 117, 111, 0.06);
+}
+
+.agent-list-icon,
+.agent-resource-icon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--accent);
+  background: var(--surface);
+}
+
+.agent-list-main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.agent-list-main strong,
+.agent-list-main small,
+.agent-resource-body .ant-typography {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-list-main small {
+  color: var(--muted);
+}
+
+.agent-resource-summary {
+  max-width: 100%;
+  margin-bottom: 14px;
+  overflow-x: auto;
+}
+
+.agent-resource-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.agent-resource-card {
+  min-width: 0;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 14px;
+  background: var(--surface-soft);
+}
+
+.agent-resource-body {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
 :root[data-theme='dark'] .knowledge-card,
 :root[data-theme='dark'] .knowledge-discovery,
 :root[data-theme='dark'] .knowledge-bucket-item,
-:root[data-theme='dark'] .knowledge-job {
+:root[data-theme='dark'] .knowledge-job,
+:root[data-theme='dark'] .agent-card {
   box-shadow: 0 18px 54px rgba(0, 0, 0, 0.18);
 }
 
@@ -3815,6 +3964,21 @@ pre {
     padding: 8px 10px;
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .knowledge-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .knowledge-upload-controls {
+    align-items: stretch;
+  }
+
+  .knowledge-upload-controls .ant-space,
+  .knowledge-base-select,
+  .knowledge-base-create-input {
+    width: 100%;
   }
 
   .skill-chat-panel {
@@ -3840,6 +4004,17 @@ pre {
 
   .skill-tool-suggestion-meta {
     align-items: flex-start;
+  }
+
+  .agent-list-item,
+  .agent-resource-card {
+    grid-template-columns: 30px minmax(0, 1fr);
+  }
+
+  .agent-list-item .ant-tag,
+  .agent-resource-card .ant-switch {
+    grid-column: 2;
+    justify-self: start;
   }
 }
 

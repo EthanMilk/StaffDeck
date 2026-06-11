@@ -8,11 +8,10 @@ export type SkillCard = {
   user_utterance_examples: string[];
   goal: string[];
   required_info: string[];
-  steps: Array<Record<string, unknown>>;
-  nodes?: Array<Record<string, unknown>>;
-  edges?: Array<Record<string, unknown>>;
-  start_node_id?: string;
-  terminal_node_ids?: string[];
+  nodes: Array<Record<string, unknown>>;
+  edges: Array<Record<string, unknown>>;
+  start_node_id: string;
+  terminal_node_ids: string[];
   interruption_policy: Record<string, string>;
   response_rules: string[];
 };
@@ -20,6 +19,7 @@ export type SkillCard = {
 export type KnowledgeIngestJobRead = {
   id: string;
   tenant_id: string;
+  knowledge_base_id: string;
   document_id?: string;
   filename: string;
   status: string;
@@ -33,9 +33,24 @@ export type KnowledgeIngestJobRead = {
   updated_at: string;
 };
 
+export type KnowledgeBaseRead = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description?: string;
+  status: string;
+  metadata: Record<string, unknown>;
+  document_count: number;
+  bucket_count: number;
+  chunk_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
 export type KnowledgeDocumentRead = {
   id: string;
   tenant_id: string;
+  knowledge_base_id: string;
   filename: string;
   file_type: string;
   title?: string;
@@ -51,6 +66,7 @@ export type KnowledgeDocumentRead = {
 export type KnowledgeBucketRead = {
   id: string;
   tenant_id: string;
+  knowledge_base_id: string;
   document_id: string;
   bucket_key: string;
   title: string;
@@ -66,6 +82,7 @@ export type KnowledgeBucketRead = {
 export type KnowledgeDiscoveryRead = {
   id: string;
   tenant_id: string;
+  knowledge_base_id: string;
   document_id: string;
   bucket_id?: string;
   suggestion_type: 'skill' | 'tool' | 'warning';
@@ -74,6 +91,34 @@ export type KnowledgeDiscoveryRead = {
   payload: Record<string, unknown>;
   source_refs: Array<Record<string, unknown>>;
   reason?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AgentResourceType = 'skill' | 'general_skill' | 'knowledge_base';
+
+export type AgentResourceBindingRead = {
+  id: string;
+  tenant_id: string;
+  agent_id: string;
+  resource_type: AgentResourceType;
+  resource_id: string;
+  status: 'active' | 'inactive' | string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AgentProfileRead = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description?: string;
+  persona_prompt?: string;
+  is_overall: boolean;
+  status: 'active' | 'archived' | string;
+  metadata: Record<string, unknown>;
+  resources: AgentResourceBindingRead[];
   created_at: string;
   updated_at: string;
 };

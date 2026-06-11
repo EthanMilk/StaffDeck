@@ -125,6 +125,7 @@ class SessionPublic(BaseModel):
     session_id: str
     tenant_id: str
     user_id: Optional[str] = None
+    agent_id: Optional[str] = None
     title: Optional[str] = None
     active_skill_id: Optional[str] = None
     active_step_id: Optional[str] = None
@@ -142,6 +143,7 @@ class SessionPublic(BaseModel):
 class ChatTurnRequest(BaseModel):
     tenant_id: str
     session_id: Optional[str] = None
+    agent_id: Optional[str] = None
     user_id: str = ""
     message: str
     channel: str = "web"
@@ -160,6 +162,7 @@ class ChatTurnResponse(BaseModel):
 class ChatSessionCreateRequest(BaseModel):
     tenant_id: str
     user_id: Optional[str] = None
+    agent_id: Optional[str] = None
     title: Optional[str] = None
 
 
@@ -173,6 +176,7 @@ class ChatSessionRead(BaseModel):
     id: str
     tenant_id: str
     user_id: Optional[str]
+    agent_id: Optional[str] = None
     title: Optional[str]
     active_skill_id: Optional[str]
     active_step_id: Optional[str]

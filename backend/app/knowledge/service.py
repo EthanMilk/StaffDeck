@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 from app.db import engine
 from app.db.models import (
     KnowledgeBucket,
+    KnowledgeBase,
     KnowledgeChunk,
     KnowledgeDiscoverySuggestion,
     KnowledgeDocument,
@@ -44,6 +45,7 @@ BUCKET_SECTION_CHARS = 6000
 @dataclass
 class IngestPayload:
     tenant_id: str
+    knowledge_base_id: str
     filename: str
     content_base64: str
     title: str | None = None
@@ -57,6 +59,7 @@ class KnowledgeService:
     def create_ingest_job(self, payload: IngestPayload) -> KnowledgeIngestJob:
         job = KnowledgeIngestJob(
             tenant_id=payload.tenant_id,
+            knowledge_base_id=payload.knowledge_base_id,
             filename=payload.filename,
             status="queued",
             stage="queued",
@@ -92,6 +95,7 @@ class KnowledgeService:
 
             document = KnowledgeDocument(
                 tenant_id=job.tenant_id,
+                knowledge_base_id=job.knowledge_base_id,
                 filename=job.filename,
                 file_type=file_type,
                 title=str(metadata.get("title") or Path(job.filename).stem),
@@ -107,9 +111,9 @@ class KnowledgeService:
             job.document_id = document.id
             self._update_job(job, stage="bucketing", progress=0.25)
 
-            buckets = self._build_buckets(job.tenant_id, document, normalized_text)
+            buckets = self._build_buckets(job.tenant_id, job.knowledge_base_id, document, normalized_text)
             self._update_job(job, stage="chunking", progress=0.55)
-            chunk_count = self._build_chunks(job.tenant_id, document, buckets)
+            chunk_count = self._build_chunks(job.tenant_id, job.knowledge_base_id, document, buckets)
 
             document.bucket_count = len(buckets)
             document.chunk_count = chunk_count
@@ -118,7 +122,7 @@ class KnowledgeService:
             self.db.add(document)
             self._update_job(job, stage="discovering", progress=0.78)
 
-            self._discover_from_document(job.tenant_id, document, buckets)
+            self._discover_from_document(job.tenant_id, job.knowledge_base_id, document, buckets)
             self._update_job(job, status="succeeded", stage="done", progress=1.0, finished_at=utc_now())
             self._clear_embedded_content(job)
         except Exception as exc:  # noqa: BLE001 - persist stable job failure.
@@ -137,6 +141,8 @@ class KnowledgeService:
         if not query:
             return KnowledgeSearchResponse()
         stmt = select(KnowledgeBucket).where(KnowledgeBucket.tenant_id == request.tenant_id)
+        if request.knowledge_base_ids:
+            stmt = stmt.where(KnowledgeBucket.knowledge_base_id.in_(request.knowledge_base_ids))
         if request.document_ids:
             stmt = stmt.where(KnowledgeBucket.document_id.in_(request.document_ids))
         buckets = self.db.exec(stmt.order_by(KnowledgeBucket.created_at.desc())).all()
@@ -188,6 +194,7 @@ class KnowledgeService:
     def _build_buckets(
         self,
         tenant_id: str,
+        knowledge_base_id: str,
         document: KnowledgeDocument,
         text: str,
     ) -> list[KnowledgeBucket]:
@@ -210,6 +217,7 @@ class KnowledgeService:
             content = content or sections[min(index, len(sections) - 1)]
             row = KnowledgeBucket(
                 tenant_id=tenant_id,
+                knowledge_base_id=knowledge_base_id,
                 document_id=document.id,
                 bucket_key=str(spec.get("bucket_key") or f"bucket_{index + 1}"),
                 title=str(spec.get("title") or f"知识桶 {index + 1}"),
@@ -224,7 +232,13 @@ class KnowledgeService:
             self.db.refresh(row)
         return rows
 
-    def _build_chunks(self, tenant_id: str, document: KnowledgeDocument, buckets: list[KnowledgeBucket]) -> int:
+    def _build_chunks(
+        self,
+        tenant_id: str,
+        knowledge_base_id: str,
+        document: KnowledgeDocument,
+        buckets: list[KnowledgeBucket],
+    ) -> int:
         count = 0
         for bucket in buckets:
             content = str((bucket.metadata_json or {}).get("content") or "")
@@ -232,6 +246,7 @@ class KnowledgeService:
             for index, part in enumerate(parts):
                 row = KnowledgeChunk(
                     tenant_id=tenant_id,
+                    knowledge_base_id=knowledge_base_id,
                     document_id=document.id,
                     bucket_id=bucket.id,
                     chunk_index=index,
@@ -247,6 +262,7 @@ class KnowledgeService:
     def _discover_from_document(
         self,
         tenant_id: str,
+        knowledge_base_id: str,
         document: KnowledgeDocument,
         buckets: list[KnowledgeBucket],
     ) -> None:
@@ -286,6 +302,7 @@ class KnowledgeService:
             title = str(item.get("title") or "").strip() or "未命名建议"
             row = KnowledgeDiscoverySuggestion(
                 tenant_id=tenant_id,
+                knowledge_base_id=knowledge_base_id,
                 document_id=document.id,
                 bucket_id=_optional_str(item.get("bucket_id")),
                 suggestion_type=suggestion_type,
@@ -429,6 +446,26 @@ class KnowledgeService:
             )
         ).first()
 
+    def ensure_default_knowledge_base(self, tenant_id: str) -> KnowledgeBase:
+        existing = self.db.exec(
+            select(KnowledgeBase)
+            .where(KnowledgeBase.tenant_id == tenant_id)
+            .order_by(KnowledgeBase.created_at.asc())
+        ).first()
+        if existing:
+            return existing
+        row = KnowledgeBase(
+            id=f"kb_{tenant_id}_default",
+            tenant_id=tenant_id,
+            name="默认知识库",
+            description="系统默认知识库",
+            status="active",
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return row
+
     def _update_job(self, job: KnowledgeIngestJob, **changes: Any) -> None:
         for key, value in changes.items():
             setattr(job, key, value)
@@ -450,6 +487,7 @@ def bucket_read(row: KnowledgeBucket) -> KnowledgeBucketRead:
     return KnowledgeBucketRead(
         id=row.id,
         tenant_id=row.tenant_id,
+        knowledge_base_id=row.knowledge_base_id,
         document_id=row.document_id,
         bucket_key=row.bucket_key,
         title=row.title,
@@ -467,6 +505,7 @@ def chunk_read(row: KnowledgeChunk) -> KnowledgeChunkRead:
     return KnowledgeChunkRead(
         id=row.id,
         tenant_id=row.tenant_id,
+        knowledge_base_id=row.knowledge_base_id,
         document_id=row.document_id,
         bucket_id=row.bucket_id,
         chunk_index=row.chunk_index,

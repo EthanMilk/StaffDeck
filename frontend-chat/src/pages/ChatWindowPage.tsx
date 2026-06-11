@@ -15,14 +15,14 @@ import {
   StopOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
-import { Button, Input, Modal, Typography, message } from 'antd';
+import { Button, Input, Modal, Select, Typography, message } from 'antd';
 import type { MouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { SHOW_DEBUG, TENANT_ID, api, clearAuthSession, getAuthSession, streamChatTurn } from '../api/client';
 import CodeBlock from '../components/CodeBlock';
 import { ThemeToggleButton } from '../theme';
-import type { ChatMessage, ChatSession, ChatTurnResponse, TurnTraceRead, UIConfigRead } from '../types';
+import type { AgentProfileRead, ChatMessage, ChatSession, ChatTurnResponse, TurnTraceRead, UIConfigRead } from '../types';
 
 type SessionSlot = {
   serverMessages: ChatMessage[];
@@ -576,6 +576,8 @@ export default function ChatWindowPage() {
   const tenantId = auth?.user.tenant_id || TENANT_ID;
   const userId = auth?.user.id || '';
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [agents, setAgents] = useState<AgentProfileRead[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem('skill_agent_selected_agent') || '');
   const [input, setInput] = useState('');
   const [lastTurn, setLastTurn] = useState<ChatTurnResponse | null>(null);
   const [renameSession, setRenameSession] = useState<ChatSession | null>(null);
@@ -623,6 +625,21 @@ export default function ChatWindowPage() {
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    api
+      .get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}`)
+      .then((rows) => {
+        setAgents(rows);
+        setSelectedAgentId((current) => {
+          if (current && rows.some((item) => item.id === current)) return current;
+          const next = rows[0]?.id || '';
+          if (next) window.localStorage.setItem('skill_agent_selected_agent', next);
+          return next;
+        });
+      })
+      .catch(() => setAgents([]));
+  }, [tenantId]);
   const toggleTrace = useCallback((turnId: string) => {
     setExpandedTraceIds((current) => (
       current.includes(turnId)
@@ -869,7 +886,10 @@ export default function ChatWindowPage() {
   }, []);
 
   async function createSession() {
-    const session = await api.post<ChatSession>('/api/chat/sessions', { tenant_id: tenantId });
+    const session = await api.post<ChatSession>('/api/chat/sessions', {
+      tenant_id: tenantId,
+      agent_id: selectedAgentId || undefined,
+    });
     getSlot(session.id);
     loadSessions();
     navigate(`/chat/${session.id}`);
@@ -989,6 +1009,7 @@ export default function ChatWindowPage() {
         tenant_id: tenantId,
         session_id: currentSessionId,
         user_id: userId,
+        agent_id: selectedAgentId || undefined,
         message: userText,
         channel: 'web',
       }, (item) => {
@@ -1271,6 +1292,18 @@ export default function ChatWindowPage() {
               }}
             />
           </div>
+        </div>
+        <div className="agent-switcher">
+          <Select
+            size="small"
+            value={selectedAgentId || undefined}
+            placeholder="选择智能体"
+            onChange={(value) => {
+              setSelectedAgentId(value);
+              window.localStorage.setItem('skill_agent_selected_agent', value);
+            }}
+            options={agents.map((agent) => ({ value: agent.id, label: agent.name }))}
+          />
         </div>
         <div className="session-section-label">Sessions</div>
         {sessions.map((session) => {

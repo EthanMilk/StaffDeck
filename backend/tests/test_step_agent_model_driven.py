@@ -67,7 +67,7 @@ def test_step_agent_uses_model_json_for_slots_and_tool(monkeypatch):
     )
 
     assert captured["payload"]["active_skill"]["skill_id"] == "repair_ticket"
-    assert "技能步骤是业务目标" in captured["system_prompt"]
+    assert "技能节点是业务目标" in captured["system_prompt"]
     assert captured["payload"]["active_step"]["step_id"] == "collect_issue"
     assert captured["payload"]["router_decision"]["user_intent"] == "设备报修"
     assert captured["payload"]["recent_messages"][0]["content"] == "我是张三，设备 EQ-9 无法启动"
@@ -89,20 +89,25 @@ def _repair_skill() -> Skill:
             "skill_id": "repair_ticket",
             "name": "设备报修",
             "required_info": ["customer_name", "asset_id", "issue"],
-            "steps": [
+            "nodes": [
                 {
-                    "step_id": "collect_issue",
+                    "node_id": "collect_issue",
+                    "type": "collect_info",
                     "name": "收集报修信息",
                     "expected_user_info": ["customer_name", "asset_id", "issue"],
                     "allowed_actions": ["ask_user", "call_tool:ticket.create"],
                 },
                 {
-                    "step_id": "reply_ticket",
+                    "node_id": "reply_ticket",
+                    "type": "response",
                     "name": "反馈工单",
                     "expected_user_info": [],
                     "allowed_actions": ["answer_user"],
                 },
             ],
+            "edges": [{"source_node_id": "collect_issue", "next_node_id": "reply_ticket"}],
+            "start_node_id": "collect_issue",
+            "terminal_node_ids": ["reply_ticket"],
         },
         status="published",
     )

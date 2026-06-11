@@ -9,6 +9,7 @@ def public_session(session: ChatSession) -> SessionPublic:
         session_id=session.id,
         tenant_id=session.tenant_id,
         user_id=session.user_id,
+        agent_id=session.agent_id,
         title=session.title,
         active_skill_id=session.active_skill_id,
         active_step_id=session.active_step_id,

@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class AgentProfileCreateRequest(BaseModel):
+    tenant_id: str
+    name: str
+    description: Optional[str] = None
+    persona_prompt: Optional[str] = None
+    is_overall: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentProfileUpdateRequest(BaseModel):
+    tenant_id: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    persona_prompt: Optional[str] = None
+    status: Optional[Literal["active", "archived"]] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class AgentResourceBindingRead(BaseModel):
+    id: str
+    tenant_id: str
+    agent_id: str
+    resource_type: Literal["skill", "general_skill", "knowledge_base"]
+    resource_id: str
+    status: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: str
+    updated_at: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AgentProfileRead(BaseModel):
+    id: str
+    tenant_id: str
+    name: str
+    description: Optional[str] = None
+    persona_prompt: Optional[str] = None
+    is_overall: bool
+    status: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    resources: list[AgentResourceBindingRead] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class AgentResourceBindingInput(BaseModel):
+    resource_type: Literal["skill", "general_skill", "knowledge_base"]
+    resource_id: str
+    status: Literal["active", "inactive"] = "active"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentResourcesUpdateRequest(BaseModel):
+    tenant_id: str
+    resources: list[AgentResourceBindingInput] = Field(default_factory=list)

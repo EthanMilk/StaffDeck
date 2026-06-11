@@ -66,9 +66,6 @@ def _active_step(skill: Skill | None, active_step_id: str | None) -> dict[str, o
     for node in content.get("nodes", []):
         if isinstance(node, dict) and node.get("node_id") == active_step_id:
             return _node_as_step(node)
-    for step in content.get("steps", []):
-        if isinstance(step, dict) and step.get("step_id") == active_step_id:
-            return step
     return None
 
 

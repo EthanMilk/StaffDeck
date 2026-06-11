@@ -41,6 +41,7 @@ def session_read(row: ChatSession) -> ChatSessionRead:
         id=row.id,
         tenant_id=row.tenant_id,
         user_id=row.user_id,
+        agent_id=row.agent_id,
         title=row.title,
         active_skill_id=row.active_skill_id,
         active_step_id=row.active_step_id,
@@ -121,6 +122,7 @@ def create_chat_session(
         id=new_id("session"),
         tenant_id=request.tenant_id,
         user_id=current_user.id,
+        agent_id=request.agent_id,
         title=title,
     )
     db.add(row)
@@ -431,7 +433,7 @@ def _upsert_skill_feedback_for_message(
         return
     skill_id = skill_context["skill_id"]
     skill_version = skill_context.get("skill_version")
-    step_id = skill_context.get("step_id")
+    step_id = skill_context.get("node_id") or skill_context.get("step_id")
     existing = db.exec(
         select(SkillFeedback).where(
             SkillFeedback.tenant_id == tenant_id,
@@ -546,8 +548,14 @@ def _skill_context_from_event(event: AgentEvent, skill_hint: str | None = None) 
         if not skill_id:
             return None
         skill_version = str(payload.get("to_skill_version") or payload.get("from_skill_version") or "") or None
-        step_id = str(payload.get("to_step_id") or payload.get("from_step_id") or "") or None
-        return {"skill_id": skill_id, "skill_version": skill_version, "step_id": step_id}
+        node_id = str(
+            payload.get("to_node_id")
+            or payload.get("from_node_id")
+            or payload.get("to_step_id")
+            or payload.get("from_step_id")
+            or ""
+        ) or None
+        return {"skill_id": skill_id, "skill_version": skill_version, "node_id": node_id}
     if event.event_type == "skill_completed":
         skill_id = str(payload.get("skill_id") or "") or None
         if not skill_id:
@@ -555,7 +563,7 @@ def _skill_context_from_event(event: AgentEvent, skill_hint: str | None = None) 
         return {
             "skill_id": skill_id,
             "skill_version": str(payload.get("skill_version") or "") or None,
-            "step_id": str(payload.get("step_id") or "") or None,
+            "node_id": str(payload.get("node_id") or payload.get("step_id") or "") or None,
         }
     if event.event_type == "reflection_decision_created":
         skill_id = str(payload.get("target_skill_id") or "") or None
@@ -564,7 +572,7 @@ def _skill_context_from_event(event: AgentEvent, skill_hint: str | None = None) 
         return {
             "skill_id": skill_id,
             "skill_version": str(payload.get("target_skill_version") or "") or None,
-            "step_id": str(payload.get("target_step_id") or "") or None,
+            "node_id": str(payload.get("target_node_id") or payload.get("target_step_id") or "") or None,
         }
     return None
 

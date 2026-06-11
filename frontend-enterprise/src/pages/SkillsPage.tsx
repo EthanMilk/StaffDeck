@@ -582,7 +582,7 @@ function statusText(status: string): string {
 
 function skillSourceText(row: SkillVersionRead): string {
   const skill = row.content;
-  const steps = skillGraphSteps(skill);
+  const nodes = skillGraphSteps(skill);
   return [
     `# ${skill.name}`,
     `- skill_id: ${skill.skill_id}`,
@@ -595,11 +595,11 @@ function skillSourceText(row: SkillVersionRead): string {
     `- required_info: ${formatList(skill.required_info)}`,
     `- response_rules: ${formatList(skill.response_rules)}`,
     '',
-    '## 详细步骤',
-    ...steps.flatMap((step, index) => [
+    '## 详细节点',
+    ...nodes.flatMap((step, index) => [
       '',
-      `### Step ${index + 1}: ${String(step.name || step.step_id || '-')}`,
-      `- step_id: ${String(step.step_id || '-')}`,
+      `### 节点 ${index + 1}: ${String(step.name || step.node_id || '-')}`,
+      `- node_id: ${String(step.node_id || '-')}`,
       `- node_type: ${String(step.type || 'collect_info')}`,
       `- condition: ${String(step.condition || '-')}`,
       `- instruction: ${String(step.instruction || '-')}`,
@@ -612,16 +612,16 @@ function skillSourceText(row: SkillVersionRead): string {
 function skillGraphSteps(skill: SkillVersionRead['content']): Array<Record<string, unknown>> {
   if (Array.isArray(skill.nodes) && skill.nodes.length > 0) {
     return skill.nodes.map((node, index) => ({
-      step_id: node.node_id || node.step_id || `step_${index + 1}`,
+      node_id: node.node_id || `node_${index + 1}`,
       type: node.type || 'collect_info',
       condition: node.condition || '',
-      name: node.name || node.node_id || `步骤 ${index + 1}`,
+      name: node.name || node.node_id || `节点 ${index + 1}`,
       instruction: node.instruction || '',
       expected_user_info: Array.isArray(node.expected_user_info) ? node.expected_user_info : [],
       allowed_actions: Array.isArray(node.allowed_actions) ? node.allowed_actions : [],
     }));
   }
-  return Array.isArray(skill.steps) ? skill.steps : [];
+  return [];
 }
 
 function formatList(value: unknown): string {

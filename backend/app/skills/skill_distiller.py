@@ -12,8 +12,8 @@ from app.db.models import ModelConfig
 from app.llm import LLMClient, LLMError
 from app.skills.llm_limits import skill_model_config
 from app.skills.skill_reflection import reflect_skill_response, reflect_skill_response_stream
-from app.skills.skill_schema import SkillDistillRequest, SkillDistillResponse, SkillCard, SkillStep, ToolSuggestion
-from app.skills.step_ids import ensure_unique_step_ids, skill_card_with_unique_step_ids
+from app.skills.skill_schema import SkillDistillRequest, SkillDistillResponse, SkillCard, SkillGraphNode, ToolSuggestion
+from app.skills.step_ids import ensure_unique_node_ids, skill_card_with_unique_step_ids
 
 
 PROMPT_PATH = Path(__file__).resolve().parents[1] / "llm" / "prompts" / "skill_distiller_prompt.md"
@@ -147,8 +147,8 @@ class SkillDistiller:
                 "previous_error": error,
                 "repair_attempt": attempt + 1,
                 "repair_instruction": (
-                    "上一次输出无法解析或未通过 Skill Card 校验。请修复为完整合法 JSON。"
-                    "不要解释，不要使用代码围栏。必须保留原始流程中的步骤、工具建议和闭环约束。"
+                    "上一次输出无法解析或未通过 Skill Card graph 校验。请修复为完整合法 JSON。"
+                    "不要解释，不要使用代码围栏。必须保留原始流程中的节点、边、工具建议和闭环约束。"
                 ),
             }
             output = client.generate_text(prompt, repair_payload)
@@ -173,7 +173,7 @@ class SkillDistiller:
                 "generation_mode": "outline_only",
                 "previous_error": previous_error,
                 "generation_instruction": (
-                    "先生成完整但紧凑的 Skill Card 大纲。steps 必须覆盖原始流程全部步骤，"
+                    "先生成完整但紧凑的 Skill Card graph 大纲。nodes/edges 必须覆盖原始流程全部节点与条件推进关系，"
                     "每个 instruction 只写一句目标说明；保留 response_rules、slot_filling_policy、"
                     "interruption_policy 和 tool_mentions。只输出 JSON。"
                 ),
@@ -183,35 +183,35 @@ class SkillDistiller:
         draft_data = outline.draft_skill.model_dump(mode="json")
         warnings = list(outline.warnings)
         tool_mentions = [item.model_dump(mode="json") for item in outline.tool_suggestions]
-        steps = [step for step in draft_data.get("steps", []) if isinstance(step, dict)]
+        nodes = [node for node in draft_data.get("nodes", []) if isinstance(node, dict)]
 
-        for index, step in enumerate(steps):
-            step_text = client.generate_text(
+        for index, node in enumerate(nodes):
+            node_text = client.generate_text(
                 prompt,
                 {
                     **payload,
-                    "generation_mode": "expand_step",
+                    "generation_mode": "expand_node",
                     "current_draft": draft_data,
-                    "target_step_index": index,
-                    "target_step": step,
+                    "target_node_index": index,
+                    "target_node": node,
                     "generation_instruction": (
-                        "只扩写 target_step。输出 JSON：{\"step\": {...}, \"warnings\": [], "
-                        "\"tool_mentions\": []}。step 必须包含 step_id、name、instruction、"
+                        "只扩写 target_node。输出 JSON：{\"node\": {...}, \"warnings\": [], "
+                        "\"tool_mentions\": []}。node 必须包含 node_id、type、name、instruction、"
                         "expected_user_info、allowed_actions。不要输出完整技能。"
                     ),
                 },
             )
             try:
-                step_raw = _raw_json_from_text(step_text)
-                step_data = step_raw.get("step") if isinstance(step_raw.get("step"), dict) else step_raw
-                steps[index] = SkillStep.model_validate(step_data).model_dump(mode="json")
-                warnings.extend(str(item) for item in step_raw.get("warnings", []) if str(item).strip())
-                if isinstance(step_raw.get("tool_mentions"), list):
-                    tool_mentions.extend(item for item in step_raw["tool_mentions"] if isinstance(item, dict))
+                node_raw = _raw_json_from_text(node_text)
+                node_data = node_raw.get("node") if isinstance(node_raw.get("node"), dict) else node_raw
+                nodes[index] = SkillGraphNode.model_validate(node_data).model_dump(mode="json")
+                warnings.extend(str(item) for item in node_raw.get("warnings", []) if str(item).strip())
+                if isinstance(node_raw.get("tool_mentions"), list):
+                    tool_mentions.extend(item for item in node_raw["tool_mentions"] if isinstance(item, dict))
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
-                warnings.append(f"模型未能扩写步骤 {index + 1}，已保留大纲步骤：{exc}")
+                warnings.append(f"模型未能扩写节点 {index + 1}，已保留大纲节点：{exc}")
 
-        draft_data["steps"] = steps
+        draft_data["nodes"] = nodes
         reviewed = self._normalize_response(
             {"draft_skill": draft_data, "warnings": warnings, "tool_mentions": tool_mentions},
             request,
@@ -247,15 +247,24 @@ class SkillDistiller:
         fallback = self._fallback_card(request)
 
         required_info = _string_list(draft.get("required_info"), fallback.required_info)
-        steps = self._normalize_steps(draft.get("steps"), fallback.steps)
-        steps, step_warnings = self._ensure_closed_loop_steps(steps, request)
-        warnings.extend(step_warnings)
-        steps, unique_step_warnings = ensure_unique_step_ids(steps)
-        warnings.extend(unique_step_warnings)
+        nodes = self._normalize_nodes(draft.get("nodes"), fallback.nodes)
+        nodes, node_warnings = self._ensure_closed_loop_nodes(nodes, request)
+        warnings.extend(node_warnings)
+        nodes, unique_node_warnings = ensure_unique_node_ids(nodes)
+        warnings.extend(unique_node_warnings)
+        edges = self._normalize_edges(draft.get("edges"), nodes, fallback.edges)
+        edges = _ensure_linear_reachability(nodes, edges)
+        node_id_map = {str(node.get("node_id") or "") for node in nodes}
+        start_node_id = _string(draft.get("start_node_id"), fallback.start_node_id)
+        if start_node_id not in node_id_map:
+            start_node_id = nodes[0]["node_id"]
+            warnings.append("模型输出的 start_node_id 不存在，已改为第一个节点。")
+        terminal_node_ids = _string_list(draft.get("terminal_node_ids"), fallback.terminal_node_ids)
+        terminal_node_ids = [node_id for node_id in terminal_node_ids if node_id in node_id_map] or [nodes[-1]["node_id"]]
         raw_tool_mentions = raw.get("tool_mentions") if isinstance(raw.get("tool_mentions"), list) else raw.get("tool_suggestions")
         tool_resolutions = _normalize_tool_suggestions(raw_tool_mentions, request, [])
-        steps, missing_tool_names = _remove_unknown_tool_actions(
-            steps,
+        nodes, missing_tool_names = _remove_unknown_tool_actions(
+            nodes,
             request.available_tools,
             _tool_action_names_from_suggestions(tool_resolutions),
         )
@@ -269,7 +278,7 @@ class SkillDistiller:
             response_rules.append(CLOSED_LOOP_RESPONSE_RULE)
         if ADAPTIVE_FLOW_RESPONSE_RULE not in response_rules:
             response_rules.append(ADAPTIVE_FLOW_RESPONSE_RULE)
-        if _steps_declare_confirmation(steps) and CONFIRMATION_FLOW_RESPONSE_RULE not in response_rules:
+        if _steps_declare_confirmation(nodes) and CONFIRMATION_FLOW_RESPONSE_RULE not in response_rules:
             response_rules.append(CONFIRMATION_FLOW_RESPONSE_RULE)
         normalized = {
             "skill_id": _string(draft.get("skill_id"), fallback.skill_id),
@@ -286,11 +295,14 @@ class SkillDistiller:
             "slot_filling_policy": _slot_filling_policy(
                 draft.get("slot_filling_policy"),
                 required_info,
-                steps,
+                nodes,
                 fallback.slot_filling_policy,
             ),
             "response_rules": response_rules,
-            "steps": steps,
+            "nodes": nodes,
+            "edges": edges,
+            "start_node_id": start_node_id,
+            "terminal_node_ids": terminal_node_ids,
             "interruption_policy": _string_dict(draft.get("interruption_policy"), fallback.interruption_policy),
         }
         draft_skill, card_warnings = skill_card_with_unique_step_ids(SkillCard.model_validate(normalized))
@@ -306,34 +318,32 @@ class SkillDistiller:
             warnings=_compact_warnings(warnings),
             tool_suggestions=tool_suggestions,
         )
-        if not response.draft_skill.steps:
-            response.draft_skill.steps = fallback.steps
-            response.warnings = _compact_warnings([*response.warnings, "模型未生成步骤，已使用规则生成默认步骤。"])
         return response
 
-    def _ensure_closed_loop_steps(
-        self, steps: list[dict[str, Any]], request: SkillDistillRequest
+    def _ensure_closed_loop_nodes(
+        self, nodes: list[dict[str, Any]], request: SkillDistillRequest
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        normalized_steps = [dict(step) for step in steps]
+        normalized_nodes = [dict(node) for node in nodes]
         warnings: list[str] = []
-        _attach_declared_confirmation_to_tool_steps(normalized_steps)
+        _attach_declared_confirmation_to_tool_steps(normalized_nodes)
 
-        for step in normalized_steps:
-            _ensure_adaptive_step_instruction(step)
-            actions = [str(action) for action in step.get("allowed_actions", [])]
+        for node in normalized_nodes:
+            _ensure_adaptive_step_instruction(node)
+            actions = [str(action) for action in node.get("allowed_actions", [])]
             if not any(action.startswith("call_tool:") for action in actions):
                 continue
             if "continue_flow" not in actions:
                 actions.append("continue_flow")
-                step["allowed_actions"] = actions
-            instruction = str(step.get("instruction") or "")
+                node["allowed_actions"] = actions
+            instruction = str(node.get("instruction") or "")
             if "工具成功后" not in instruction:
-                step["instruction"] = f"{instruction}{TOOL_STEP_INSTRUCTION_SUFFIX}"
+                node["instruction"] = f"{instruction}{TOOL_STEP_INSTRUCTION_SUFFIX}"
 
-        if not _last_step_allows_answer(normalized_steps):
-            normalized_steps.append(
+        if not _last_step_allows_answer(normalized_nodes):
+            normalized_nodes.append(
                 {
-                    "step_id": _unique_step_id(normalized_steps, "reply_final_result"),
+                    "node_id": _unique_step_id(normalized_nodes, "reply_final_result"),
+                    "type": "response",
                     "name": "反馈最终结果",
                     "instruction": (
                         "基于已收集信息和工具结果给用户明确最终回复；"
@@ -344,39 +354,85 @@ class SkillDistiller:
                     "allowed_actions": ["answer_user", "handoff_human"],
                 }
             )
-            warnings.append("原始改写缺少最终回复步骤，已补充闭环反馈步骤。")
+            warnings.append("原始改写缺少最终回复节点，已补充闭环反馈节点。")
         else:
-            last_step = normalized_steps[-1]
+            last_step = normalized_nodes[-1]
             instruction = str(last_step.get("instruction") or "")
             if "明确" not in instruction or "请稍候" in instruction:
                 last_step["instruction"] = (
                     f"{instruction}给用户明确最终回复；无法闭环时转人工，不要只说请稍候。"
                 )
 
-        return normalized_steps, warnings
+        return normalized_nodes, warnings
 
-    def _normalize_steps(self, value: Any, fallback_steps: list[SkillStep]) -> list[dict[str, Any]]:
+    def _normalize_nodes(self, value: Any, fallback_nodes: list[SkillGraphNode]) -> list[dict[str, Any]]:
         if not isinstance(value, list):
-            return [step.model_dump() for step in fallback_steps]
-        steps: list[dict[str, Any]] = []
+            return [node.model_dump() for node in fallback_nodes]
+        nodes: list[dict[str, Any]] = []
         for index, item in enumerate(value):
             if not isinstance(item, dict):
                 continue
-            fallback = fallback_steps[min(index, len(fallback_steps) - 1)]
-            steps.append(
+            fallback = fallback_nodes[min(index, len(fallback_nodes) - 1)]
+            nodes.append(
                 {
-                    "step_id": _string(item.get("step_id"), fallback.step_id),
+                    "node_id": _string(item.get("node_id"), fallback.node_id),
+                    "type": _string(item.get("type"), fallback.type),
                     "name": _string(item.get("name"), fallback.name),
                     "instruction": _string(item.get("instruction"), fallback.instruction),
+                    "optional": bool(item.get("optional", fallback.optional)),
+                    "condition": item.get("condition") if isinstance(item.get("condition"), str) else fallback.condition,
                     "expected_user_info": _string_list(
                         item.get("expected_user_info"), fallback.expected_user_info
                     ),
                     "allowed_actions": _normalize_actions(
                         _string_list(item.get("allowed_actions"), fallback.allowed_actions)
                     ),
+                    "knowledge_scope": item.get("knowledge_scope") if isinstance(item.get("knowledge_scope"), dict) else fallback.knowledge_scope,
+                    "retry_policy": item.get("retry_policy") if isinstance(item.get("retry_policy"), dict) else fallback.retry_policy,
+                    "metadata": item.get("metadata") if isinstance(item.get("metadata"), dict) else fallback.metadata,
                 }
             )
-        return steps or [step.model_dump() for step in fallback_steps]
+        return nodes or [node.model_dump() for node in fallback_nodes]
+
+    def _normalize_edges(self, value: Any, nodes: list[dict[str, Any]], fallback_edges: list[Any]) -> list[dict[str, Any]]:
+        node_ids = {str(node.get("node_id") or "") for node in nodes}
+        edges: list[dict[str, Any]] = []
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                if not isinstance(item, dict):
+                    continue
+                source = _string(item.get("source_node_id"), "")
+                target = _string(item.get("next_node_id"), "")
+                if source not in node_ids or target not in node_ids:
+                    continue
+                edges.append(
+                    {
+                        "source_node_id": source,
+                        "next_node_id": target,
+                        "condition": item.get("condition") if isinstance(item.get("condition"), str) else None,
+                        "priority": int(item.get("priority") or index),
+                        "label": item.get("label") if isinstance(item.get("label"), str) else None,
+                    }
+                )
+        if edges:
+            return edges
+        if fallback_edges:
+            fallback = []
+            for edge in fallback_edges:
+                item = edge.model_dump(mode="json") if hasattr(edge, "model_dump") else dict(edge)
+                if item.get("source_node_id") in node_ids and item.get("next_node_id") in node_ids:
+                    fallback.append(item)
+            if fallback:
+                return fallback
+        return [
+            {
+                "source_node_id": nodes[index]["node_id"],
+                "next_node_id": nodes[index + 1]["node_id"],
+                "priority": index,
+                "label": "默认推进",
+            }
+            for index in range(len(nodes) - 1)
+        ]
 
     def _fallback_response(self, request: SkillDistillRequest, warning: str) -> SkillDistillResponse:
         return SkillDistillResponse(draft_skill=self._fallback_card(request), warnings=_compact_warnings([warning]))
@@ -385,10 +441,10 @@ class SkillDistiller:
         title = request.title.strip() or "新技能"
         raw = request.raw_content
         required_info: list[str] = []
-        steps: list[SkillStep] = []
-        steps.append(
-            SkillStep(
-                step_id="understand_request",
+        nodes = [
+            SkillGraphNode(
+                node_id="understand_request",
+                type="decision",
                 name="理解原始流程",
                 instruction=(
                     "根据原始流程文档理解用户目标、缺失信息和下一步处理方式；"
@@ -397,11 +453,10 @@ class SkillDistiller:
                 ),
                 expected_user_info=[],
                 allowed_actions=["ask_user", "continue_flow", "handoff_human"],
-            )
-        )
-        steps.append(
-            SkillStep(
-                step_id="reply_result",
+            ),
+            SkillGraphNode(
+                node_id="reply_result",
+                type="response",
                 name="反馈结果",
                 instruction=(
                     "根据已收集的信息和工具结果给用户明确回复；信息不足时继续追问，不要编造事实；"
@@ -409,8 +464,8 @@ class SkillDistiller:
                 ),
                 expected_user_info=[],
                 allowed_actions=["answer_user", "handoff_human"],
-            )
-        )
+            ),
+        ]
         return SkillCard(
             skill_id=_slugify(title, raw),
             name=title,
@@ -426,7 +481,10 @@ class SkillDistiller:
                 "信息不足时先追问，不要编造事实。",
                 ADAPTIVE_FLOW_RESPONSE_RULE,
             ],
-            steps=steps,
+            nodes=nodes,
+            edges=[{"source_node_id": "understand_request", "next_node_id": "reply_result", "priority": 0, "label": "默认推进"}],
+            start_node_id="understand_request",
+            terminal_node_ids=["reply_result"],
             interruption_policy={
                 "related_question": "回答相关问题后回到当前流程。",
                 "unrelated_business": "可切换新流程并保留当前进度。",
@@ -493,13 +551,44 @@ def _last_step_allows_answer(steps: list[dict[str, Any]]) -> bool:
 
 
 def _unique_step_id(steps: list[dict[str, Any]], base: str) -> str:
-    existing = {str(step.get("step_id") or "") for step in steps}
+    existing = {str(step.get("node_id") or "") for step in steps}
     if base not in existing:
         return base
     index = 2
     while f"{base}_{index}" in existing:
         index += 1
     return f"{base}_{index}"
+
+
+def _ensure_linear_reachability(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(nodes) < 2:
+        return edges
+    existing = {
+        (str(edge.get("source_node_id") or ""), str(edge.get("next_node_id") or ""))
+        for edge in edges
+        if isinstance(edge, dict)
+    }
+    next_edges = [dict(edge) for edge in edges]
+    incoming = {str(edge.get("next_node_id") or "") for edge in next_edges}
+    for index in range(1, len(nodes)):
+        target = str(nodes[index].get("node_id") or "")
+        source = str(nodes[index - 1].get("node_id") or "")
+        if not target or not source or target in incoming:
+            continue
+        pair = (source, target)
+        if pair in existing:
+            continue
+        next_edges.append(
+            {
+                "source_node_id": source,
+                "next_node_id": target,
+                "priority": index,
+                "label": "默认推进",
+            }
+        )
+        existing.add(pair)
+        incoming.add(target)
+    return next_edges
 
 
 def _unique_warnings(warnings: list[str]) -> list[str]:

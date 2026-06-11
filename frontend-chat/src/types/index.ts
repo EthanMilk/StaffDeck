@@ -2,6 +2,7 @@ export type ChatSession = {
   id: string;
   tenant_id: string;
   user_id?: string;
+  agent_id?: string;
   title?: string;
   active_skill_id?: string;
   active_step_id?: string;
@@ -9,6 +10,16 @@ export type ChatSession = {
   summary?: string;
   last_agent_question?: string;
   updated_at: string;
+};
+
+export type AgentProfileRead = {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description?: string;
+  persona_prompt?: string;
+  is_overall: boolean;
+  status: string;
 };
 
 export type ChatMessage = {

@@ -262,9 +262,16 @@ class ResponseGenerator:
         ]
 
     def _current_step(self, session: ChatSession, skill: Skill) -> dict | None:
-        for step in (skill.content_json or {}).get("steps", []):
-            if isinstance(step, dict) and step.get("step_id") == session.active_step_id:
-                return step
+        for node in (skill.content_json or {}).get("nodes", []):
+            if isinstance(node, dict) and node.get("node_id") == session.active_step_id:
+                return {
+                    "step_id": node.get("node_id"),
+                    "node_id": node.get("node_id"),
+                    "name": node.get("name"),
+                    "instruction": node.get("instruction"),
+                    "expected_user_info": node.get("expected_user_info", []),
+                    "allowed_actions": node.get("allowed_actions", []),
+                }
         return None
 
     def _slot_has_value(self, slots: dict, field: str) -> bool:

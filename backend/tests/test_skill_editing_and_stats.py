@@ -28,35 +28,35 @@ def test_skill_editor_only_merges_selected_step() -> None:
     current = _skill_card()
     candidate = _skill_card()
     candidate.name = "不应修改基础信息"
-    candidate.steps[0].instruction = "新的收集说明"
-    candidate.steps[1].instruction = "不应修改其他步骤"
+    candidate.nodes[0].instruction = "新的收集说明"
+    candidate.nodes[1].instruction = "不应修改其他步骤"
 
     response = SkillEditor()._normalize_response(  # noqa: SLF001
         {
             "assistant_message": "已改写步骤。",
             "draft_skill": candidate.model_dump(),
-            "changed_paths": ["steps.collect_info"],
+            "changed_paths": ["nodes.collect_info"],
         },
         SkillRewriteRequest(
             tenant_id="tenant_demo",
             current_skill=current,
             instruction="只优化第一步",
-            target_path="steps.collect_info",
+            target_path="nodes.collect_info",
             target_label="步骤 1",
         ),
     )
 
     assert response.draft_skill.name == current.name
-    assert response.draft_skill.steps[0].instruction == "新的收集说明"
-    assert response.draft_skill.steps[1].instruction == current.steps[1].instruction
+    assert response.draft_skill.nodes[0].instruction == "新的收集说明"
+    assert response.draft_skill.nodes[1].instruction == current.nodes[1].instruction
 
 
 def test_skill_editor_merges_multiple_selected_targets() -> None:
     current = _skill_card()
     candidate = _skill_card()
     candidate.description = "新的描述"
-    candidate.steps[0].instruction = "新的收集说明"
-    candidate.steps[1].instruction = "不应修改第二步"
+    candidate.nodes[0].instruction = "新的收集说明"
+    candidate.nodes[1].instruction = "不应修改第二步"
 
     response = SkillEditor()._normalize_response(  # noqa: SLF001
         {
@@ -68,47 +68,47 @@ def test_skill_editor_merges_multiple_selected_targets() -> None:
             current_skill=current,
             instruction="优化基础信息和第一步",
             target_path="basic",
-            target_paths=["basic", "steps.collect_info"],
+            target_paths=["basic", "nodes.collect_info"],
             target_label="基础信息、步骤 1",
         ),
     )
 
     assert response.draft_skill.description == "新的描述"
-    assert response.draft_skill.steps[0].instruction == "新的收集说明"
-    assert response.draft_skill.steps[1].instruction == current.steps[1].instruction
+    assert response.draft_skill.nodes[0].instruction == "新的收集说明"
+    assert response.draft_skill.nodes[1].instruction == current.nodes[1].instruction
 
 
-def test_skill_editor_can_target_duplicate_step_ids_by_index() -> None:
+def test_skill_editor_can_target_node_by_index() -> None:
     current = _skill_card()
-    current.steps[1].step_id = "collect_info"
     candidate = _skill_card()
-    candidate.steps[0].instruction = "不应修改第一步"
-    candidate.steps[1].step_id = "collect_info"
-    candidate.steps[1].instruction = "只修改第二个重复 step"
+    candidate.nodes[0].instruction = "不应修改第一步"
+    candidate.nodes[1].instruction = "只修改第二个节点"
 
     response = SkillEditor()._normalize_response(  # noqa: SLF001
         {
-            "assistant_message": "已改写指定下标步骤。",
+            "assistant_message": "已改写指定下标节点。",
             "draft_skill": candidate.model_dump(),
         },
         SkillRewriteRequest(
             tenant_id="tenant_demo",
             current_skill=current,
-            instruction="只改第二个重复步骤",
-            target_path="steps[1]",
-            target_paths=["steps[1]"],
+            instruction="只改第二个节点",
+            target_path="nodes[1]",
+            target_paths=["nodes[1]"],
             target_label="步骤 2",
         ),
     )
 
-    assert response.draft_skill.steps[0].instruction == current.steps[0].instruction
-    assert response.draft_skill.steps[1].instruction == "只修改第二个重复 step"
+    assert response.draft_skill.nodes[0].instruction == current.nodes[0].instruction
+    assert response.draft_skill.nodes[1].instruction == "只修改第二个节点"
 
 
 def test_skill_editor_allows_selected_step_deletion() -> None:
     current = _skill_card()
     candidate_data = current.model_dump(mode="json")
-    candidate_data["steps"] = candidate_data["steps"][:1]
+    candidate_data["nodes"] = candidate_data["nodes"][:1]
+    candidate_data["edges"] = []
+    candidate_data["terminal_node_ids"] = ["collect_info"]
     candidate = SkillCard.model_validate(candidate_data)
 
     response = SkillEditor()._normalize_response(  # noqa: SLF001
@@ -120,22 +120,22 @@ def test_skill_editor_allows_selected_step_deletion() -> None:
             tenant_id="tenant_demo",
             current_skill=current,
             instruction="删除第二步",
-            target_path="steps[1]",
-            target_paths=["steps[1]"],
+            target_path="nodes[1]",
+            target_paths=["nodes[1]"],
             target_label="步骤 2",
         ),
     )
 
-    assert [step.step_id for step in response.draft_skill.steps] == ["collect_info"]
+    assert [step.node_id for step in response.draft_skill.nodes] == ["collect_info"]
 
 
 def test_skill_editor_allows_selected_step_insertion() -> None:
     current = _skill_card()
     candidate_data = current.model_dump(mode="json")
-    candidate_data["steps"].insert(
+    candidate_data["nodes"].insert(
         1,
         {
-            "step_id": "confirm_purchase",
+            "node_id": "confirm_purchase",
             "name": "确认购买信息",
             "instruction": "向用户确认商品和数量。",
             "expected_user_info": ["purchase_confirmed"],
@@ -153,13 +153,13 @@ def test_skill_editor_allows_selected_step_insertion() -> None:
             tenant_id="tenant_demo",
             current_skill=current,
             instruction="在第一步后新增确认步骤",
-            target_path="steps[0]",
-            target_paths=["steps[0]"],
+            target_path="nodes[0]",
+            target_paths=["nodes[0]"],
             target_label="步骤 1",
         ),
     )
 
-    assert [step.step_id for step in response.draft_skill.steps] == [
+    assert [step.node_id for step in response.draft_skill.nodes] == [
         "collect_info",
         "confirm_purchase",
         "reply_result",
@@ -169,9 +169,13 @@ def test_skill_editor_allows_selected_step_insertion() -> None:
 
 def test_skill_editor_merges_selected_step_id_change() -> None:
     current = _skill_card()
-    current.steps[1].step_id = "create_order"
+    current.nodes[1].node_id = "create_order"
+    current.edges[0].next_node_id = "create_order"
+    current.terminal_node_ids = ["create_order"]
     candidate = _skill_card()
-    candidate.steps[1].step_id = "feedback_order_result"
+    candidate.nodes[1].node_id = "feedback_order_result"
+    candidate.edges[0].next_node_id = "feedback_order_result"
+    candidate.terminal_node_ids = ["feedback_order_result"]
 
     response = SkillEditor()._normalize_response(  # noqa: SLF001
         {
@@ -182,22 +186,22 @@ def test_skill_editor_merges_selected_step_id_change() -> None:
             tenant_id="tenant_demo",
             current_skill=current,
             instruction="把反馈订单结果的 step_id 从 create_order 改成 feedback_order_result",
-            target_path="steps[1]",
-            target_paths=["steps[1]"],
+            target_path="nodes[1]",
+            target_paths=["nodes[1]"],
             target_label="步骤 2：反馈结果",
         ),
     )
 
-    assert response.draft_skill.steps[0].step_id == current.steps[0].step_id
-    assert response.draft_skill.steps[1].step_id == "feedback_order_result"
+    assert response.draft_skill.nodes[0].node_id == current.nodes[0].node_id
+    assert response.draft_skill.nodes[1].node_id == "feedback_order_result"
 
 
 def test_skill_editor_applies_step_id_corrections_to_final_draft() -> None:
     current = _skill_card()
-    current.steps[0].step_id = "collect_info"
-    current.steps[1].step_id = "reply_result"
     candidate = _skill_card()
-    candidate.steps[1].step_id = "collect_info"
+    candidate.nodes[1].node_id = "feedback_order_result"
+    candidate.edges[0].next_node_id = "feedback_order_result"
+    candidate.terminal_node_ids = ["feedback_order_result"]
 
     response = SkillEditor()._normalize_response(  # noqa: SLF001
         {
@@ -207,17 +211,17 @@ def test_skill_editor_applies_step_id_corrections_to_final_draft() -> None:
         SkillRewriteRequest(
             tenant_id="tenant_demo",
             current_skill=current,
-            instruction="把第二步 step_id 改成 collect_info",
-            target_path="steps[1]",
-            target_paths=["steps[1]"],
+            instruction="把第二个节点 ID 改成 feedback_order_result",
+            target_path="nodes[1]",
+            target_paths=["nodes[1]"],
             target_label="步骤 2",
         ),
     )
 
-    assert response.draft_skill.steps[0].step_id == "collect_info"
-    assert response.draft_skill.steps[1].step_id == "collect_info_2"
-    assert "steps[1]" in response.changed_paths
-    assert any("步骤 2" in warning and "collect_info_2" in warning for warning in response.warnings)
+    assert response.draft_skill.nodes[0].node_id == "collect_info"
+    assert response.draft_skill.nodes[1].node_id == "feedback_order_result"
+    assert "nodes[1]" in response.changed_paths
+    assert not response.warnings
 
 
 def test_skill_editor_applies_patch_response_without_full_draft() -> None:
@@ -238,13 +242,13 @@ def test_skill_editor_applies_patch_response_without_full_draft() -> None:
             current_skill=current,
             instruction="回复规则太长了，精简一下",
             target_path="basic",
-            target_paths=["basic", "steps[0]", "steps[1]"],
+            target_paths=["basic", "nodes[0]", "nodes[1]"],
             target_label="全部区域",
         ),
     )
 
     assert response.draft_skill.response_rules == ["信息不足时追问；工具成功后给出明确结果，不编造事实。"]
-    assert response.draft_skill.steps[0].instruction == current.steps[0].instruction
+    assert response.draft_skill.nodes[0].instruction == current.nodes[0].instruction
 
 
 def test_skill_editor_stream_repairs_invalid_json_once(monkeypatch) -> None:
@@ -280,7 +284,7 @@ def test_skill_editor_stream_repairs_invalid_json_once(monkeypatch) -> None:
                 current_skill=_skill_card(),
                 instruction="回复规则太长了，精简一下",
                 target_path="basic",
-                target_paths=["basic", "steps[0]", "steps[1]"],
+                target_paths=["basic", "nodes[0]", "nodes[1]"],
                 target_label="全部区域",
             ),
             _model_config(),
@@ -774,7 +778,7 @@ def test_message_feedback_attribution_uses_turn_active_skill() -> None:
         context = _active_skill_context_for_assistant_message(db, "tenant_demo", assistant)
 
     assert skill_id == "refund"
-    assert context == {"skill_id": "refund", "skill_version": None, "step_id": "collect_order"}
+    assert context == {"skill_id": "refund", "skill_version": None, "node_id": "collect_order"}
 
 
 def test_message_feedback_attribution_uses_router_skill_hint_for_legacy_step_event() -> None:
@@ -804,7 +808,7 @@ def test_message_feedback_attribution_uses_router_skill_hint_for_legacy_step_eve
                 payload_json={
                     "decision": "continue_current_skill",
                     "target_skill_id": "purchase",
-                    "target_step_id": "create_order",
+                    "target_node_id": "create_order",
                 },
             )
         )
@@ -830,12 +834,11 @@ def test_message_feedback_attribution_uses_router_skill_hint_for_legacy_step_eve
         context = _active_skill_context_for_assistant_message(db, "tenant_demo", assistant)
 
     assert skill_id == "purchase"
-    assert context == {"skill_id": "purchase", "skill_version": None, "step_id": "create_order"}
+    assert context == {"skill_id": "purchase", "skill_version": None, "node_id": "create_order"}
 
 
-def test_skill_read_normalizes_duplicate_step_ids() -> None:
+def test_skill_read_preserves_graph_node_ids() -> None:
     content = _skill_card()
-    content.steps[1].step_id = content.steps[0].step_id
     row = Skill(
         tenant_id="tenant_demo",
         skill_id=content.skill_id,
@@ -845,9 +848,9 @@ def test_skill_read_normalizes_duplicate_step_ids() -> None:
     )
 
     payload = skill_read(row)
-    step_ids = [step.step_id for step in payload.content.steps]
+    node_ids = [node.node_id for node in payload.content.nodes]
 
-    assert step_ids == ["collect_info", "collect_info_2"]
+    assert node_ids == ["collect_info", "reply_result"]
 
 
 def test_skill_distiller_stream_uses_generation_status(monkeypatch) -> None:
@@ -872,16 +875,16 @@ def test_skill_distiller_stream_uses_generation_status(monkeypatch) -> None:
               "skip_satisfied_steps": true,
               "target_info": ["product_name_1", "product_name_2"]
             },
-            "steps": [
+            "nodes": [
               {
-                "step_id": "collect_names",
+                "node_id": "collect_names",
                 "name": "收集商品名称",
                 "instruction": "收集两个商品名称。",
                 "expected_user_info": ["product_name_1", "product_name_2"],
                 "allowed_actions": ["ask_user"]
               },
               {
-                "step_id": "reply_result",
+                "node_id": "reply_result",
                 "name": "反馈结果",
                 "instruction": "反馈明确结果。",
                 "expected_user_info": [],
@@ -940,9 +943,9 @@ def test_skill_distiller_stream_reflects_and_repairs_generated_skill(monkeypatch
                     "required_info": ["product_id"],
                     "slot_filling_policy": {"enabled": True},
                     "response_rules": [],
-                    "steps": [
+                    "nodes": [
                         {
-                            "step_id": "collect_product",
+                            "node_id": "collect_product",
                             "name": "收集商品",
                             "instruction": "收集商品。",
                             "expected_user_info": ["product_id"],
@@ -960,10 +963,10 @@ def test_skill_distiller_stream_reflects_and_repairs_generated_skill(monkeypatch
         assert self.max_output_tokens == 16384
         if payload.get("reflection_round") == 1:
             revised = dict(payload["candidate_skill"])
-            revised["steps"] = [
-                *revised["steps"],
+            revised["nodes"] = [
+                *revised["nodes"],
                 {
-                    "step_id": "reply_result",
+                    "node_id": "reply_result",
                     "name": "反馈结果",
                     "instruction": "给用户明确最终回复。",
                     "expected_user_info": [],
@@ -1013,7 +1016,7 @@ def test_skill_distiller_stream_reflects_and_repairs_generated_skill(monkeypatch
     assert any("校验未通过，正在应用第 1 轮修正" in text for text in status_texts)
     assert any("校验通过" in text for text in status_texts)
     assert any(event["event"] == "chunk_reset" for event in events)
-    assert [step["step_id"] for step in complete["data"]["draft_skill"]["steps"]][-1] == "reply_result"
+    assert [step["node_id"] for step in complete["data"]["draft_skill"]["nodes"]][-1] == "reply_result"
 
 
 def test_skill_distiller_reflection_checks_tool_call_format_without_rule_fallback(monkeypatch) -> None:
@@ -1033,16 +1036,16 @@ def test_skill_distiller_reflection_checks_tool_call_format_without_rule_fallbac
                     "required_info": ["product_name_1", "product_name_2"],
                     "slot_filling_policy": {"enabled": True},
                     "response_rules": [],
-                    "steps": [
+                    "nodes": [
                         {
-                            "step_id": "query_price",
+                            "node_id": "query_price",
                             "name": "查询价格",
                             "instruction": "当商品名已满足时调用 product.price_query 工具查询价格。",
                             "expected_user_info": ["product_name_1", "product_name_2"],
                             "allowed_actions": ["call_tool", "continue_flow"],
                         },
                         {
-                            "step_id": "reply_result",
+                            "node_id": "reply_result",
                             "name": "反馈结果",
                             "instruction": "基于工具结果反馈比价结果。",
                             "expected_user_info": [],
@@ -1062,11 +1065,11 @@ def test_skill_distiller_reflection_checks_tool_call_format_without_rule_fallbac
         if payload.get("reflection_round") == 1:
             rubric_names = {item["name"] for item in payload["rubrics"]}
             assert "tool_call_format" in rubric_names
-            assert payload["candidate_skill"]["steps"][0]["allowed_actions"] == ["call_tool", "continue_flow"]
+            assert payload["candidate_skill"]["nodes"][0]["allowed_actions"] == ["call_tool", "continue_flow"]
             revised = dict(payload["candidate_skill"])
-            revised["steps"] = [dict(step) for step in revised["steps"]]
-            revised["steps"][0]["allowed_actions"] = ["call_tool:product.price_query", "continue_flow"]
-            revised["steps"][0]["instruction"] = (
+            revised["nodes"] = [dict(step) for step in revised["nodes"]]
+            revised["nodes"][0]["allowed_actions"] = ["call_tool:product.price_query", "continue_flow"]
+            revised["nodes"][0]["instruction"] = (
                 "当商品名已满足时调用 product.price_query 工具查询价格；"
                 "工具成功后基于返回价格继续组织最终回复。"
             )
@@ -1111,7 +1114,7 @@ def test_skill_distiller_reflection_checks_tool_call_format_without_rule_fallbac
     complete = next(event for event in events if event["event"] == "complete")
 
     assert any("校验发现：工具调用格式" in text for text in status_texts)
-    assert complete["data"]["draft_skill"]["steps"][0]["allowed_actions"] == [
+    assert complete["data"]["draft_skill"]["nodes"][0]["allowed_actions"] == [
         "call_tool:product.price_query",
         "continue_flow",
     ]
@@ -1157,16 +1160,16 @@ def test_skill_distiller_stream_repairs_invalid_json_with_model(monkeypatch) -> 
                         "target_info": ["product_name_1", "product_name_2"],
                     },
                     "response_rules": ["不要编造价格。"],
-                    "steps": [
+                    "nodes": [
                         {
-                            "step_id": "collect_names",
+                            "node_id": "collect_names",
                             "name": "收集商品名称",
                             "instruction": "收集两个商品名称。",
                             "expected_user_info": ["product_name_1", "product_name_2"],
                             "allowed_actions": ["ask_user"],
                         },
                         {
-                            "step_id": "reply_result",
+                            "node_id": "reply_result",
                             "name": "反馈结果",
                             "instruction": "反馈明确结果。",
                             "expected_user_info": [],
@@ -1234,16 +1237,16 @@ def test_skill_distiller_stream_uses_staged_generation_after_repair_failure(monk
                             "target_info": ["product_name_1", "product_name_2"],
                         },
                         "response_rules": ["不要编造价格。"],
-                        "steps": [
+                        "nodes": [
                             {
-                                "step_id": "collect_names",
+                                "node_id": "collect_names",
                                 "name": "收集商品名称",
                                 "instruction": "收集两个商品名称。",
                                 "expected_user_info": ["product_name_1", "product_name_2"],
                                 "allowed_actions": ["ask_user"],
                             },
                             {
-                                "step_id": "reply_result",
+                                "node_id": "reply_result",
                                 "name": "反馈结果",
                                 "instruction": "反馈结果。",
                                 "expected_user_info": [],
@@ -1256,10 +1259,10 @@ def test_skill_distiller_stream_uses_staged_generation_after_repair_failure(monk
                 },
                 ensure_ascii=False,
             )
-        if mode == "expand_step":
-            step = dict(payload["target_step"])
-            step["instruction"] = f"扩写步骤 {payload['target_step_index'] + 1}，支持自适应推进。"
-            return json.dumps({"step": step, "warnings": [], "tool_suggestions": []}, ensure_ascii=False)
+        if mode == "expand_node":
+            node = dict(payload["target_node"])
+            node["instruction"] = f"扩写步骤 {payload['target_node_index'] + 1}，支持自适应推进。"
+            return json.dumps({"node": node, "warnings": [], "tool_suggestions": []}, ensure_ascii=False)
         if mode == "final_review":
             return json.dumps({"draft_skill": payload["current_draft"], "warnings": []}, ensure_ascii=False)
         raise AssertionError(f"unexpected payload: {payload}")
@@ -1279,7 +1282,7 @@ def test_skill_distiller_stream_uses_staged_generation_after_repair_failure(monk
     )
     status_texts = [event["data"]["text"] for event in events if event["event"] == "status"]
     complete = next(event for event in events if event["event"] == "complete")
-    instructions = [step["instruction"] for step in complete["data"]["draft_skill"]["steps"]]
+    instructions = [node["instruction"] for node in complete["data"]["draft_skill"]["nodes"]]
 
     assert "模型修复失败，改用分段生成" in status_texts
     assert any("扩写步骤 1" in instruction for instruction in instructions)
@@ -1318,22 +1321,32 @@ def _skill_card() -> SkillCard:
         user_utterance_examples=["我要买 A1"],
         goal=["完成下单"],
         required_info=["product_id"],
-        steps=[
+        nodes=[
             {
-                "step_id": "collect_info",
+                "node_id": "collect_info",
                 "name": "收集信息",
                 "instruction": "收集商品信息",
                 "expected_user_info": ["product_id"],
                 "allowed_actions": ["ask_user", "continue_flow"],
             },
             {
-                "step_id": "reply_result",
+                "node_id": "reply_result",
                 "name": "反馈结果",
                 "instruction": "反馈订单结果",
                 "expected_user_info": [],
                 "allowed_actions": ["answer_user"],
             },
         ],
+        edges=[
+            {
+                "source_node_id": "collect_info",
+                "next_node_id": "reply_result",
+                "priority": 0,
+                "label": "默认推进",
+            }
+        ],
+        start_node_id="collect_info",
+        terminal_node_ids=["reply_result"],
         interruption_policy={},
         response_rules=[],
     )

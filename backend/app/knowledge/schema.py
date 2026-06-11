@@ -5,8 +5,40 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class KnowledgeBaseCreateRequest(BaseModel):
+    tenant_id: str
+    name: str
+    description: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class KnowledgeBaseUpdateRequest(BaseModel):
+    tenant_id: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[Literal["active", "archived"]] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class KnowledgeBaseRead(BaseModel):
+    id: str
+    tenant_id: str
+    name: str
+    description: Optional[str] = None
+    status: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    document_count: int = 0
+    bucket_count: int = 0
+    chunk_count: int = 0
+    created_at: str
+    updated_at: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class KnowledgeDocumentUploadRequest(BaseModel):
     tenant_id: str
+    knowledge_base_id: str
     filename: str
     content_base64: str
     title: Optional[str] = None
@@ -16,6 +48,7 @@ class KnowledgeDocumentUploadRequest(BaseModel):
 class KnowledgeIngestJobRead(BaseModel):
     id: str
     tenant_id: str
+    knowledge_base_id: str
     document_id: Optional[str] = None
     filename: str
     status: str
@@ -34,6 +67,7 @@ class KnowledgeIngestJobRead(BaseModel):
 class KnowledgeDocumentRead(BaseModel):
     id: str
     tenant_id: str
+    knowledge_base_id: str
     filename: str
     file_type: str
     title: Optional[str] = None
@@ -51,6 +85,7 @@ class KnowledgeDocumentRead(BaseModel):
 class KnowledgeBucketRead(BaseModel):
     id: str
     tenant_id: str
+    knowledge_base_id: str
     document_id: str
     bucket_key: str
     title: str
@@ -68,6 +103,7 @@ class KnowledgeBucketRead(BaseModel):
 class KnowledgeChunkRead(BaseModel):
     id: str
     tenant_id: str
+    knowledge_base_id: str
     document_id: str
     bucket_id: str
     chunk_index: int
@@ -84,6 +120,7 @@ class KnowledgeChunkRead(BaseModel):
 class KnowledgeSearchRequest(BaseModel):
     tenant_id: str
     query: str
+    knowledge_base_ids: list[str] = Field(default_factory=list)
     document_ids: list[str] = Field(default_factory=list)
     max_bucket_rounds: int = 2
     max_buckets: int = 4
@@ -99,6 +136,7 @@ class KnowledgeSearchResponse(BaseModel):
 class KnowledgeDiscoveryRead(BaseModel):
     id: str
     tenant_id: str
+    knowledge_base_id: str
     document_id: str
     bucket_id: Optional[str] = None
     suggestion_type: Literal["skill", "tool", "warning"]

@@ -66,15 +66,6 @@ class ReflectionAgent:
                         for node in skill.content_json.get("nodes", [])
                         if isinstance(node, dict)
                     ],
-                    "steps": [
-                        {
-                            "step_id": step.get("step_id"),
-                            "name": step.get("name"),
-                            "allowed_actions": step.get("allowed_actions", []),
-                        }
-                        for step in skill.content_json.get("steps", [])
-                        if isinstance(step, dict)
-                    ],
                 }
                 for skill in available_skills
             ],

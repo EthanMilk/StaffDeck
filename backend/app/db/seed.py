@@ -34,37 +34,37 @@ REFUND_SKILL = {
         "description": "每轮同时抽取用户已表达的退款类型、订单号、退款原因和确认意愿等信息，已满足的信息不再追问。",
         "target_info": ["refund_type", "order_id", "order_confirmed", "refund_reason"],
     },
-    "steps": [
+    "nodes": [
         {
-            "step_id": "identify_refund_intent",
+            "node_id": "identify_refund_intent",
             "name": "确认退款诉求",
             "instruction": "将本步骤作为目标而不是固定话术；仅当用户诉求不明确时确认用户是否要退款、退货或取消订单；如果用户已明确说退货/退款/取消订单，写入 refund_type 并直接进入下一缺失信息收集，不要反问类型。",
             "expected_user_info": ["refund_type"],
             "allowed_actions": ["ask_clarification", "continue_flow"],
         },
         {
-            "step_id": "collect_order_info",
+            "node_id": "collect_order_info",
             "name": "收集订单信息",
             "instruction": "将本步骤作为目标而不是固定话术；如果用户未提供订单号，直接询问订单号；如果用户明确提供订单号，写入 order_id 并进入确认步骤；如果 order_id 是根据 recent_messages、上一笔订单或上下文推断出来的，必须进入确认步骤，不得直接调用工具。不要再询问用户是退货还是退款。",
             "expected_user_info": ["order_id"],
             "allowed_actions": ["ask_user", "continue_flow"],
         },
         {
-            "step_id": "confirm_refund_order",
+            "node_id": "confirm_refund_order",
             "name": "确认售后订单",
             "instruction": "在查询或处理退款/退货/取消订单前，必须向用户确认本次要处理的订单号和诉求类型。只有用户明确确认后，才能写入 order_confirmed=true 并继续；如果用户说不是、另一个、换一个，应清空或更新 order_id 并回到订单信息收集。",
             "expected_user_info": ["order_confirmed"],
             "allowed_actions": ["ask_user", "continue_flow"],
         },
         {
-            "step_id": "check_refund_eligibility",
+            "node_id": "check_refund_eligibility",
             "name": "查询退款资格",
             "instruction": "将本步骤作为目标而不是固定话术；仅当 order_id 已存在且 order_confirmed=true 时调用 order.query；根据订单查询结果说明是否可能支持退款/退货，不要承诺一定成功；如还缺原因则继续收集，已满足时给出明确下一步。",
             "expected_user_info": [],
             "allowed_actions": ["continue_flow", "call_tool:order.query", "answer_user", "handoff_human"],
         },
         {
-            "step_id": "collect_refund_reason",
+            "node_id": "collect_refund_reason",
             "name": "收集退款原因",
             "instruction": "将本步骤作为目标而不是固定话术；如果用户已说明退款原因，写入 refund_reason 并继续推进；否则只追问退款原因，不重复追问退款类型或订单号。",
             "expected_user_info": ["refund_reason"],
@@ -104,16 +104,16 @@ EXCHANGE_SKILL = {
         "description": "每轮同时抽取用户已表达的换货类型、订单号、换货原因等信息，已满足的信息不再追问。",
         "target_info": ["exchange_type", "order_id", "exchange_reason"],
     },
-    "steps": [
+    "nodes": [
         {
-            "step_id": "identify_exchange_intent",
+            "node_id": "identify_exchange_intent",
             "name": "确认换货诉求",
             "instruction": "将本步骤作为目标而不是固定话术；如果用户已表达换货商品或换货类型，写入 exchange_type 并继续推进；仅在诉求不明确时追问。",
             "expected_user_info": ["exchange_type"],
             "allowed_actions": ["ask_clarification", "continue_flow"],
         },
         {
-            "step_id": "collect_exchange_order_info",
+            "node_id": "collect_exchange_order_info",
             "name": "收集订单信息",
             "instruction": "将本步骤作为目标而不是固定话术；如果用户已提供订单号，写入 order_id 并调用 order.query；否则询问订单号，并只追问真正缺失的换货信息。",
             "expected_user_info": ["order_id"],
@@ -147,9 +147,9 @@ PURCHASE_SKILL = {
         "description": "每轮同时抽取用户已表达的姓名、商品 ID、购买数量和下单确认等信息；数量需理解口语数字和量词表达，已满足的信息不再追问。",
         "target_info": ["user_name", "product_id", "quantity", "purchase_confirmed"],
     },
-    "steps": [
+    "nodes": [
         {
-            "step_id": "collect_user_name",
+            "node_id": "collect_user_name",
             "name": "收集用户信息与商品详情",
             "instruction": (
                 "将本步骤作为目标而不是固定话术；同时收集用户姓名、商品 ID 和数量。"
@@ -161,14 +161,14 @@ PURCHASE_SKILL = {
             "allowed_actions": ["ask_user", "continue_flow"],
         },
         {
-            "step_id": "confirm_purchase",
+            "node_id": "confirm_purchase",
             "name": "确认下单信息",
             "instruction": "创建订单前必须向用户确认姓名、商品 ID 和数量。只有用户明确确认后，才能写入 purchase_confirmed=true 并继续；如果用户修改商品、数量或姓名，应更新对应 slot 并重新确认。",
             "expected_user_info": ["purchase_confirmed"],
             "allowed_actions": ["ask_user", "continue_flow"],
         },
         {
-            "step_id": "confirm_product",
+            "node_id": "confirm_product",
             "name": "执行购买/创建订单",
             "instruction": (
                 "将本步骤作为目标而不是固定话术；仅当 user_name、product_id、quantity 已满足且 purchase_confirmed=true 时，"
@@ -179,7 +179,7 @@ PURCHASE_SKILL = {
             "allowed_actions": ["continue_flow", "call_tool:product.purchase", "call_tool:order.add"],
         },
         {
-            "step_id": "create_order",
+            "node_id": "create_order",
             "name": "反馈订单结果",
             "instruction": "将工具返回的订单号、商品信息、数量、金额和状态告知用户，确认购买结果；不要只说请稍候。",
             "expected_user_info": [],
@@ -223,9 +223,9 @@ PRICE_COMPARE_SKILL = {
         "description": "每轮同时抽取用户提到的两个待比较商品名称；如果只给出一个商品，应只追问另一个。",
         "target_info": ["product_name_1", "product_name_2"],
     },
-    "steps": [
+    "nodes": [
         {
-            "step_id": "collect_products",
+            "node_id": "collect_products",
             "name": "收集待比价商品",
             "instruction": (
                 "将本步骤作为目标而不是固定话术；从当前消息、历史对话和 slots 中识别两个待比价商品。"
@@ -236,7 +236,7 @@ PRICE_COMPARE_SKILL = {
             "allowed_actions": ["ask_user", "continue_flow"],
         },
         {
-            "step_id": "query_prices",
+            "node_id": "query_prices",
             "name": "查询商品价格",
             "instruction": (
                 "当 product_name_1 和 product_name_2 都已获得时，依次调用 product.price_query 查询两个商品。"
@@ -247,7 +247,7 @@ PRICE_COMPARE_SKILL = {
             "allowed_actions": ["call_tool:product.price_query", "continue_flow"],
         },
         {
-            "step_id": "reply_compare_result",
+            "node_id": "reply_compare_result",
             "name": "反馈比价结果",
             "instruction": (
                 "基于累计工具结果对比两个商品的价格、品牌和规格，说明哪个更便宜、差价多少；"
@@ -474,7 +474,8 @@ def seed_demo_data(session: Session) -> None:
             )
         )
 
-    for content in (REFUND_SKILL, EXCHANGE_SKILL, PURCHASE_SKILL, PRICE_COMPARE_SKILL):
+    for raw_content in (REFUND_SKILL, EXCHANGE_SKILL, PURCHASE_SKILL, PRICE_COMPARE_SKILL):
+        content = _skill_content_graph(raw_content)
         existing = session.exec(
             select(Skill).where(
                 Skill.tenant_id == "tenant_demo", Skill.skill_id == content["skill_id"]
@@ -626,43 +627,59 @@ def _collect_general_skill_folder(folder: Path) -> list[dict[str, object]]:
 
 
 def _sync_demo_skill_if_stale(existing: Skill, desired: dict) -> None:
-    content = dict(existing.content_json or {})
+    content = _skill_content_graph(dict(existing.content_json or {}))
+    desired = _skill_content_graph(desired)
     changed = False
-    current_steps = [step for step in content.get("steps", []) if isinstance(step, dict)]
-    desired_steps = [step for step in desired.get("steps", []) if isinstance(step, dict)]
-    current_steps_by_id = {str(step.get("step_id") or ""): step for step in current_steps}
-    merged_steps: list[dict] = []
-    used_step_ids: set[str] = set()
+    current_nodes = [node for node in content.get("nodes", []) if isinstance(node, dict)]
+    desired_nodes = [node for node in desired.get("nodes", []) if isinstance(node, dict)]
+    current_nodes_by_id = {str(node.get("node_id") or ""): node for node in current_nodes}
+    merged_nodes: list[dict] = []
+    used_node_ids: set[str] = set()
 
-    for desired_step in desired_steps:
-        step_id = str(desired_step.get("step_id") or "")
-        current_step = current_steps_by_id.get(step_id)
-        if not current_step:
-            merged_steps.append(dict(desired_step))
-            used_step_ids.add(step_id)
+    for desired_node in desired_nodes:
+        node_id = str(desired_node.get("node_id") or "")
+        current_node = current_nodes_by_id.get(node_id)
+        if not current_node:
+            merged_nodes.append(dict(desired_node))
+            used_node_ids.add(node_id)
             changed = True
             continue
-        desired_instruction = str(desired_step.get("instruction") or "")
-        current_instruction = str(current_step.get("instruction") or "")
+        desired_instruction = str(desired_node.get("instruction") or "")
+        current_instruction = str(current_node.get("instruction") or "")
         if desired_instruction and not current_instruction:
-            current_step["instruction"] = desired_instruction
+            current_node["instruction"] = desired_instruction
             changed = True
-        for key in ("expected_user_info", "allowed_actions"):
-            if key in desired_step and current_step.get(key) != desired_step.get(key):
-                current_step[key] = desired_step[key]
+        for key in (
+            "type",
+            "name",
+            "expected_user_info",
+            "allowed_actions",
+            "knowledge_scope",
+            "retry_policy",
+            "optional",
+            "condition",
+            "metadata",
+        ):
+            if key in desired_node and current_node.get(key) != desired_node.get(key):
+                current_node[key] = desired_node[key]
                 changed = True
-        merged_steps.append(current_step)
-        used_step_ids.add(step_id)
+        merged_nodes.append(current_node)
+        used_node_ids.add(node_id)
 
-    for current_step in current_steps:
-        step_id = str(current_step.get("step_id") or "")
-        if step_id and step_id not in used_step_ids:
-            merged_steps.append(current_step)
-            used_step_ids.add(step_id)
+    for current_node in current_nodes:
+        node_id = str(current_node.get("node_id") or "")
+        if node_id and node_id not in used_node_ids:
+            merged_nodes.append(current_node)
+            used_node_ids.add(node_id)
 
-    if desired_steps and content.get("steps") != merged_steps:
-        content["steps"] = merged_steps
+    if desired_nodes and content.get("nodes") != merged_nodes:
+        content["nodes"] = merged_nodes
         changed = True
+
+    for graph_key in ("edges", "start_node_id", "terminal_node_ids"):
+        if graph_key in desired and content.get(graph_key) != desired.get(graph_key):
+            content[graph_key] = desired[graph_key]
+            changed = True
 
     if desired.get("required_info") and content.get("required_info") != desired.get("required_info"):
         content["required_info"] = desired["required_info"]
@@ -689,6 +706,35 @@ def _sync_demo_skill_if_stale(existing: Skill, desired: dict) -> None:
     if changed:
         existing.content_json = content
         existing.updated_at = utc_now()
+
+
+def _skill_content_graph(content: dict) -> dict:
+    next_content = dict(content or {})
+    nodes = next_content.get("nodes") if isinstance(next_content.get("nodes"), list) else []
+    node_ids = [str(node.get("node_id") or "") for node in nodes if isinstance(node, dict)]
+    node_ids = [node_id for node_id in node_ids if node_id]
+    if node_ids:
+        next_content.setdefault("start_node_id", node_ids[0])
+        next_content.setdefault("terminal_node_ids", [node_ids[-1]])
+        next_content.setdefault(
+            "edges",
+            [
+                {
+                    "source_node_id": source,
+                    "next_node_id": target,
+                    "condition": "",
+                    "priority": index,
+                    "label": "",
+                }
+                for index, (source, target) in enumerate(zip(node_ids, node_ids[1:]))
+            ],
+        )
+    else:
+        next_content.setdefault("nodes", [])
+        next_content.setdefault("edges", [])
+        next_content.setdefault("start_node_id", "")
+        next_content.setdefault("terminal_node_ids", [])
+    return next_content
 
 
 def _merge_slot_filling_policy(current: object, desired: dict) -> dict:

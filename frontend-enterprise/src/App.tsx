@@ -7,6 +7,7 @@ import {
   FileSearchOutlined,
   MessageOutlined,
   ProfileOutlined,
+  RobotOutlined,
   ToolOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -15,6 +16,7 @@ import zhCN from 'antd/locale/zh_CN';
 import { useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import DashboardPage from './pages/DashboardPage';
+import AgentsPage from './pages/AgentsPage';
 import DistillPage from './pages/DistillPage';
 import FeedbackPage from './pages/FeedbackPage';
 import GeneralSkillsPage from './pages/GeneralSkillsPage';
@@ -83,6 +85,7 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
               children: [
                 { key: '/enterprise/skills', icon: <ProfileOutlined />, label: '技能管理' },
                 { key: '/enterprise/skills/distill', icon: <MessageOutlined />, label: '技能改写' },
+                { key: '/enterprise/agents', icon: <RobotOutlined />, label: '智能体' },
                 { key: '/enterprise/tools', icon: <ToolOutlined />, label: '工具配置' },
               ],
             },
@@ -119,6 +122,7 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
               <Route path="/enterprise/feedback" element={<FeedbackPage />} />
               <Route path="/enterprise/skills" element={<SkillsPage />} />
               <Route path="/enterprise/general-skills" element={<GeneralSkillsPage />} />
+              <Route path="/enterprise/agents" element={<AgentsPage />} />
               <Route path="/enterprise/models" element={<ModelsPage />} />
               <Route path="/enterprise/tools" element={<ToolsPage />} />
               <Route path="/enterprise/persona" element={<PersonaPage />} />

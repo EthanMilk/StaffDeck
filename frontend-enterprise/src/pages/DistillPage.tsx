@@ -1163,7 +1163,7 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
         allTargetPaths(activeDraft),
         [
           `已新增工具：${acceptedSuggestions.map((item) => item.display_name || item.name).join('、')}`,
-          '正在统一判断这些工具应接入哪些步骤',
+          '正在统一判断这些工具应接入哪些节点',
         ],
       );
     } catch (error) {
@@ -2142,17 +2142,11 @@ function SkillSource({
         ? value
         : splitEditableList(value)
       : value;
-    if (Array.isArray(next.nodes) && next.nodes.length > 0) {
-      const currentNode = { ...(next.nodes[index] || {}) };
-      const nodeField = field === 'step_id' ? 'node_id' : field;
-      currentNode[nodeField] = listValue;
-      next.nodes[index] = currentNode;
-      next.steps = graphNodesToSteps(next.nodes);
-    } else {
-      const currentStep = { ...(next.steps[index] || {}) };
-      currentStep[field] = listValue;
-      next.steps[index] = currentStep;
-    }
+    next.nodes = Array.isArray(next.nodes) ? [...next.nodes] : [];
+    const currentNode = { ...(next.nodes[index] || {}) };
+    const nodeField = field === 'step_id' ? 'node_id' : field;
+    currentNode[nodeField] = listValue;
+    next.nodes[index] = currentNode;
     onEdit(next, stepTargetPath(index));
   }
 
@@ -2180,7 +2174,7 @@ function SkillSource({
           </div>
         </div>
       </SelectableTarget>
-      <div className="skill-source-group-title">详细步骤</div>
+      <div className="skill-source-group-title">详细节点</div>
       <div className="skill-source-steps">
         {skillGraphSteps(skill).map((step, index) => {
           const stepId = String(step.step_id || `step_${index + 1}`);
@@ -2189,7 +2183,7 @@ function SkillSource({
             <SelectableTarget
               key={path}
               className={targetClass('skill-source-section', path, selectedPaths, highlightedPaths, updatingPaths, dirtyPaths)}
-              target={{ path, label: `步骤 ${index + 1}：${step.name || stepId}` }}
+              target={{ path, label: `节点 ${index + 1}：${step.name || stepId}` }}
               onToggle={onToggle}
             >
               {selectedPaths.includes(path) && <span className="selection-mark"><CheckOutlined /></span>}
@@ -2245,7 +2239,7 @@ function SkillFlow({
   containerRef: RefObject<HTMLDivElement>;
   onToggle: (target: TargetSelection) => void;
 }) {
-  const steps = skillGraphSteps(skill);
+  const nodes = skillGraphSteps(skill);
   const edgeMap = skillGraphEdgeMap(skill);
   return (
     <div className="skill-flow" ref={containerRef}>
@@ -2271,7 +2265,7 @@ function SkillFlow({
           </FlowMetaRow>
         </div>
       </SelectableTarget>
-      {steps.map((step, index) => {
+      {nodes.map((step, index) => {
         const stepId = String(step.step_id || `step_${index + 1}`);
         const path = stepTargetPath(index);
         const toolActions = asStringList(step.allowed_actions).filter((action) =>
@@ -2284,11 +2278,11 @@ function SkillFlow({
             <div className="skill-flow-line" />
             <SelectableTarget
               className={targetClass('skill-flow-node', path, selectedPaths, highlightedPaths, updatingPaths, dirtyPaths)}
-              target={{ path, label: `步骤 ${index + 1}：${step.name || stepId}` }}
+              target={{ path, label: `节点 ${index + 1}：${step.name || stepId}` }}
               onToggle={onToggle}
             >
               {selectedPaths.includes(path) && <span className="selection-mark"><CheckOutlined /></span>}
-              <span>Step {index + 1}</span>
+              <span>节点 {index + 1}</span>
               <strong><InlineDiffText path={path} field="name" value={String(step.name || stepId)} diffs={textDiffs} /></strong>
               <small>{stepId}</small>
               <div className="skill-flow-node-badges">
@@ -2352,10 +2346,10 @@ function PlainChipList({ values }: { values: unknown }) {
 function skillGraphSteps(skill: SkillCard): Array<Record<string, unknown>> {
   if (Array.isArray(skill.nodes) && skill.nodes.length > 0) {
     return skill.nodes.map((node, index) => ({
-      step_id: node.node_id || node.step_id || `step_${index + 1}`,
-      node_id: node.node_id || node.step_id || `step_${index + 1}`,
+      step_id: node.node_id || `node_${index + 1}`,
+      node_id: node.node_id || `node_${index + 1}`,
       type: node.type || 'collect_info',
-      name: node.name || node.node_id || `步骤 ${index + 1}`,
+      name: node.name || node.node_id || `节点 ${index + 1}`,
       instruction: node.instruction || '',
       optional: Boolean(node.optional),
       condition: node.condition || '',
@@ -2366,17 +2360,7 @@ function skillGraphSteps(skill: SkillCard): Array<Record<string, unknown>> {
       metadata: isRecord(node.metadata) ? node.metadata : {},
     }));
   }
-  return Array.isArray(skill.steps) ? skill.steps : [];
-}
-
-function graphNodesToSteps(nodes: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
-  return nodes.map((node, index) => ({
-    step_id: String(node.node_id || node.step_id || `step_${index + 1}`),
-    name: String(node.name || node.node_id || `步骤 ${index + 1}`),
-    instruction: String(node.instruction || ''),
-    expected_user_info: asStringList(node.expected_user_info),
-    allowed_actions: asStringList(node.allowed_actions),
-  }));
+  return [];
 }
 
 function skillGraphEdgeMap(skill: SkillCard): Record<string, Array<Record<string, unknown>>> {
@@ -2440,7 +2424,7 @@ function EditableSourceStepHeading({
   return (
     <EditableSourceField>
       <div className="skill-source-step-title-edit">
-        <span>Step {index + 1}:</span>
+        <span>Node {index + 1}:</span>
         <Input value={value || fallback} onChange={(event) => onChange(event.target.value)} />
       </div>
     </EditableSourceField>
@@ -2870,7 +2854,10 @@ function createStreamingDraftSeed(payload: { title: string; raw_content: string 
     goal: [],
     required_info: [],
     response_rules: [],
-    steps: [],
+    nodes: [],
+    edges: [],
+    start_node_id: '',
+    terminal_node_ids: [],
     interruption_policy: {},
   };
 }
@@ -2894,8 +2881,19 @@ function previewSkillFromStream(
   applyArrayPreview(next, source, 'goal');
   applyArrayPreview(next, source, 'required_info');
   applyArrayPreview(next, source, 'response_rules');
-  const steps = extractStepPreview(source);
-  if (steps.length > 0) next.steps = steps;
+  const nodes = extractNodePreview(source);
+  if (nodes.length > 0) {
+    next.nodes = nodes;
+    next.start_node_id = String(nodes[0]?.node_id || '');
+    next.terminal_node_ids = nodes.length > 0 ? [String(nodes[nodes.length - 1]?.node_id || '')].filter(Boolean) : [];
+    next.edges = nodes.slice(0, -1).map((node, index) => ({
+      source_node_id: String(node.node_id || ''),
+      next_node_id: String(nodes[index + 1]?.node_id || ''),
+      condition: '',
+      priority: index,
+      label: '',
+    })).filter((edge) => edge.source_node_id && edge.next_node_id);
+  }
   return next;
 }
 
@@ -2915,7 +2913,10 @@ function parseCompleteStreamSkill(streamText: string): SkillCard | null {
       goal: asStringList(draft.goal),
       required_info: asStringList(draft.required_info),
       response_rules: asStringList(draft.response_rules),
-      steps: Array.isArray(draft.steps) ? draft.steps.filter(isRecord).map(normalizeStepPreview) : [],
+      nodes: Array.isArray(draft.nodes) ? draft.nodes.filter(isRecord).map(normalizeNodePreview) : [],
+      edges: Array.isArray(draft.edges) ? draft.edges.filter(isRecord).map(normalizeEdgePreview) : [],
+      start_node_id: stringValue(draft.start_node_id, ''),
+      terminal_node_ids: asStringList(draft.terminal_node_ids),
       interruption_policy: isRecord(draft.interruption_policy) ? stringRecord(draft.interruption_policy) : {},
     };
   } catch {
@@ -2952,45 +2953,69 @@ function applyArrayPreview(skill: SkillCard, source: string, field: keyof SkillC
   }
 }
 
-function extractStepPreview(source: string): Array<Record<string, unknown>> {
-  const fragments = extractObjectFragmentsFromArrayField(source, 'steps');
+function extractNodePreview(source: string): Array<Record<string, unknown>> {
+  const fragments = extractObjectFragmentsFromArrayField(source, 'nodes');
   return fragments
-    .map((fragment, index) => parseStepFragment(fragment, index))
-    .filter((step): step is Record<string, unknown> => Boolean(step));
+    .map((fragment, index) => parseNodeFragment(fragment, index))
+    .filter((node): node is Record<string, unknown> => Boolean(node));
 }
 
-function parseStepFragment(fragment: string, index: number): Record<string, unknown> | null {
+function parseNodeFragment(fragment: string, index: number): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(fragment) as unknown;
-    if (isRecord(parsed)) return normalizeStepPreview(parsed, index);
+    if (isRecord(parsed)) return normalizeNodePreview(parsed, index);
   } catch {
     // Partial object: fall through to field extraction.
   }
-  const stepId = extractJsonStringField(fragment, 'step_id') || '';
+  const nodeId = extractJsonStringField(fragment, 'node_id') || '';
+  const type = extractJsonStringField(fragment, 'type') || 'collect_info';
   const name = extractJsonStringField(fragment, 'name') || '';
   const instruction = extractJsonStringField(fragment, 'instruction') || '';
+  const condition = extractJsonStringField(fragment, 'condition') || '';
   const expectedUserInfo = extractJsonStringArrayField(fragment, 'expected_user_info') || [];
   const allowedActions = extractJsonStringArrayField(fragment, 'allowed_actions') || [];
-  if (!stepId && !name && !instruction && expectedUserInfo.length === 0 && allowedActions.length === 0) {
+  if (!nodeId && !name && !instruction && expectedUserInfo.length === 0 && allowedActions.length === 0) {
     return null;
   }
   return {
-    step_id: stepId || `step_${index + 1}`,
-    name: name || stepId || `步骤 ${index + 1}`,
+    node_id: nodeId || `node_${index + 1}`,
+    type,
+    name: name || nodeId || `节点 ${index + 1}`,
     instruction,
+    optional: false,
+    condition,
     expected_user_info: expectedUserInfo,
     allowed_actions: allowedActions,
+    knowledge_scope: {},
+    retry_policy: {},
+    metadata: {},
   };
 }
 
-function normalizeStepPreview(step: Record<string, unknown>, index = 0): Record<string, unknown> {
-  const stepId = stringValue(step.step_id, `step_${index + 1}`);
+function normalizeNodePreview(node: Record<string, unknown>, index = 0): Record<string, unknown> {
+  const nodeId = stringValue(node.node_id, `node_${index + 1}`);
   return {
-    step_id: stepId,
-    name: stringValue(step.name, stepId),
-    instruction: stringValue(step.instruction, ''),
-    expected_user_info: asStringList(step.expected_user_info),
-    allowed_actions: asStringList(step.allowed_actions),
+    node_id: nodeId,
+    type: stringValue(node.type, 'collect_info'),
+    name: stringValue(node.name, nodeId),
+    instruction: stringValue(node.instruction, ''),
+    optional: Boolean(node.optional),
+    condition: stringValue(node.condition, ''),
+    expected_user_info: asStringList(node.expected_user_info),
+    allowed_actions: asStringList(node.allowed_actions),
+    knowledge_scope: isRecord(node.knowledge_scope) ? node.knowledge_scope : {},
+    retry_policy: isRecord(node.retry_policy) ? node.retry_policy : {},
+    metadata: isRecord(node.metadata) ? node.metadata : {},
+  };
+}
+
+function normalizeEdgePreview(edge: Record<string, unknown>, index = 0): Record<string, unknown> {
+  return {
+    source_node_id: stringValue(edge.source_node_id, ''),
+    next_node_id: stringValue(edge.next_node_id, ''),
+    condition: stringValue(edge.condition, ''),
+    priority: Number(edge.priority || index),
+    label: stringValue(edge.label, ''),
   };
 }
 
@@ -3399,10 +3424,10 @@ function compactWarning(warning: string): string {
     return '缺少可用工具，需先新增工具后再执行该流程。';
   }
   const replacements: Array<[string, string]> = [
-    ['原始改写未包含工具步骤，已按可用工具补充闭环执行步骤。', '已补充工具执行步骤。'],
-    ['原始改写缺少执行前确认步骤，已补充确认步骤。', '已补充执行前确认步骤。'],
-    ['原始改写缺少最终回复步骤，已补充闭环反馈步骤。', '已补充最终回复步骤。'],
-    ['模型未生成步骤，已使用规则生成默认步骤。', '已生成默认步骤。'],
+    ['原始改写未包含工具节点，已按可用工具补充闭环执行节点。', '已补充工具执行节点。'],
+    ['原始改写缺少执行前确认节点，已补充确认节点。', '已补充执行前确认节点。'],
+    ['原始改写缺少最终回复节点，已补充闭环反馈节点。', '已补充最终回复节点。'],
+    ['模型未生成节点，已使用规则生成默认节点。', '已生成默认节点。'],
   ];
   const matched = replacements.find(([source]) => source === text);
   if (matched) return matched[1];
@@ -3563,18 +3588,10 @@ function cloneSkill(skill: SkillCard): SkillCard {
 function removeToolActionFromSkill(skill: SkillCard, toolName: string): SkillCard {
   const next = cloneSkill(skill);
   const targetAction = `call_tool:${toolName}`;
-  if (Array.isArray(next.nodes) && next.nodes.length > 0) {
-    next.nodes = next.nodes.map((node) => ({
-      ...node,
-      allowed_actions: asStringList(node.allowed_actions).filter((action) => action !== targetAction),
-    }));
-    next.steps = graphNodesToSteps(next.nodes);
-  } else {
-    next.steps = next.steps.map((step) => ({
-      ...step,
-      allowed_actions: asStringList(step.allowed_actions).filter((action) => action !== targetAction),
-    }));
-  }
+  next.nodes = (Array.isArray(next.nodes) ? next.nodes : []).map((node) => ({
+    ...node,
+    allowed_actions: asStringList(node.allowed_actions).filter((action) => action !== targetAction),
+  }));
   return next;
 }
 
@@ -3608,14 +3625,22 @@ function blankSkillForAnimation(skill: SkillCard): SkillCard {
   blank.goal = [];
   blank.required_info = [];
   blank.response_rules = [];
-  blank.steps = skillGraphSteps(skill).map((step) => ({
-    ...step,
-    step_id: '',
+  blank.nodes = skillGraphSteps(skill).map((step) => ({
+    node_id: '',
+    type: String(step.type || 'collect_info'),
     name: '',
     instruction: '',
+    optional: Boolean(step.optional),
+    condition: '',
     expected_user_info: [],
     allowed_actions: [],
+    knowledge_scope: {},
+    retry_policy: {},
+    metadata: {},
   }));
+  blank.edges = [];
+  blank.start_node_id = '';
+  blank.terminal_node_ids = [];
   return blank;
 }
 
@@ -3736,11 +3761,7 @@ function setTextField(skill: SkillCard, path: string, field: string, value: stri
   if (Array.isArray(skill.nodes) && skill.nodes[stepIndex]) {
     const nodeField = field === 'step_id' ? 'node_id' : field;
     skill.nodes[stepIndex][nodeField] = value;
-    skill.steps = graphNodesToSteps(skill.nodes);
-    return;
   }
-  if (!skill.steps[stepIndex]) return;
-  skill.steps[stepIndex][field] = value;
 }
 
 function isListField(field: string): boolean {
@@ -3876,8 +3897,8 @@ function buildToolIntegrationInstruction(suggestions: ToolSuggestionItem | ToolS
   });
   return [
     '以下工具已经新增到工具配置。',
-    '请更新当前技能：统一判断这些工具分别应接入哪些步骤，并只在确实需要调用工具的步骤中加入对应 allowed_actions。',
-    '同步改写对应步骤说明，使模型在参数满足时调用工具，并根据工具结果继续推进或给出最终回复；不要修改无关字段。',
+    '请更新当前技能：统一判断这些工具分别应接入哪些节点，并只在确实需要调用工具的节点中加入对应 allowed_actions。',
+    '同步改写对应节点说明，使模型在参数满足时调用工具，并根据工具结果继续推进或给出最终回复；不要修改无关字段。',
     `工具详情：${JSON.stringify(toolDetails, null, 2)}`,
   ].join('\n');
 }
@@ -3894,10 +3915,10 @@ function fieldLabel(field: string): string {
     goal: '目标',
     required_info: '必填信息',
     response_rules: '回复规则',
-    step_id: '步骤 ID',
+    step_id: '节点 ID',
     type: '节点类型',
     condition: '条件',
-    instruction: '步骤说明',
+    instruction: '节点说明',
     expected_user_info: '期望字段',
     allowed_actions: '允许动作',
   };
@@ -3937,8 +3958,8 @@ function targetLabel(paths: string[], skill: SkillCard): string {
     const stepIndex = stepIndexFromPath(path);
     if (stepIndex !== null) {
       const index = stepIndex;
-      const step = index >= 0 ? skill.steps[index] : null;
-      return step ? `步骤 ${index + 1}：${step.name || step.step_id || path}` : path;
+      const step = index >= 0 ? skillGraphSteps(skill)[index] : null;
+      return step ? `节点 ${index + 1}：${step.name || step.step_id || path}` : path;
     }
     return path;
   });
@@ -3946,10 +3967,10 @@ function targetLabel(paths: string[], skill: SkillCard): string {
 }
 
 function stepTargetPath(index: number): string {
-  return `steps[${index}]`;
+  return `nodes[${index}]`;
 }
 
 function stepIndexFromPath(path: string): number | null {
-  const match = path.match(/^steps\[(\d+)\]$/);
+  const match = path.match(/^nodes\[(\d+)\]$/);
   return match ? Number(match[1]) : null;
 }

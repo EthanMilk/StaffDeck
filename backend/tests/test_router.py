@@ -14,9 +14,9 @@ def test_router_payload_exposes_step_details_and_allows_compound_interrupt(monke
         captured["payload"] = payload
         purchase = next(item for item in payload["available_skills"] if item["skill_id"] == "purchase")
         assert purchase["required_info"] == ["user_name", "product_id", "quantity"]
-        assert purchase["steps"][0]["instruction"] == "收集姓名、商品和数量。"
-        assert purchase["steps"][0]["expected_user_info"] == ["user_name", "product_id", "quantity"]
-        assert purchase["steps"][0]["allowed_actions"] == ["ask_user", "continue_flow"]
+        assert purchase["nodes"][0]["instruction"] == "收集姓名、商品和数量。"
+        assert purchase["nodes"][0]["expected_user_info"] == ["user_name", "product_id", "quantity"]
+        assert purchase["nodes"][0]["allowed_actions"] == ["ask_user", "continue_flow"]
         assert "不要让原则10吞掉复合意图" in system_prompt
         assert "不要输出纯 clarify" in system_prompt
         assert "应放入 slot_hints" in system_prompt
@@ -177,7 +177,7 @@ def test_task_scheduler_can_continue_price_compare_after_purchase_completion(mon
         price_compare = next(
             item for item in payload["available_skills"] if item["skill_id"] == "price_compare"
         )
-        assert price_compare["steps"][0]["step_id"] == "collect_products"
+        assert price_compare["nodes"][0]["node_id"] == "collect_products"
         return {
             "action": "run_tasks",
             "selected_task_ids": ["task_price_compare_a1_a3"],
@@ -307,15 +307,19 @@ def _purchase_skill() -> Skill:
             "business_domain": "commerce",
             "trigger_intents": ["购买", "下单"],
             "required_info": ["user_name", "product_id", "quantity"],
-            "steps": [
+            "nodes": [
                 {
-                    "step_id": "collect_user_name",
+                    "node_id": "collect_user_name",
+                    "type": "collect_info",
                     "name": "收集用户信息与商品详情",
                     "instruction": "收集姓名、商品和数量。",
                     "expected_user_info": ["user_name", "product_id", "quantity"],
                     "allowed_actions": ["ask_user", "continue_flow"],
                 }
             ],
+            "edges": [],
+            "start_node_id": "collect_user_name",
+            "terminal_node_ids": ["collect_user_name"],
         },
     )
 
@@ -331,15 +335,19 @@ def _price_compare_skill() -> Skill:
             "business_domain": "commerce",
             "trigger_intents": ["比价", "价格对比"],
             "required_info": ["product_name_1", "product_name_2"],
-            "steps": [
+            "nodes": [
                 {
-                    "step_id": "collect_products",
+                    "node_id": "collect_products",
+                    "type": "collect_info",
                     "name": "收集待比价商品",
                     "instruction": "收集两个商品名。",
                     "expected_user_info": ["product_name_1", "product_name_2"],
                     "allowed_actions": ["ask_user", "continue_flow"],
                 }
             ],
+            "edges": [],
+            "start_node_id": "collect_products",
+            "terminal_node_ids": ["collect_products"],
         },
     )
 
@@ -355,14 +363,18 @@ def _refund_skill() -> Skill:
             "business_domain": "after_sales",
             "trigger_intents": ["退货", "退款"],
             "required_info": ["order_id"],
-            "steps": [
+            "nodes": [
                 {
-                    "step_id": "confirm_refund_order",
+                    "node_id": "confirm_refund_order",
+                    "type": "collect_info",
                     "name": "确认售后订单",
                     "instruction": "确认订单后继续。",
                     "expected_user_info": ["order_confirmed"],
                     "allowed_actions": ["ask_user", "continue_flow"],
                 }
             ],
+            "edges": [],
+            "start_node_id": "confirm_refund_order",
+            "terminal_node_ids": ["confirm_refund_order"],
         },
     )

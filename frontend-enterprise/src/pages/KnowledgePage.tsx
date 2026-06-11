@@ -8,12 +8,13 @@ import {
   ReloadOutlined,
   RightOutlined,
 } from '@ant-design/icons';
-import { Button, Card, Col, Collapse, Empty, Progress, Row, Space, Table, Tag, Typography, Upload, message } from 'antd';
+import { Button, Card, Col, Collapse, Empty, Input, Progress, Row, Select, Space, Table, Tag, Typography, Upload, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, TENANT_ID } from '../api/client';
 import type {
+  KnowledgeBaseRead,
   KnowledgeBucketRead,
   KnowledgeDiscoveryRead,
   KnowledgeDocumentRead,
@@ -25,6 +26,7 @@ const { Dragger } = Upload;
 export default function KnowledgeManagePage() {
   const navigate = useNavigate();
   const [documents, setDocuments] = useState<KnowledgeDocumentRead[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
   const [discoveries, setDiscoveries] = useState<KnowledgeDiscoveryRead[]>([]);
   const [selectedDocument, setSelectedDocument] = useState<KnowledgeDocumentRead | null>(null);
   const [buckets, setBuckets] = useState<KnowledgeBucketRead[]>([]);
@@ -40,12 +42,14 @@ export default function KnowledgeManagePage() {
   async function refresh() {
     setLoading(true);
     try {
-      const [docRows, discoveryRows] = await Promise.all([
+      const [docRows, discoveryRows, kbRows] = await Promise.all([
         api.get<KnowledgeDocumentRead[]>(`/api/enterprise/knowledge/documents?tenant_id=${TENANT_ID}`),
         api.get<KnowledgeDiscoveryRead[]>(`/api/enterprise/knowledge/discoveries?tenant_id=${TENANT_ID}`),
+        api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}`),
       ]);
       setDocuments(docRows);
       setDiscoveries(discoveryRows);
+      setKnowledgeBases(kbRows);
       const current = selectedDocument ? docRows.find((item) => item.id === selectedDocument.id) || null : docRows[0] || null;
       setSelectedDocument(current);
       if (current) {
@@ -126,6 +130,32 @@ export default function KnowledgeManagePage() {
       </div>
 
       <Row gutter={[18, 18]}>
+        <Col xs={24}>
+          <Card className="knowledge-card knowledge-card-solid" title="知识库">
+            {knowledgeBases.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无知识库" />
+            ) : (
+              <div className="knowledge-base-grid">
+                {knowledgeBases.map((item) => (
+                  <div className="knowledge-base-card" key={item.id}>
+                    <div>
+                      <Typography.Text strong>{item.name}</Typography.Text>
+                      <Typography.Paragraph type="secondary" ellipsis={{ rows: 2 }}>
+                        {item.description || '未填写描述'}
+                      </Typography.Paragraph>
+                    </div>
+                    <Space size={6} wrap>
+                      {statusTag(item.status)}
+                      <Tag>{item.document_count} 文档</Tag>
+                      <Tag>{item.bucket_count} 桶</Tag>
+                      <Tag>{item.chunk_count} 片段</Tag>
+                    </Space>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </Col>
         <Col xs={24} xl={14}>
           <Card className="knowledge-card knowledge-card-solid" title="现有知识" extra={<DatabaseOutlined />}>
             <Table
@@ -199,11 +229,18 @@ export default function KnowledgeManagePage() {
 
 export function KnowledgeAddPage() {
   const navigate = useNavigate();
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
+  const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState('');
+  const [newKnowledgeBaseName, setNewKnowledgeBaseName] = useState('');
   const [jobs, setJobs] = useState<Record<string, KnowledgeIngestJobRead>>({});
   const activeJobs = useMemo(
     () => Object.values(jobs).filter((job) => ['queued', 'running'].includes(job.status)),
     [jobs],
   );
+
+  useEffect(() => {
+    void refreshKnowledgeBases();
+  }, []);
 
   useEffect(() => {
     if (activeJobs.length === 0) return;
@@ -218,11 +255,47 @@ export function KnowledgeAddPage() {
     return () => window.clearInterval(timer);
   }, [activeJobs]);
 
+  async function refreshKnowledgeBases() {
+    try {
+      const rows = await api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}`);
+      setKnowledgeBases(rows);
+      setSelectedKnowledgeBaseId((current) => current || rows.find((item) => item.status === 'active')?.id || rows[0]?.id || '');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '加载知识库失败');
+    }
+  }
+
+  async function createKnowledgeBase() {
+    const name = newKnowledgeBaseName.trim();
+    if (!name) {
+      message.warning('请先输入知识库名称');
+      return;
+    }
+    try {
+      const row = await api.post<KnowledgeBaseRead>('/api/enterprise/knowledge-bases', {
+        tenant_id: TENANT_ID,
+        name,
+        description: '',
+      });
+      setKnowledgeBases((prev) => [row, ...prev]);
+      setSelectedKnowledgeBaseId(row.id);
+      setNewKnowledgeBaseName('');
+      message.success('已创建知识库');
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '创建知识库失败');
+    }
+  }
+
   async function uploadFile(file: File) {
+    if (!selectedKnowledgeBaseId) {
+      message.warning('请先选择或创建知识库');
+      return;
+    }
     try {
       const contentBase64 = await fileToBase64(file);
       const job = await api.post<KnowledgeIngestJobRead>('/api/enterprise/knowledge/documents', {
         tenant_id: TENANT_ID,
+        knowledge_base_id: selectedKnowledgeBaseId,
         filename: file.name,
         title: file.name.replace(/\.[^.]+$/, ''),
         content_base64: contentBase64,
@@ -245,6 +318,29 @@ export function KnowledgeAddPage() {
       </div>
 
       <Card className="knowledge-card knowledge-upload-card">
+        <div className="knowledge-upload-controls">
+          <div>
+            <Typography.Text strong>归属知识库</Typography.Text>
+            <Typography.Text type="secondary">每个上传文档、知识桶和切片都会归属到这里。</Typography.Text>
+          </div>
+          <Space wrap>
+            <Select
+              className="knowledge-base-select"
+              placeholder="选择知识库"
+              value={selectedKnowledgeBaseId || undefined}
+              onChange={setSelectedKnowledgeBaseId}
+              options={knowledgeBases.map((item) => ({ value: item.id, label: item.name }))}
+            />
+            <Input
+              className="knowledge-base-create-input"
+              placeholder="新建知识库名称"
+              value={newKnowledgeBaseName}
+              onChange={(event) => setNewKnowledgeBaseName(event.target.value)}
+              onPressEnter={() => void createKnowledgeBase()}
+            />
+            <Button onClick={() => void createKnowledgeBase()}>新建知识库</Button>
+          </Space>
+        </div>
         <Dragger
           multiple
           showUploadList={false}

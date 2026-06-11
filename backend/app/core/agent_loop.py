@@ -17,11 +17,24 @@ from app.core.response_generator import FALLBACK_REPLY, ResponseGenerator
 from app.core.router import Router
 from app.core.skill_runtime import SkillRuntime
 from app.core.step_agent import StepAgent
-from app.db.models import ChatSession, GeneralSkill, Message, ModelConfig, PersonaConfig, Skill, Tool, UIConfig, new_id, utc_now
+from app.db.models import (
+    AgentProfile,
+    AgentResourceBinding,
+    ChatSession,
+    GeneralSkill,
+    Message,
+    ModelConfig,
+    PersonaConfig,
+    Skill,
+    Tool,
+    UIConfig,
+    new_id,
+    utc_now,
+)
 from app.general_skills import GeneralSkillRunner, GeneralSkillSelector
 from app.general_skills.schema import GeneralSkillRunResponse, GeneralSkillSelection
 from app.knowledge import KnowledgeService
-from app.knowledge.schema import KnowledgeSearchRequest
+from app.knowledge.schema import KnowledgeSearchRequest, KnowledgeSearchResponse
 from app.llm import LLMError
 from app.memory.jobs import enqueue_memory_capture
 from app.memory.service import MemoryService, memory_read
@@ -154,7 +167,7 @@ class AgentLoop:
                     step_result,
                     tool_result,
                     prepared.model_config,
-                    self._get_persona_prompt(request.tenant_id),
+                    self._get_persona_prompt(request.tenant_id, chat_session.agent_id),
                     memory_context,
                     conversation_context,
                 )
@@ -177,12 +190,13 @@ class AgentLoop:
                         request,
                         chat_session,
                         prepared.model_config,
-                        self._list_published_skills(request.tenant_id),
+                        self._list_published_skills(request.tenant_id, chat_session.agent_id),
                         self._tools_with_general_skills(
                             request.tenant_id,
                             self._list_enabled_tools(request.tenant_id),
+                            chat_session.agent_id,
                         ),
-                        self._get_persona_prompt(request.tenant_id),
+                        self._get_persona_prompt(request.tenant_id, chat_session.agent_id),
                         memory_context,
                         conversation_context,
                         reply,
@@ -252,7 +266,7 @@ class AgentLoop:
     ) -> ChatTurnResponse | None:
         if not self._scene_router_deferred_to_general(router_decision):
             return None
-        selected = self._select_general_skill(request.message, model_config)
+        selected = self._select_general_skill(request.message, model_config, chat_session.agent_id)
         if not selected:
             return None
         skill, selection = selected
@@ -292,7 +306,7 @@ class AgentLoop:
             step_result,
             tool_result,
             model_config,
-            self._get_persona_prompt(request.tenant_id),
+            self._get_persona_prompt(request.tenant_id, chat_session.agent_id),
             memory_context or [],
             conversation_context or self._conversation_context(chat_session),
         )
@@ -512,7 +526,9 @@ class AgentLoop:
             step_result,
             tool_result,
             model_config,
-            persona_prompt if persona_prompt is not None else self._get_persona_prompt(request.tenant_id),
+            persona_prompt
+            if persona_prompt is not None
+            else self._get_persona_prompt(request.tenant_id, chat_session.agent_id),
             memory_context or [],
             conversation_context or self._conversation_context(chat_session),
         ):
@@ -776,14 +792,15 @@ class AgentLoop:
             if not model_config:
                 raise AgentLoopPreconditionError("missing_model_config", "没有默认模型配置。")
             memory_model_config = model_config
-            skills = self._list_published_skills(request.tenant_id)
+            skills = self._list_published_skills(request.tenant_id, chat_session.agent_id)
             tools = self._tools_with_general_skills(
                 request.tenant_id,
                 self._list_enabled_tools(request.tenant_id),
+                chat_session.agent_id,
             )
-            persona_prompt = self._get_persona_prompt(request.tenant_id)
+            persona_prompt = self._get_persona_prompt(request.tenant_id, chat_session.agent_id)
             if not skills:
-                selected_general_skill = self._select_general_skill(request.message, model_config)
+                selected_general_skill = self._select_general_skill(request.message, model_config, chat_session.agent_id)
                 if selected_general_skill:
                     yield from self._stream_general_skill_response(
                         request,
@@ -863,7 +880,7 @@ class AgentLoop:
                 router_decision.model_dump(),
             )
             if self._scene_router_deferred_to_general(router_decision):
-                selected_general_skill = self._select_general_skill(request.message, model_config)
+                selected_general_skill = self._select_general_skill(request.message, model_config, chat_session.agent_id)
                 if selected_general_skill:
                     yield from self._stream_general_skill_response(
                         request,
@@ -1269,10 +1286,11 @@ class AgentLoop:
         )
 
         model_config = self._get_default_model(request.tenant_id)
-        skills = self._list_published_skills(request.tenant_id)
+        skills = self._list_published_skills(request.tenant_id, chat_session.agent_id)
         tools = self._tools_with_general_skills(
             request.tenant_id,
             self._list_enabled_tools(request.tenant_id),
+            chat_session.agent_id,
         )
         if not model_config:
             raise AgentLoopPreconditionError("missing_model_config", "没有默认模型配置。")
@@ -1389,7 +1407,7 @@ class AgentLoop:
                 model_config,
                 skills,
                 tools,
-                self._get_persona_prompt(request.tenant_id),
+                self._get_persona_prompt(request.tenant_id, chat_session.agent_id),
                 memory_context,
                 conversation_context,
                 "",
@@ -2395,15 +2413,23 @@ class AgentLoop:
         if status_callback is not None:
             status_callback("knowledge", payload)
 
-        search_response = KnowledgeService(self.db).search(
+        knowledge_base_ids = self._agent_visible_knowledge_base_ids(
+            request.tenant_id,
+            chat_session.agent_id,
+        )
+        if self._agent_requires_resource_filter(request.tenant_id, chat_session.agent_id) and not knowledge_base_ids:
+            search_response = KnowledgeSearchResponse(selected_buckets=[], chunks=[], trace=[])
+        else:
+            search_response = KnowledgeService(self.db).search(
             KnowledgeSearchRequest(
                 tenant_id=request.tenant_id,
                 query=query.query,
+                knowledge_base_ids=knowledge_base_ids,
                 max_chunks=max(1, min(query.max_chunks, 12)),
                 max_buckets=4,
             ),
             model_config,
-        )
+            )
         knowledge_items = {
             "query": query.model_dump(mode="json"),
             "selected_buckets": [item.model_dump(mode="json") for item in search_response.selected_buckets],
@@ -2989,7 +3015,7 @@ class AgentLoop:
                 self.db.commit()
                 self.db.refresh(chat_session)
                 return tool_result
-            tool_result = self._execute_general_skill_tool_call(request, tool_call)
+            tool_result = self._execute_general_skill_tool_call(request, tool_call, chat_session.agent_id)
         else:
             tool_result = self.tool_executor.execute(
                 request.tenant_id, tool_call, chat_session.active_skill_id
@@ -3012,6 +3038,7 @@ class AgentLoop:
         self,
         request: ChatTurnRequest,
         tool_call: ToolCall,
+        agent_id: str | None,
     ) -> ToolResult:
         slug = tool_call.name.removeprefix(GENERAL_SKILL_TOOL_PREFIX).strip()
         if not slug:
@@ -3021,7 +3048,14 @@ class AgentLoop:
                 data=None,
                 error=ToolError(code="INVALID_GENERAL_SKILL", message="通用技能名称为空。"),
             )
-        skill = next((item for item in self._list_published_general_skills(request.tenant_id) if item.slug == slug), None)
+        skill = next(
+            (
+                item
+                for item in self._list_published_general_skills(request.tenant_id, agent_id)
+                if item.slug == slug
+            ),
+            None,
+        )
         if not skill:
             return ToolResult(
                 tool_name=tool_call.name,
@@ -3227,15 +3261,22 @@ class AgentLoop:
         nodes = [node for node in content.get("nodes", []) if isinstance(node, dict)]
         if nodes:
             return [_node_as_step(node) for node in nodes]
-        return [step for step in content.get("steps", []) if isinstance(step, dict)]
+        return []
 
     def _get_or_create_session(self, request: ChatTurnRequest) -> ChatSession:
         session_id = request.session_id or new_id("session")
         chat_session = self.db.get(ChatSession, session_id)
         if not chat_session:
-            chat_session = ChatSession(id=session_id, tenant_id=request.tenant_id, user_id=request.user_id)
+            chat_session = ChatSession(
+                id=session_id,
+                tenant_id=request.tenant_id,
+                user_id=request.user_id,
+                agent_id=request.agent_id,
+            )
             self.db.add(chat_session)
             self.db.flush()
+        elif request.agent_id and chat_session.agent_id != request.agent_id:
+            chat_session.agent_id = request.agent_id
         return chat_session
 
     def _finish_stale_completed_skill(
@@ -3328,7 +3369,7 @@ class AgentLoop:
         if not active_step_id:
             return False
         content = skill.content_json or {}
-        steps = [step for step in content.get("steps", []) if isinstance(step, dict)]
+        steps = self._skill_steps(skill)
         if not steps:
             return False
         step_index = next(
@@ -3430,9 +3471,13 @@ class AgentLoop:
             )
         ).first()
 
-    def _get_persona_prompt(self, tenant_id: str) -> str | None:
+    def _get_persona_prompt(self, tenant_id: str, agent_id: str | None = None) -> str | None:
         row = self.db.get(PersonaConfig, tenant_id)
-        return row.system_prompt if row else None
+        base_prompt = row.system_prompt if row else None
+        agent = self._get_agent_profile(tenant_id, agent_id)
+        if agent and agent.persona_prompt:
+            return f"{base_prompt}\n\n{agent.persona_prompt}" if base_prompt else agent.persona_prompt
+        return base_prompt
 
     def _get_reflection_max_rounds(self, tenant_id: str) -> int:
         row = self.db.get(UIConfig, tenant_id)
@@ -3446,29 +3491,34 @@ class AgentLoop:
         value = row.agent_loop_max_actions if row else MAX_TOOL_ACTIONS_PER_TURN
         return max(1, min(int(value), 20))
 
-    def _list_published_skills(self, tenant_id: str) -> list[Skill]:
-        return list(
-            self.db.exec(
-                select(Skill).where(Skill.tenant_id == tenant_id, Skill.status == "published")
-            ).all()
-        )
+    def _list_published_skills(self, tenant_id: str, agent_id: str | None = None) -> list[Skill]:
+        statement = select(Skill).where(Skill.tenant_id == tenant_id, Skill.status == "published")
+        if self._agent_requires_resource_filter(tenant_id, agent_id):
+            resource_ids = self._agent_resource_ids(tenant_id, agent_id, "skill")
+            if not resource_ids:
+                return []
+            statement = statement.where(Skill.id.in_(resource_ids))  # type: ignore[attr-defined]
+        return list(self.db.exec(statement).all())
 
-    def _list_published_general_skills(self, tenant_id: str) -> list[GeneralSkill]:
-        return list(
-            self.db.exec(
-                select(GeneralSkill).where(
-                    GeneralSkill.tenant_id == tenant_id,
-                    GeneralSkill.status == "published",
-                )
-            ).all()
+    def _list_published_general_skills(self, tenant_id: str, agent_id: str | None = None) -> list[GeneralSkill]:
+        statement = select(GeneralSkill).where(
+            GeneralSkill.tenant_id == tenant_id,
+            GeneralSkill.status == "published",
         )
+        if self._agent_requires_resource_filter(tenant_id, agent_id):
+            resource_ids = self._agent_resource_ids(tenant_id, agent_id, "general_skill")
+            if not resource_ids:
+                return []
+            statement = statement.where(GeneralSkill.id.in_(resource_ids))  # type: ignore[attr-defined]
+        return list(self.db.exec(statement).all())
 
     def _select_general_skill(
         self,
         message: str,
         model_config: ModelConfig,
+        agent_id: str | None = None,
     ) -> tuple[GeneralSkill, GeneralSkillSelection] | None:
-        general_skills = self._list_published_general_skills(model_config.tenant_id)
+        general_skills = self._list_published_general_skills(model_config.tenant_id, agent_id)
         if not general_skills:
             return None
         try:
@@ -3489,9 +3539,9 @@ class AgentLoop:
             ).all()
         )
 
-    def _tools_with_general_skills(self, tenant_id: str, tools: list[Tool]) -> list[Any]:
+    def _tools_with_general_skills(self, tenant_id: str, tools: list[Tool], agent_id: str | None = None) -> list[Any]:
         combined: list[Any] = list(tools)
-        for skill in self._list_published_general_skills(tenant_id):
+        for skill in self._list_published_general_skills(tenant_id, agent_id):
             combined.append(
                 SimpleNamespace(
                     enabled=True,
@@ -3516,6 +3566,38 @@ class AgentLoop:
                 )
             )
         return combined
+
+    def _get_agent_profile(self, tenant_id: str, agent_id: str | None) -> AgentProfile | None:
+        if not agent_id:
+            return None
+        row = self.db.get(AgentProfile, agent_id)
+        if not row or row.tenant_id != tenant_id or row.status != "active":
+            return None
+        return row
+
+    def _agent_requires_resource_filter(self, tenant_id: str, agent_id: str | None) -> bool:
+        agent = self._get_agent_profile(tenant_id, agent_id)
+        return bool(agent and not agent.is_overall)
+
+    def _agent_resource_ids(self, tenant_id: str, agent_id: str | None, resource_type: str) -> list[str]:
+        if not agent_id:
+            return []
+        return [
+            row.resource_id
+            for row in self.db.exec(
+                select(AgentResourceBinding).where(
+                    AgentResourceBinding.tenant_id == tenant_id,
+                    AgentResourceBinding.agent_id == agent_id,
+                    AgentResourceBinding.resource_type == resource_type,
+                    AgentResourceBinding.status == "active",
+                )
+            ).all()
+        ]
+
+    def _agent_visible_knowledge_base_ids(self, tenant_id: str, agent_id: str | None) -> list[str]:
+        if not self._agent_requires_resource_filter(tenant_id, agent_id):
+            return []
+        return self._agent_resource_ids(tenant_id, agent_id, "knowledge_base")
 
     def _get_active_skill(self, tenant_id: str, skill_id: str | None) -> Skill | None:
         if not skill_id:

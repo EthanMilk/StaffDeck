@@ -36,7 +36,19 @@ BASIC_FIELDS = {
     "interruption_policy",
     "response_rules",
 }
-STEP_FIELDS = {"step_id", "name", "instruction", "expected_user_info", "allowed_actions"}
+NODE_FIELDS = {
+    "node_id",
+    "type",
+    "name",
+    "instruction",
+    "optional",
+    "condition",
+    "expected_user_info",
+    "allowed_actions",
+    "knowledge_scope",
+    "retry_policy",
+    "metadata",
+}
 
 
 class SkillEditor:
@@ -144,13 +156,13 @@ class SkillEditor:
         merged_data = merged.model_dump(mode="json")
         raw_tool_mentions = raw.get("tool_mentions") if isinstance(raw.get("tool_mentions"), list) else raw.get("tool_suggestions")
         tool_resolutions = _normalize_tool_suggestions(raw_tool_mentions, request, [])
-        steps, missing_tool_names = _remove_unknown_tool_actions(
-            [step for step in merged_data.get("steps", []) if isinstance(step, dict)],
+        nodes, missing_tool_names = _remove_unknown_tool_actions(
+            [node for node in merged_data.get("nodes", []) if isinstance(node, dict)],
             request.available_tools,
             _tool_action_names_from_suggestions(tool_resolutions),
         )
-        if steps:
-            merged_data["steps"] = steps
+        if nodes:
+            merged_data["nodes"] = nodes
             merged = SkillCard.model_validate(merged_data)
         merged, id_warnings = skill_card_with_unique_step_ids(merged)
         assistant_message = str(raw.get("assistant_message") or "已完成选中部分的改写。").strip()
@@ -233,18 +245,18 @@ def _patch_allowed(data: dict[str, Any], path: str, target_paths: list[str]) -> 
         return _patch_path_is_known(data, path)
     if _basic_patch_field(path):
         return "basic" in target_paths
-    if path == "steps":
-        return any(_is_step_target(target) for target in target_paths)
-    step_index = _patch_step_index(data, path)
-    if step_index is None:
+    if path == "nodes":
+        return any(_is_node_target(target) for target in target_paths)
+    node_index = _patch_node_index(data, path)
+    if node_index is None:
         return False
-    steps = [step for step in data.get("steps", []) if isinstance(step, dict)]
-    step_id = str(steps[step_index].get("step_id") or "")
-    return f"steps[{step_index}]" in target_paths or f"steps.{step_id}" in target_paths
+    nodes = [node for node in data.get("nodes", []) if isinstance(node, dict)]
+    node_id = str(nodes[node_index].get("node_id") or "")
+    return f"nodes[{node_index}]" in target_paths or f"nodes.{node_id}" in target_paths
 
 
 def _patch_path_is_known(data: dict[str, Any], path: str) -> bool:
-    return bool(_basic_patch_field(path)) or path == "steps" or _patch_step_index(data, path) is not None
+    return bool(_basic_patch_field(path)) or path == "nodes" or _patch_node_index(data, path) is not None
 
 
 def _apply_patch(data: dict[str, Any], path: str, value: Any) -> bool:
@@ -252,23 +264,23 @@ def _apply_patch(data: dict[str, Any], path: str, value: Any) -> bool:
     if basic_field:
         data[basic_field] = value
         return True
-    if path == "steps" and isinstance(value, list):
-        data["steps"] = value
+    if path == "nodes" and isinstance(value, list):
+        data["nodes"] = value
         return True
-    step_index = _patch_step_index(data, path)
-    if step_index is None:
+    node_index = _patch_node_index(data, path)
+    if node_index is None:
         return False
-    step_field = _patch_step_field(path)
-    steps = [step for step in data.get("steps", []) if isinstance(step, dict)]
-    if not (0 <= step_index < len(steps)):
+    node_field = _patch_node_field(path)
+    nodes = [node for node in data.get("nodes", []) if isinstance(node, dict)]
+    if not (0 <= node_index < len(nodes)):
         return False
-    if step_field is None:
+    if node_field is None:
         if not isinstance(value, dict):
             return False
-        steps[step_index] = value
+        nodes[node_index] = value
     else:
-        steps[step_index][step_field] = value
-    data["steps"] = steps
+        nodes[node_index][node_field] = value
+    data["nodes"] = nodes
     return True
 
 
@@ -277,35 +289,38 @@ def _basic_patch_field(path: str) -> str | None:
     return normalized if normalized in BASIC_FIELDS else None
 
 
-def _patch_step_index(data: dict[str, Any], path: str) -> int | None:
-    steps = [step for step in data.get("steps", []) if isinstance(step, dict)]
-    bracket_match = re.fullmatch(r"steps\[(\d+)\](?:\.[A-Za-z_][A-Za-z0-9_]*)?", path)
+def _patch_node_index(data: dict[str, Any], path: str) -> int | None:
+    nodes = [node for node in data.get("nodes", []) if isinstance(node, dict)]
+    bracket_match = re.fullmatch(r"nodes\[(\d+)\](?:\.[A-Za-z_][A-Za-z0-9_]*)?", path)
     if bracket_match:
         index = int(bracket_match.group(1))
-        return index if 0 <= index < len(steps) else None
-    dot_match = re.fullmatch(r"steps\.([^.]+)(?:\.[A-Za-z_][A-Za-z0-9_]*)?", path)
+        return index if 0 <= index < len(nodes) else None
+    dot_match = re.fullmatch(r"nodes\.([^.]+)(?:\.[A-Za-z_][A-Za-z0-9_]*)?", path)
     if not dot_match:
         return None
-    step_id = dot_match.group(1)
-    return next((index for index, step in enumerate(steps) if str(step.get("step_id") or "") == step_id), None)
+    node_id = dot_match.group(1)
+    return next((index for index, node in enumerate(nodes) if str(node.get("node_id") or "") == node_id), None)
 
 
-def _patch_step_field(path: str) -> str | None:
-    bracket_match = re.fullmatch(r"steps\[\d+\]\.([A-Za-z_][A-Za-z0-9_]*)", path)
-    dot_match = re.fullmatch(r"steps\.[^.]+\.([A-Za-z_][A-Za-z0-9_]*)", path)
+def _patch_node_field(path: str) -> str | None:
+    bracket_match = re.fullmatch(r"nodes\[\d+\]\.([A-Za-z_][A-Za-z0-9_]*)", path)
+    dot_match = re.fullmatch(r"nodes\.[^.]+\.([A-Za-z_][A-Za-z0-9_]*)", path)
     field = bracket_match.group(1) if bracket_match else dot_match.group(1) if dot_match else None
-    return field if field in STEP_FIELDS else None
+    return field if field in NODE_FIELDS else None
 
 
 def _merge_targets(current: SkillCard, candidate: SkillCard, target_paths: list[str]) -> SkillCard:
     if "all" in target_paths:
         return candidate
-    if _has_step_structure_change(current, candidate, target_paths):
+    if _has_node_structure_change(current, candidate, target_paths):
         current_data = current.model_dump(mode="json")
         candidate_data = candidate.model_dump(mode="json")
-        current_data["steps"] = [
-            step for step in candidate_data.get("steps", []) if isinstance(step, dict)
+        current_data["nodes"] = [
+            node for node in candidate_data.get("nodes", []) if isinstance(node, dict)
         ]
+        current_data["edges"] = [edge for edge in candidate_data.get("edges", []) if isinstance(edge, dict)]
+        current_data["start_node_id"] = candidate_data.get("start_node_id") or current_data.get("start_node_id")
+        current_data["terminal_node_ids"] = candidate_data.get("terminal_node_ids") or current_data.get("terminal_node_ids")
         if "basic" in target_paths:
             for field in BASIC_FIELDS:
                 if field in candidate_data:
@@ -317,20 +332,20 @@ def _merge_targets(current: SkillCard, candidate: SkillCard, target_paths: list[
     return merged
 
 
-def _has_step_structure_change(current: SkillCard, candidate: SkillCard, target_paths: list[str]) -> bool:
-    if not any(_is_step_target(path) for path in target_paths):
+def _has_node_structure_change(current: SkillCard, candidate: SkillCard, target_paths: list[str]) -> bool:
+    if not any(_is_node_target(path) for path in target_paths):
         return False
-    current_steps = [step for step in current.model_dump(mode="json").get("steps", []) if isinstance(step, dict)]
-    candidate_steps = [step for step in candidate.model_dump(mode="json").get("steps", []) if isinstance(step, dict)]
-    if len(candidate_steps) != len(current_steps):
+    current_nodes = [node for node in current.model_dump(mode="json").get("nodes", []) if isinstance(node, dict)]
+    candidate_nodes = [node for node in candidate.model_dump(mode="json").get("nodes", []) if isinstance(node, dict)]
+    if len(candidate_nodes) != len(current_nodes):
         return True
-    current_ids = [str(step.get("step_id") or "") for step in current_steps]
-    candidate_ids = [str(step.get("step_id") or "") for step in candidate_steps]
+    current_ids = [str(node.get("node_id") or "") for node in current_nodes]
+    candidate_ids = [str(node.get("node_id") or "") for node in candidate_nodes]
     return sorted(current_ids) == sorted(candidate_ids) and current_ids != candidate_ids
 
 
-def _is_step_target(path: str) -> bool:
-    return path.startswith("steps.") or path.startswith("steps[")
+def _is_node_target(path: str) -> bool:
+    return path.startswith("nodes.") or path.startswith("nodes[")
 
 
 def _merge_target(current: SkillCard, candidate: SkillCard, target_path: str) -> SkillCard:
@@ -346,26 +361,46 @@ def _merge_target(current: SkillCard, candidate: SkillCard, target_path: str) ->
                 current_data[field] = candidate_data[field]
         return SkillCard.model_validate(current_data)
 
-    target_index = _step_target_index(current_data, normalized_path)
+    target_index = _node_target_index(current_data, normalized_path)
     if target_index is not None:
-        candidate_steps = [step for step in candidate_data.get("steps", []) if isinstance(step, dict)]
-        current_steps = [step for step in current_data.get("steps", []) if isinstance(step, dict)]
-        replacement = _replacement_step(
-            candidate_steps,
-            current_steps[target_index],
+        candidate_nodes = [node for node in candidate_data.get("nodes", []) if isinstance(node, dict)]
+        current_nodes = [node for node in current_data.get("nodes", []) if isinstance(node, dict)]
+        replacement = _replacement_node(
+            candidate_nodes,
+            current_nodes[target_index],
             target_index,
-            prefer_index=normalized_path.startswith("steps["),
+            prefer_index=normalized_path.startswith("nodes["),
         )
         if isinstance(replacement, dict):
-            next_step = dict(current_steps[target_index])
-            for field in STEP_FIELDS:
+            next_node = dict(current_nodes[target_index])
+            previous_node_id = str(next_node.get("node_id") or "")
+            for field in NODE_FIELDS:
                 if field in replacement:
-                    next_step[field] = replacement[field]
-            current_steps[target_index] = next_step
-            current_data["steps"] = current_steps
+                    next_node[field] = replacement[field]
+            current_nodes[target_index] = next_node
+            current_data["nodes"] = current_nodes
+            next_node_id = str(next_node.get("node_id") or "")
+            if previous_node_id and next_node_id and previous_node_id != next_node_id:
+                _replace_node_reference(current_data, previous_node_id, next_node_id)
             return SkillCard.model_validate(current_data)
 
     return current
+
+
+def _replace_node_reference(data: dict[str, Any], old_node_id: str, new_node_id: str) -> None:
+    if data.get("start_node_id") == old_node_id:
+        data["start_node_id"] = new_node_id
+    data["terminal_node_ids"] = [
+        new_node_id if node_id == old_node_id else node_id
+        for node_id in data.get("terminal_node_ids", [])
+    ]
+    for edge in data.get("edges", []):
+        if not isinstance(edge, dict):
+            continue
+        if edge.get("source_node_id") == old_node_id:
+            edge["source_node_id"] = new_node_id
+        if edge.get("next_node_id") == old_node_id:
+            edge["next_node_id"] = new_node_id
 
 
 def _changed_paths(previous: SkillCard, next_skill: SkillCard) -> list[str]:
@@ -374,46 +409,46 @@ def _changed_paths(previous: SkillCard, next_skill: SkillCard) -> list[str]:
     changed: list[str] = []
     if any(previous_data.get(field) != next_data.get(field) for field in BASIC_FIELDS):
         changed.append("basic")
-    previous_steps = [step for step in previous_data.get("steps", []) if isinstance(step, dict)]
-    next_steps = [step for step in next_data.get("steps", []) if isinstance(step, dict)]
-    for index in range(max(len(previous_steps), len(next_steps))):
-        previous_step = previous_steps[index] if index < len(previous_steps) else None
-        next_step = next_steps[index] if index < len(next_steps) else None
-        if previous_step != next_step:
-            changed.append(f"steps[{index}]")
+    previous_nodes = [node for node in previous_data.get("nodes", []) if isinstance(node, dict)]
+    next_nodes = [node for node in next_data.get("nodes", []) if isinstance(node, dict)]
+    for index in range(max(len(previous_nodes), len(next_nodes))):
+        previous_node = previous_nodes[index] if index < len(previous_nodes) else None
+        next_node = next_nodes[index] if index < len(next_nodes) else None
+        if previous_node != next_node:
+            changed.append(f"nodes[{index}]")
     return changed
 
 
-def _step_target_index(current_data: dict[str, Any], path: str) -> int | None:
-    current_steps = [step for step in current_data.get("steps", []) if isinstance(step, dict)]
-    bracket_match = re.fullmatch(r"steps\[(\d+)\]", path)
+def _node_target_index(current_data: dict[str, Any], path: str) -> int | None:
+    current_nodes = [node for node in current_data.get("nodes", []) if isinstance(node, dict)]
+    bracket_match = re.fullmatch(r"nodes\[(\d+)\]", path)
     if bracket_match:
         index = int(bracket_match.group(1))
-        return index if 0 <= index < len(current_steps) else None
-    if path.startswith("steps."):
-        step_id = path.split(".", 1)[1]
+        return index if 0 <= index < len(current_nodes) else None
+    if path.startswith("nodes."):
+        node_id = path.split(".", 1)[1]
         return next(
-            (index for index, step in enumerate(current_steps) if step.get("step_id") == step_id),
+            (index for index, node in enumerate(current_nodes) if node.get("node_id") == node_id),
             None,
         )
     return None
 
 
-def _replacement_step(
-    candidate_steps: list[dict[str, Any]],
-    current_step: dict[str, Any],
+def _replacement_node(
+    candidate_nodes: list[dict[str, Any]],
+    current_node: dict[str, Any],
     target_index: int,
     prefer_index: bool = False,
 ) -> dict[str, Any] | None:
-    if prefer_index and target_index < len(candidate_steps):
-        return candidate_steps[target_index]
-    step_id = str(current_step.get("step_id") or "")
-    if step_id:
-        matching_steps = [step for step in candidate_steps if str(step.get("step_id") or "") == step_id]
-        if len(matching_steps) == 1:
-            return matching_steps[0]
-    if target_index < len(candidate_steps):
-        return candidate_steps[target_index]
+    if prefer_index and target_index < len(candidate_nodes):
+        return candidate_nodes[target_index]
+    node_id = str(current_node.get("node_id") or "")
+    if node_id:
+        matching_nodes = [node for node in candidate_nodes if str(node.get("node_id") or "") == node_id]
+        if len(matching_nodes) == 1:
+            return matching_nodes[0]
+    if target_index < len(candidate_nodes):
+        return candidate_nodes[target_index]
     return None
 
 

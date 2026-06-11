@@ -959,25 +959,25 @@ def _repair_skill() -> Skill:
         tenant_id="tenant_demo",
         skill_id="repair_ticket",
         name="设备报修",
-        content_json={
-            "skill_id": "repair_ticket",
-            "name": "设备报修",
-            "required_info": ["reporter_name", "asset_id", "issue_desc"],
-            "steps": [
+        content_json=_graph_content(
+            "repair_ticket",
+            "设备报修",
+            [
                 {
-                    "step_id": "collect_repair_info",
+                    "node_id": "collect_repair_info",
                     "name": "收集报修信息",
                     "expected_user_info": ["reporter_name", "asset_id", "issue_desc"],
                     "allowed_actions": ["ask_user"],
                 },
                 {
-                    "step_id": "reply_ticket_result",
+                    "node_id": "reply_ticket_result",
                     "name": "反馈工单结果",
                     "expected_user_info": [],
                     "allowed_actions": ["answer_user", "handoff_human"],
                 },
             ],
-        },
+            required_info=["reporter_name", "asset_id", "issue_desc"],
+        ),
         status="published",
     )
 
@@ -987,25 +987,26 @@ def _refund_skill() -> Skill:
         tenant_id="tenant_demo",
         skill_id="refund",
         name="售后退款流程",
-        content_json={
-            "skill_id": "refund",
-            "name": "售后退款流程",
-            "required_info": ["order_id", "refund_reason"],
-            "steps": [
+        content_json=_graph_content(
+            "refund",
+            "售后退款流程",
+            [
                 {
-                    "step_id": "check_refund",
+                    "node_id": "check_refund",
+                    "type": "tool_call",
                     "name": "核实退款条件",
                     "expected_user_info": ["order_id", "refund_reason"],
                     "allowed_actions": ["continue_flow", "call_tool:order.query"],
                 },
                 {
-                    "step_id": "reply_result",
+                    "node_id": "reply_result",
                     "name": "反馈结果",
                     "expected_user_info": [],
                     "allowed_actions": ["answer_user", "handoff_human"],
                 },
             ],
-        },
+            required_info=["order_id", "refund_reason"],
+        ),
         status="published",
     )
 
@@ -1015,25 +1016,25 @@ def _refund_collect_terminal_skill() -> Skill:
         tenant_id="tenant_demo",
         skill_id="refund",
         name="售后退款流程",
-        content_json={
-            "skill_id": "refund",
-            "name": "售后退款流程",
-            "required_info": ["order_id", "refund_reason"],
-            "steps": [
+        content_json=_graph_content(
+            "refund",
+            "售后退款流程",
+            [
                 {
-                    "step_id": "collect_order",
+                    "node_id": "collect_order",
                     "name": "收集订单号",
                     "expected_user_info": ["order_id"],
                     "allowed_actions": ["ask_user", "continue_flow"],
                 },
                 {
-                    "step_id": "collect_refund_reason",
+                    "node_id": "collect_refund_reason",
                     "name": "收集退款原因",
                     "expected_user_info": ["refund_reason"],
                     "allowed_actions": ["ask_user", "continue_flow"],
                 },
             ],
-        },
+            required_info=["order_id", "refund_reason"],
+        ),
         status="published",
     )
 
@@ -1063,31 +1064,32 @@ def _refund_skill_with_late_collect_step() -> Skill:
         tenant_id="tenant_demo",
         skill_id="refund",
         name="售后退款流程",
-        content_json={
-            "skill_id": "refund",
-            "name": "售后退款流程",
-            "required_info": ["order_id", "refund_reason"],
-            "steps": [
+        content_json=_graph_content(
+            "refund",
+            "售后退款流程",
+            [
                 {
-                    "step_id": "collect_order",
+                    "node_id": "collect_order",
+                    "type": "tool_call",
                     "name": "收集订单",
                     "expected_user_info": ["order_id"],
                     "allowed_actions": ["ask_user", "call_tool:order.query"],
                 },
                 {
-                    "step_id": "check_refund",
+                    "node_id": "check_refund",
                     "name": "查询退款资格",
                     "expected_user_info": [],
                     "allowed_actions": ["answer_user", "handoff_human"],
                 },
                 {
-                    "step_id": "collect_refund_reason",
+                    "node_id": "collect_refund_reason",
                     "name": "收集退款原因",
                     "expected_user_info": ["refund_reason"],
                     "allowed_actions": ["ask_user", "continue_flow"],
                 },
             ],
-        },
+            required_info=["order_id", "refund_reason"],
+        ),
         status="published",
     )
 
@@ -1140,36 +1142,75 @@ def _model_config():
     return ModelConfig(tenant_id="tenant_demo", name="demo", api_key_encrypted="", model="demo")
 
 
+def _graph_content(
+    skill_id: str,
+    name: str,
+    nodes: list[dict[str, object]],
+    *,
+    required_info: list[str] | None = None,
+) -> dict[str, object]:
+    normalized_nodes = [
+        {
+            "node_id": str(node["node_id"]),
+            "type": node.get("type") or ("collect_info" if node.get("expected_user_info") else "response"),
+            "name": str(node.get("name") or node["node_id"]),
+            "instruction": str(node.get("instruction") or ""),
+            "expected_user_info": list(node.get("expected_user_info") or []),
+            "allowed_actions": list(node.get("allowed_actions") or []),
+            "metadata": dict(node.get("metadata") or {}),
+        }
+        for node in nodes
+    ]
+    return {
+        "skill_id": skill_id,
+        "name": name,
+        "required_info": required_info or [],
+        "nodes": normalized_nodes,
+        "edges": [
+            {
+                "source_node_id": normalized_nodes[index]["node_id"],
+                "next_node_id": normalized_nodes[index + 1]["node_id"],
+                "priority": index,
+                "label": "默认推进",
+            }
+            for index in range(len(normalized_nodes) - 1)
+        ],
+        "start_node_id": normalized_nodes[0]["node_id"],
+        "terminal_node_ids": [normalized_nodes[-1]["node_id"]],
+    }
+
+
 def _purchase_skill() -> Skill:
     return Skill(
         tenant_id="tenant_demo",
         skill_id="purchase",
         name="购买商品",
-        content_json={
-            "skill_id": "purchase",
-            "name": "购买商品",
-            "required_info": ["user_name", "product_id", "quantity"],
-            "steps": [
+        content_json=_graph_content(
+            "purchase",
+            "购买商品",
+            [
                 {
-                    "step_id": "collect_user_name",
+                    "node_id": "collect_user_name",
                     "name": "收集用户与商品",
                     "expected_user_info": ["user_name", "product_id", "quantity"],
                     "allowed_actions": ["ask_user"],
                 },
                 {
-                    "step_id": "confirm_product",
+                    "node_id": "confirm_product",
+                    "type": "tool_call",
                     "name": "创建订单",
                     "expected_user_info": ["product_id"],
                     "allowed_actions": ["call_tool:product.purchase", "call_tool:order.add"],
                 },
                 {
-                    "step_id": "reply_result",
+                    "node_id": "reply_result",
                     "name": "反馈订单",
                     "expected_user_info": [],
                     "allowed_actions": ["reply"],
                 },
             ],
-        },
+            required_info=["user_name", "product_id", "quantity"],
+        ),
         status="published",
     )
 
@@ -1224,31 +1265,32 @@ def _price_compare_skill() -> Skill:
         tenant_id="tenant_demo",
         skill_id="price_compare",
         name="商品比价",
-        content_json={
-            "skill_id": "price_compare",
-            "name": "商品比价",
-            "required_info": ["product_name_1", "product_name_2"],
-            "steps": [
+        content_json=_graph_content(
+            "price_compare",
+            "商品比价",
+            [
                 {
-                    "step_id": "collect_products",
+                    "node_id": "collect_products",
                     "name": "收集商品",
                     "expected_user_info": ["product_name_1", "product_name_2"],
                     "allowed_actions": ["ask_user"],
                 },
                 {
-                    "step_id": "query_price",
+                    "node_id": "query_price",
+                    "type": "tool_call",
                     "name": "查询价格",
                     "expected_user_info": [],
                     "allowed_actions": ["call_tool:product.price_query"],
                 },
                 {
-                    "step_id": "reply_result",
+                    "node_id": "reply_result",
                     "name": "反馈结果",
                     "expected_user_info": [],
                     "allowed_actions": ["answer_user"],
                 },
             ],
-        },
+            required_info=["product_name_1", "product_name_2"],
+        ),
         status="published",
     )
 
@@ -1294,24 +1336,25 @@ def _refund_skill_with_tool_collect_step() -> Skill:
         tenant_id="tenant_demo",
         skill_id="refund",
         name="退款",
-        content_json={
-            "skill_id": "refund",
-            "name": "退款",
-            "required_info": ["order_id"],
-            "steps": [
+        content_json=_graph_content(
+            "refund",
+            "退款",
+            [
                 {
-                    "step_id": "collect_order",
+                    "node_id": "collect_order",
+                    "type": "tool_call",
                     "name": "收集订单",
                     "expected_user_info": ["order_id"],
                     "allowed_actions": ["ask_user", "call_tool:order.query"],
                 },
                 {
-                    "step_id": "reply_result",
+                    "node_id": "reply_result",
                     "name": "反馈结果",
                     "expected_user_info": [],
                     "allowed_actions": ["reply"],
                 },
             ],
-        },
+            required_info=["order_id"],
+        ),
         status="published",
     )
