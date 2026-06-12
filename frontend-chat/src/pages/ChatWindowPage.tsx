@@ -19,7 +19,7 @@ import { Button, Input, Modal, Select, Typography, message } from 'antd';
 import type { MouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { SHOW_DEBUG, TENANT_ID, api, clearAuthSession, getAuthSession, streamChatTurn } from '../api/client';
+import { SHOW_DEBUG, TENANT_ID, api, clearAuthSession, getAuthSession, isAuthError, streamChatTurn } from '../api/client';
 import CodeBlock from '../components/CodeBlock';
 import { ThemeToggleButton } from '../theme';
 import type { AgentProfileRead, ChatMessage, ChatSession, ChatTurnResponse, TurnTraceRead, UIConfigRead } from '../types';
@@ -728,7 +728,7 @@ export default function ChatWindowPage() {
       .get<ChatSession[]>(`/api/chat/sessions?tenant_id=${tenantId}`)
       .then(setSessions)
       .catch((error) => {
-        if (error.message.includes('Not authenticated') || error.message.includes('401')) {
+        if (isAuthError(error)) {
           clearAuthSession();
           navigate('/login', { replace: true });
           return;
@@ -746,8 +746,15 @@ export default function ChatWindowPage() {
         pruneRealtime(id);
         notifyStore();
       })
-      .catch((error) => message.error(error.message));
-  }, [getSlot, notifyStore, pruneRealtime, tenantId]);
+      .catch((error) => {
+        if (isAuthError(error)) {
+          clearAuthSession();
+          navigate('/login', { replace: true });
+          return;
+        }
+        message.error(error instanceof Error ? error.message : '消息加载失败');
+      });
+  }, [getSlot, navigate, notifyStore, pruneRealtime, tenantId]);
 
   const loadTraces = useCallback((id: string) => {
     return api
@@ -774,8 +781,15 @@ export default function ChatWindowPage() {
         });
         notifyTrace();
       })
-      .catch((error) => message.error(error.message));
-  }, [notifyTrace, tenantId]);
+      .catch((error) => {
+        if (isAuthError(error)) {
+          clearAuthSession();
+          navigate('/login', { replace: true });
+          return;
+        }
+        message.error(error instanceof Error ? error.message : '轨迹加载失败');
+      });
+  }, [navigate, notifyTrace, tenantId]);
 
   const appendRealtime = useCallback((id: string, messageItem: ChatMessage) => {
     const slot = getSlot(id);
@@ -981,6 +995,11 @@ export default function ChatWindowPage() {
       }
     } catch (error) {
       updateMessageFeedback(sessionId, item.id, previous);
+      if (isAuthError(error)) {
+        clearAuthSession();
+        navigate('/login', { replace: true });
+        return;
+      }
       message.error(error instanceof Error ? error.message : '反馈提交失败');
     }
   }
@@ -1247,6 +1266,15 @@ export default function ChatWindowPage() {
       }, controller.signal);
     } catch (error) {
       if (controller.signal.aborted) {
+        return;
+      }
+      if (isAuthError(error)) {
+        clearAuthSession();
+        navigate('/login', { replace: true });
+        finishTrace(turnId, true);
+        stream.loading = false;
+        stream.phase = '';
+        notifyStream();
         return;
       }
       appendRealtime(currentSessionId, {

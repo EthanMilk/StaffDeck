@@ -30,6 +30,22 @@ export type ChatStreamEvent = {
   data: Record<string, unknown>;
 };
 
+export class ApiError extends Error {
+  status: number;
+  body: string;
+
+  constructor(status: number, body: string, statusText: string) {
+    super(readErrorMessage(body) || statusText || `HTTP ${status}`);
+    this.name = 'ApiError';
+    this.status = status;
+    this.body = body;
+  }
+}
+
+export function isAuthError(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: {
@@ -41,7 +57,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || response.statusText);
+    throw new ApiError(response.status, text, response.statusText);
   }
   return response.json() as Promise<T>;
 }
@@ -93,7 +109,7 @@ export async function streamChatTurn(
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || response.statusText);
+    throw new ApiError(response.status, text, response.statusText);
   }
   if (!response.body) {
     throw new Error('当前浏览器不支持流式响应');
@@ -133,4 +149,17 @@ function parseSseBlock(block: string): ChatStreamEvent | null {
   } catch {
     return { event, data: { raw: rawData } };
   }
+}
+
+function readErrorMessage(body: string): string {
+  if (!body) return '';
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown; message?: unknown };
+    const detail = parsed.detail ?? parsed.message;
+    if (typeof detail === 'string') return detail;
+    if (detail !== undefined) return JSON.stringify(detail);
+  } catch {
+    // Response is not JSON; use the raw body below.
+  }
+  return body;
 }

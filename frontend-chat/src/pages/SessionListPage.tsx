@@ -11,7 +11,7 @@ import { Button, Empty, Input, Modal, Typography, message } from 'antd';
 import type { MouseEvent } from 'react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, clearAuthSession, getAuthSession } from '../api/client';
+import { api, clearAuthSession, getAuthSession, isAuthError } from '../api/client';
 import { ThemeToggleButton } from '../theme';
 import type { ChatSession } from '../types';
 
@@ -40,7 +40,7 @@ export default function SessionListPage() {
       .get<ChatSession[]>(`/api/chat/sessions?tenant_id=${tenantId}`)
       .then(setSessions)
       .catch((error) => {
-        if (error.message.includes('Not authenticated') || error.message.includes('401')) {
+        if (isAuthError(error)) {
           clearAuthSession();
           navigate('/login', { replace: true });
           return;
