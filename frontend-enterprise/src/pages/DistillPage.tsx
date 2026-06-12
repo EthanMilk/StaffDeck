@@ -2258,6 +2258,12 @@ function SkillFlow({
   const edgeMap = skillGraphEdgeMap(skill);
   const layout = buildSkillFlowLayout(skill, nodes);
   const terminalSet = new Set(asStringList(skill.terminal_node_ids));
+  const nodeNameMap = Object.fromEntries(
+    nodes.map((node, index) => {
+      const nodeId = String(node.node_id || node.step_id || `node_${index + 1}`);
+      return [nodeId, String(node.name || nodeId)];
+    }),
+  );
   return (
     <div className="skill-flow" ref={containerRef}>
       <SelectableTarget
@@ -2297,7 +2303,7 @@ function SkillFlow({
                     <div className="skill-flow-edge-row">
                       {previousEdges.map((edge, edgeIndex) => (
                         <span className="skill-flow-edge-chip" key={`incoming_${String(edge.source_node_id)}_${String(edge.next_node_id)}_${edgeIndex}`}>
-                          {edgeLabel(edge)}
+                          {edgeLabel(edge, nodeNameMap)}
                         </span>
                       ))}
                     </div>
@@ -2320,6 +2326,7 @@ function SkillFlow({
                     textDiffs={textDiffs}
                     toolDescriptions={toolDescriptions}
                     toolStatuses={toolStatuses}
+                    nodeNameMap={nodeNameMap}
                     onToggle={onToggle}
                   />
                 ))}
@@ -2344,6 +2351,7 @@ function SkillFlowNodeCard({
   textDiffs,
   toolDescriptions,
   toolStatuses,
+  nodeNameMap,
   onToggle,
 }: {
   index: number;
@@ -2357,6 +2365,7 @@ function SkillFlowNodeCard({
   textDiffs: TextDiffAnimation[];
   toolDescriptions: ToolDescriptionMap;
   toolStatuses: ToolStatusMap;
+  nodeNameMap: Record<string, string>;
   onToggle: (target: TargetSelection) => void;
 }) {
   const nodeId = String(step.node_id || step.step_id || `node_${index + 1}`);
@@ -2398,8 +2407,8 @@ function SkillFlowNodeCard({
           )}
           {outgoingEdges.length > 0 && (
             <div className="skill-flow-compact-row">
-              <span>后继</span>
-              <PlainChipList values={[`${outgoingEdges.length} 条流转`]} />
+              <span>流转</span>
+              <PlainChipList values={outgoingEdges.slice(0, 4).map((edge) => edgeLabel(edge, nodeNameMap))} />
             </div>
           )}
         </div>
@@ -2511,14 +2520,15 @@ function buildSkillFlowLayout(skill: SkillCard, nodes: Array<Record<string, unkn
   return { layers };
 }
 
-function edgeLabel(edge: Record<string, unknown>): string {
+function edgeLabel(edge: Record<string, unknown>, nodeNameMap: Record<string, string> = {}): string {
   const target = String(edge.next_node_id || '-');
+  const targetName = target && nodeNameMap[target] ? nodeNameMap[target] : target;
   const label = String(edge.label || '');
   const condition = String(edge.condition || '');
-  if (label && condition) return `${label} -> ${target}（${condition}）`;
-  if (label) return `${label} -> ${target}`;
-  if (condition) return `${target}（${condition}）`;
-  return target;
+  if (label && condition) return `${label} -> ${targetName}（${condition}）`;
+  if (label) return `${label} -> ${targetName}`;
+  if (condition) return `${targetName}（${condition}）`;
+  return targetName;
 }
 
 function nodeTypeLabel(type: string): string {

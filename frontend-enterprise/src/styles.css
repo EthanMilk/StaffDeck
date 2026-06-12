@@ -1282,7 +1282,7 @@ body.skill-distill-fixed .content {
 .skill-workbench {
   display: grid;
   width: 100%;
-  grid-template-columns: minmax(380px, 0.88fr) minmax(620px, 1.12fr);
+  grid-template-columns: minmax(360px, 0.72fr) minmax(760px, 1.28fr);
   gap: 16px;
   align-items: stretch;
   min-height: calc(100vh - 136px);
@@ -2404,35 +2404,37 @@ body.skill-distill-fixed .content {
   padding: clamp(16px, 2.6vw, 28px) clamp(14px, 2.6vw, 28px) 52px;
   display: grid;
   align-content: start;
-  justify-items: center;
+  justify-items: stretch;
   gap: 20px;
 }
 
 .skill-flow-graph-canvas {
-  width: 100%;
-  min-width: 0;
-  max-width: 1120px;
+  width: max-content;
+  min-width: min(100%, 760px);
+  max-width: none;
   display: grid;
   align-content: start;
-  justify-items: center;
+  justify-items: start;
   gap: 0;
+  margin-inline: auto;
   padding: 4px 0 20px;
 }
 
 .skill-flow-layer-block {
   width: 100%;
-  min-width: 0;
+  min-width: max-content;
   display: grid;
-  justify-items: center;
+  justify-items: start;
   gap: 0;
 }
 
 .skill-flow-layer {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   display: flex;
   align-items: stretch;
-  justify-content: center;
-  flex-wrap: wrap;
+  justify-content: flex-start;
+  flex-wrap: nowrap;
   gap: 16px;
 }
 
@@ -2452,7 +2454,7 @@ body.skill-distill-fixed .content {
 
 .skill-flow-edge-row {
   width: 100%;
-  max-width: 920px;
+  max-width: 760px;
   display: flex;
   justify-content: center;
   flex-wrap: wrap;
@@ -2474,8 +2476,8 @@ body.skill-distill-fixed .content {
 }
 
 .skill-flow-node-shell {
-  width: clamp(280px, 36vw, 380px);
-  max-width: min(100%, calc(100vw - 132px));
+  width: clamp(260px, 24vw, 320px);
+  max-width: 320px;
   display: grid;
   justify-items: center;
   gap: 8px;
@@ -3509,7 +3511,7 @@ pre {
   max-width: 100%;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1360px) {
   body.skill-distill-fixed {
     overflow: hidden;
   }
