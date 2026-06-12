@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from app.agents.branching import knowledge_version_for_upload, visible_knowledge_base_version_ids
 from app.async_jobs import enqueue_async_job
 from app.db import get_session
 from app.db.models import (
@@ -34,17 +35,21 @@ router = APIRouter(prefix="/api/enterprise/knowledge", tags=["enterprise:knowled
 @router.post("/documents", response_model=KnowledgeIngestJobRead)
 def upload_document(
     request: KnowledgeDocumentUploadRequest,
+    agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
 ) -> KnowledgeIngestJobRead:
     ensure_tenant(db, request.tenant_id)
     knowledge_base = db.get(KnowledgeBase, request.knowledge_base_id)
     if not knowledge_base or knowledge_base.tenant_id != request.tenant_id or knowledge_base.status == "archived":
         raise HTTPException(status_code=404, detail="Knowledge base not found")
+    version = knowledge_version_for_upload(db, request.tenant_id, request.knowledge_base_id, agent_id)
+    db.commit()
     service = KnowledgeService(db)
     job = service.create_ingest_job(
         IngestPayload(
             tenant_id=request.tenant_id,
             knowledge_base_id=request.knowledge_base_id,
+            knowledge_base_version_id=version.id,
             filename=request.filename,
             content_base64=request.content_base64,
             title=request.title,
@@ -73,12 +78,20 @@ def get_job(job_id: str, tenant_id: str = Query(...), db: Session = Depends(get_
 def list_documents(
     tenant_id: str = Query(...),
     knowledge_base_id: str | None = Query(None),
+    agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
 ) -> list[KnowledgeDocumentRead]:
     ensure_tenant(db, tenant_id)
+    visible_version_ids = visible_knowledge_base_version_ids(db, tenant_id, agent_id)
     stmt = select(KnowledgeDocument).where(KnowledgeDocument.tenant_id == tenant_id)
     if knowledge_base_id:
         stmt = stmt.where(KnowledgeDocument.knowledge_base_id == knowledge_base_id)
+    elif agent_id:
+        stmt = stmt.where(
+            KnowledgeDocument.knowledge_base_version_id.in_(visible_version_ids)
+            if visible_version_ids
+            else KnowledgeDocument.knowledge_base_version_id == "__none__"
+        )
     rows = db.exec(stmt.order_by(KnowledgeDocument.created_at.desc())).all()
     return [document_read(row) for row in rows]
 
@@ -146,6 +159,12 @@ def search_knowledge(
             ModelConfig.enabled == True,  # noqa: E712
         )
     ).first()
+    if request.agent_id:
+        request.knowledge_base_version_ids = visible_knowledge_base_version_ids(
+            db,
+            request.tenant_id,
+            request.agent_id,
+        )
     return KnowledgeService(db).search(request, model_config)
 
 
@@ -154,12 +173,20 @@ def list_discoveries(
     tenant_id: str = Query(...),
     knowledge_base_id: str | None = Query(None),
     status: str | None = Query(None),
+    agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
 ) -> list[KnowledgeDiscoveryRead]:
     ensure_tenant(db, tenant_id)
+    visible_version_ids = visible_knowledge_base_version_ids(db, tenant_id, agent_id)
     stmt = select(KnowledgeDiscoverySuggestion).where(KnowledgeDiscoverySuggestion.tenant_id == tenant_id)
     if knowledge_base_id:
         stmt = stmt.where(KnowledgeDiscoverySuggestion.knowledge_base_id == knowledge_base_id)
+    elif agent_id:
+        stmt = stmt.where(
+            KnowledgeDiscoverySuggestion.knowledge_base_version_id.in_(visible_version_ids)
+            if visible_version_ids
+            else KnowledgeDiscoverySuggestion.knowledge_base_version_id == "__none__"
+        )
     if status:
         stmt = stmt.where(KnowledgeDiscoverySuggestion.status == status)
     rows = db.exec(stmt.order_by(KnowledgeDiscoverySuggestion.created_at.desc())).all()

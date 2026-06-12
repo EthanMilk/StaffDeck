@@ -72,6 +72,48 @@ class SkillVersion(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class AgentSkillBranch(SQLModel, table=True):
+    __tablename__ = "agent_skill_branches"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "agent_id", "skill_id", name="uq_agent_skill_branch"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("agentbranch"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    skill_id: str = Field(index=True)
+    source_skill_id: str = Field(index=True)
+    base_version: str = "1.0.0"
+    head_version: str = "1.0.0"
+    content_json: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
+    status: str = Field(default="active", index=True)
+    sync_state: str = Field(default="synced", index=True)
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AgentSkillBranchVersion(SQLModel, table=True):
+    __tablename__ = "agent_skill_branch_versions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "agent_id", "skill_id", "version", name="uq_agent_skill_branch_version"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("agentbranchver"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    skill_id: str = Field(index=True)
+    source_skill_id: str = Field(index=True)
+    version: str = Field(index=True)
+    base_version: str = "1.0.0"
+    content_json: dict[str, Any] = Field(sa_column=Column(JSON, nullable=False))
+    status: str = Field(default="active", index=True)
+    sync_state: str = Field(default="diverged", index=True)
+    change_summary: Optional[str] = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class GeneralSkill(SQLModel, table=True):
     __tablename__ = "general_skills"
     __table_args__ = (UniqueConstraint("tenant_id", "slug", name="uq_general_skill_tenant_slug"),)
@@ -106,12 +148,50 @@ class KnowledgeBase(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class KnowledgeBaseVersion(SQLModel, table=True):
+    __tablename__ = "knowledge_base_versions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "knowledge_base_id", "version", name="uq_knowledge_base_version"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("kbver"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    knowledge_base_id: str = Field(index=True)
+    version: str = Field(default="1.0.0", index=True)
+    name: str
+    description: Optional[str] = None
+    status: str = Field(default="active", index=True)
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AgentKnowledgeBranch(SQLModel, table=True):
+    __tablename__ = "agent_knowledge_branches"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "agent_id", "knowledge_base_id", name="uq_agent_knowledge_branch"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("agentkb"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    knowledge_base_id: str = Field(index=True)
+    base_version: str = "1.0.0"
+    head_version: str = "1.0.0"
+    status: str = Field(default="active", index=True)
+    sync_state: str = Field(default="synced", index=True)
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class KnowledgeDocument(SQLModel, table=True):
     __tablename__ = "knowledge_documents"
 
     id: str = Field(default_factory=lambda: new_id("kdoc"), primary_key=True)
     tenant_id: str = Field(index=True)
     knowledge_base_id: str = Field(index=True)
+    knowledge_base_version_id: Optional[str] = Field(default=None, index=True)
     filename: str
     file_type: str = Field(index=True)
     title: Optional[str] = None
@@ -130,6 +210,7 @@ class KnowledgeBucket(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("kbucket"), primary_key=True)
     tenant_id: str = Field(index=True)
     knowledge_base_id: str = Field(index=True)
+    knowledge_base_version_id: Optional[str] = Field(default=None, index=True)
     document_id: str = Field(index=True)
     bucket_key: str = Field(index=True)
     title: str
@@ -146,6 +227,7 @@ class KnowledgeChunk(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("kchunk"), primary_key=True)
     tenant_id: str = Field(index=True)
     knowledge_base_id: str = Field(index=True)
+    knowledge_base_version_id: Optional[str] = Field(default=None, index=True)
     document_id: str = Field(index=True)
     bucket_id: str = Field(index=True)
     chunk_index: int = Field(index=True)
@@ -163,6 +245,7 @@ class KnowledgeDiscoverySuggestion(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("kdisc"), primary_key=True)
     tenant_id: str = Field(index=True)
     knowledge_base_id: str = Field(index=True)
+    knowledge_base_version_id: Optional[str] = Field(default=None, index=True)
     document_id: str = Field(index=True)
     bucket_id: Optional[str] = Field(default=None, index=True)
     suggestion_type: str = Field(index=True)
@@ -181,6 +264,7 @@ class KnowledgeIngestJob(SQLModel, table=True):
     id: str = Field(default_factory=lambda: new_id("kjob"), primary_key=True)
     tenant_id: str = Field(index=True)
     knowledge_base_id: str = Field(index=True)
+    knowledge_base_version_id: Optional[str] = Field(default=None, index=True)
     document_id: Optional[str] = Field(default=None, index=True)
     filename: str
     status: str = Field(default="queued", index=True)
@@ -246,6 +330,21 @@ class AgentProfile(SQLModel, table=True):
     is_overall: bool = Field(default=False, index=True)
     status: str = Field(default="active", index=True)
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AgentModelBinding(SQLModel, table=True):
+    __tablename__ = "agent_model_bindings"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "agent_id", "role", name="uq_agent_model_binding"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("agentmodel"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    role: str = Field(default="default", index=True)
+    model_config_id: str = Field(index=True)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

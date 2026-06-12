@@ -626,6 +626,13 @@ export default function ChatWindowPage() {
     });
   }, []);
 
+  const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) || agents[0] || null;
+
+  const changeAgent = useCallback((value: string) => {
+    setSelectedAgentId(value);
+    window.localStorage.setItem('skill_agent_selected_agent', value);
+  }, []);
+
   useEffect(() => {
     api
       .get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}`)
@@ -1346,6 +1353,21 @@ export default function ChatWindowPage() {
             </div>
           );
         })}
+        <div className="chat-agent-dock">
+          <span className="chat-agent-mark">UR</span>
+          <div className="chat-agent-main">
+            <span className="chat-agent-label">{selectedAgent?.name || '智能体'}</span>
+            <Select
+              className="chat-agent-select"
+              size="small"
+              value={selectedAgentId || undefined}
+              placeholder="选择智能体"
+              popupMatchSelectWidth={220}
+              onChange={changeAgent}
+              options={agents.map((agent) => ({ value: agent.id, label: agent.name }))}
+            />
+          </div>
+        </div>
       </aside>
       <main className="chat-main">
         <div className="chat-header">
@@ -1354,18 +1376,6 @@ export default function ChatWindowPage() {
             <div className="header-subtitle">{sessionId}</div>
           </div>
           <div className="chat-header-actions">
-            <Select
-              className="chat-agent-select"
-              size="middle"
-              value={selectedAgentId || undefined}
-              placeholder="选择智能体"
-              popupMatchSelectWidth={220}
-              onChange={(value) => {
-                setSelectedAgentId(value);
-                window.localStorage.setItem('skill_agent_selected_agent', value);
-              }}
-              options={agents.map((agent) => ({ value: agent.id, label: agent.name }))}
-            />
             <ThemeToggleButton />
           </div>
         </div>

@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlmodel import Session, select
 
+from app.agents.branching import model_for_agent, visible_knowledge_base_ids, visible_published_skills, visible_skill
 from app.core.conversation_context import build_conversation_context
 from app.core.reflection_agent import ReflectionAgent, ReflectionDecision, action_needs_reflection
 from app.core.response_generator import FALLBACK_REPLY, ResponseGenerator
@@ -297,7 +298,7 @@ class AgentLoop:
         run_response = self.general_skill_runner.run(skill, request.message, model_config, request.user_id)
         self._record_general_skill_run_events(request.tenant_id, chat_session, run_response)
         step_result, tool_result = self._general_skill_agent_outputs(run_response)
-        active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id)
+        active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
         reply = self._generate_reply_segment(
             request.message,
             chat_session,
@@ -516,7 +517,7 @@ class AgentLoop:
         self._record_general_skill_run_events(request.tenant_id, chat_session, run_response)
         yield self._stream_status(chat_session, "responding", "正在生成回复")
         step_result, tool_result = self._general_skill_agent_outputs(run_response)
-        active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id)
+        active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
         reply = ""
         for chunk in self._generate_reply_stream_segment(
             request.message,
@@ -637,7 +638,7 @@ class AgentLoop:
                 self.db.commit()
                 self.db.refresh(chat_session)
 
-                active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id)
+                active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
                 yield self._stream_event(
                     "skill_state",
                     chat_session,
@@ -788,7 +789,7 @@ class AgentLoop:
                 {"message": request.message, "channel": request.channel, "user_id": request.user_id},
             )
 
-            model_config = self._get_default_model(request.tenant_id)
+            model_config = self._get_default_model(request.tenant_id, chat_session.agent_id)
             if not model_config:
                 raise AgentLoopPreconditionError("missing_model_config", "没有默认模型配置。")
             memory_model_config = model_config
@@ -984,7 +985,7 @@ class AgentLoop:
             self.db.commit()
             self.db.refresh(chat_session)
 
-            active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id)
+            active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
             if not self._should_run_step_agent(router_decision, active_skill):
                 yield self._stream_status(chat_session, "responding", "正在生成回复")
                 for chunk in self._generate_reply_stream_segment(
@@ -1285,7 +1286,7 @@ class AgentLoop:
             {"message": request.message, "channel": request.channel, "user_id": request.user_id},
         )
 
-        model_config = self._get_default_model(request.tenant_id)
+        model_config = self._get_default_model(request.tenant_id, chat_session.agent_id)
         skills = self._list_published_skills(request.tenant_id, chat_session.agent_id)
         tools = self._tools_with_general_skills(
             request.tenant_id,
@@ -1442,7 +1443,7 @@ class AgentLoop:
         self.db.commit()
         self.db.refresh(chat_session)
 
-        active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id)
+        active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
         if not self._should_run_step_agent(router_decision, active_skill):
             return PreparedTurn(
                 chat_session=chat_session,
@@ -1788,7 +1789,7 @@ class AgentLoop:
                 self.db.commit()
                 self.db.refresh(chat_session)
 
-                active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id)
+                active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
                 step_result = self._run_step_agent_with_context_repair(
                     request,
                     chat_session,
@@ -2202,7 +2203,7 @@ class AgentLoop:
         self.db.commit()
         self.db.refresh(chat_session)
 
-        active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id)
+        active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
         if stream_events is not None:
             stream_events.append(
                 (
@@ -2421,14 +2422,15 @@ class AgentLoop:
             search_response = KnowledgeSearchResponse(selected_buckets=[], chunks=[], trace=[])
         else:
             search_response = KnowledgeService(self.db).search(
-            KnowledgeSearchRequest(
-                tenant_id=request.tenant_id,
-                query=query.query,
-                knowledge_base_ids=knowledge_base_ids,
-                max_chunks=max(1, min(query.max_chunks, 12)),
-                max_buckets=4,
-            ),
-            model_config,
+                KnowledgeSearchRequest(
+                    tenant_id=request.tenant_id,
+                    agent_id=chat_session.agent_id,
+                    query=query.query,
+                    knowledge_base_ids=knowledge_base_ids,
+                    max_chunks=max(1, min(query.max_chunks, 12)),
+                    max_buckets=4,
+                ),
+                model_config,
             )
         knowledge_items = {
             "query": query.model_dump(mode="json"),
@@ -2855,7 +2857,7 @@ class AgentLoop:
     def _skill_has_step(self, skill: Skill, step_id: str | None) -> bool:
         if not step_id:
             return False
-        return any(step.get("step_id") == step_id for step in self._skill_steps(skill))
+        return any(node.get("node_id") == step_id for node in self._skill_nodes(skill))
 
     def _advance_past_satisfied_collection_steps(
         self, tenant_id: str, chat_session: ChatSession, skill: Skill | None
@@ -2876,7 +2878,7 @@ class AgentLoop:
 
         changed = False
         slots = chat_session.slots_json or {}
-        while step_index < len(steps) - 1:
+        while True:
             current = steps[step_index]
             expected = [str(field) for field in current.get("expected_user_info", [])]
             if any(not self._skill_slot_satisfied(slots, field) for field in expected):
@@ -2884,7 +2886,9 @@ class AgentLoop:
             actions = self._step_actions(current)
             if self._step_can_act_without_more_user_input(actions):
                 break
-            next_step = steps[step_index + 1]
+            next_step = self._default_next_step(skill, str(current.get("step_id") or ""))
+            if not next_step:
+                break
             next_step_id = str(next_step.get("step_id") or "")
             if not next_step_id:
                 break
@@ -2903,7 +2907,17 @@ class AgentLoop:
                     "reason": "expected_info_satisfied",
                 },
             )
-            step_index += 1
+            next_index = next(
+                (
+                    index
+                    for index, step in enumerate(steps)
+                    if step.get("step_id") == next_step_id
+                ),
+                -1,
+            )
+            if next_index < 0 or next_index == step_index:
+                break
+            step_index = next_index
         return changed
 
     def _step_can_act_without_more_user_input(self, actions: list[str]) -> bool:
@@ -3063,7 +3077,7 @@ class AgentLoop:
                 data=None,
                 error=ToolError(code="GENERAL_SKILL_NOT_FOUND", message="通用技能不存在或未发布。"),
             )
-        model_config = self._get_default_model(request.tenant_id)
+        model_config = self._get_default_model(request.tenant_id, agent_id)
         if not model_config:
             return ToolResult(
                 tool_name=tool_call.name,
@@ -3153,14 +3167,7 @@ class AgentLoop:
     ) -> str | None:
         if not active_step_id:
             return None
-        steps = self._skill_steps(skill)
-        start_index = next(
-            (index for index, step in enumerate(steps) if step.get("step_id") == active_step_id),
-            -1,
-        )
-        if start_index < 0:
-            return None
-        for step in steps[start_index + 1 :]:
+        for step in self._next_steps_from_graph(skill, active_step_id):
             step_id = str(step.get("step_id") or "")
             if not step_id:
                 continue
@@ -3252,16 +3259,96 @@ class AgentLoop:
         return action_needs_reflection(router_decision, step_result, tool_result)
 
     def _first_step_id(self, skill: Skill) -> str | None:
+        content = skill.content_json or {}
+        start_node_id = str(content.get("start_node_id") or "").strip()
+        if start_node_id and self._skill_has_step(skill, start_node_id):
+            return start_node_id
         steps = self._skill_steps(skill)
         first_step = steps[0] if steps and isinstance(steps[0], dict) else None
         return first_step.get("step_id") if first_step else None
 
     def _skill_steps(self, skill: Skill) -> list[dict[str, Any]]:
+        return [_node_as_step(node) for node in self._ordered_skill_nodes(skill)]
+
+    def _skill_nodes(self, skill: Skill) -> list[dict[str, Any]]:
         content = skill.content_json or {}
-        nodes = [node for node in content.get("nodes", []) if isinstance(node, dict)]
-        if nodes:
-            return [_node_as_step(node) for node in nodes]
-        return []
+        return [node for node in content.get("nodes", []) if isinstance(node, dict)]
+
+    def _ordered_skill_nodes(self, skill: Skill) -> list[dict[str, Any]]:
+        nodes = self._skill_nodes(skill)
+        if not nodes:
+            return []
+        content = skill.content_json or {}
+        nodes_by_id = {str(node.get("node_id") or ""): node for node in nodes if node.get("node_id")}
+        start_node_id = str(content.get("start_node_id") or "").strip()
+        if not start_node_id or start_node_id not in nodes_by_id:
+            start_node_id = str(nodes[0].get("node_id") or "")
+        outgoing = self._graph_outgoing_edges(skill)
+        ordered: list[dict[str, Any]] = []
+        visited: set[str] = set()
+
+        def visit(node_id: str) -> None:
+            if not node_id or node_id in visited:
+                return
+            node = nodes_by_id.get(node_id)
+            if not node:
+                return
+            visited.add(node_id)
+            ordered.append(node)
+            for edge in outgoing.get(node_id, []):
+                visit(str(edge.get("next_node_id") or ""))
+
+        visit(start_node_id)
+        for node in nodes:
+            node_id = str(node.get("node_id") or "")
+            if node_id not in visited:
+                ordered.append(node)
+        return ordered
+
+    def _graph_outgoing_edges(self, skill: Skill) -> dict[str, list[dict[str, Any]]]:
+        content = skill.content_json or {}
+        edges = [edge for edge in content.get("edges", []) if isinstance(edge, dict)]
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for edge in edges:
+            source = str(edge.get("source_node_id") or "")
+            target = str(edge.get("next_node_id") or "")
+            if not source or not target:
+                continue
+            grouped.setdefault(source, []).append(edge)
+        for source, items in grouped.items():
+            grouped[source] = sorted(items, key=lambda item: int(item.get("priority") or 0))
+        return grouped
+
+    def _next_steps_from_graph(self, skill: Skill, active_step_id: str | None) -> list[dict[str, Any]]:
+        if not active_step_id:
+            return []
+        nodes_by_id = {str(node.get("node_id") or ""): _node_as_step(node) for node in self._skill_nodes(skill)}
+        outgoing = self._graph_outgoing_edges(skill).get(active_step_id, [])
+        return [
+            nodes_by_id[target_id]
+            for target_id in (str(edge.get("next_node_id") or "") for edge in outgoing)
+            if target_id in nodes_by_id
+        ]
+
+    def _default_next_step(self, skill: Skill, active_step_id: str | None) -> dict[str, Any] | None:
+        if not active_step_id:
+            return None
+        nodes_by_id = {str(node.get("node_id") or ""): _node_as_step(node) for node in self._skill_nodes(skill)}
+        outgoing = self._graph_outgoing_edges(skill).get(active_step_id, [])
+        if not outgoing:
+            return None
+        if len(outgoing) == 1:
+            return nodes_by_id.get(str(outgoing[0].get("next_node_id") or ""))
+        unconditional = []
+        for edge in outgoing:
+            condition = str(edge.get("condition") or "").strip().lower()
+            if condition in {"", "default", "else"}:
+                target = nodes_by_id.get(str(edge.get("next_node_id") or ""))
+                if target:
+                    unconditional.append(target)
+        if len(unconditional) == 1:
+            return unconditional[0]
+        return None
 
     def _get_or_create_session(self, request: ChatTurnRequest) -> ChatSession:
         session_id = request.session_id or new_id("session")
@@ -3369,21 +3456,14 @@ class AgentLoop:
         if not active_step_id:
             return False
         content = skill.content_json or {}
-        steps = self._skill_steps(skill)
-        if not steps:
+        terminal_node_ids = {str(node_id) for node_id in content.get("terminal_node_ids", [])}
+        if active_step_id not in terminal_node_ids:
             return False
-        step_index = next(
-            (
-                index
-                for index, step in enumerate(steps)
-                if step.get("step_id") == active_step_id
-            ),
-            -1,
-        )
-        if step_index < 0 or step_index != len(steps) - 1:
+        current_step = self._current_skill_step(skill, active_step_id)
+        if not current_step:
             return False
 
-        expected = [str(field) for field in steps[step_index].get("expected_user_info", [])]
+        expected = [str(field) for field in current_step.get("expected_user_info", [])]
         if any(not self._skill_slot_satisfied(slots, field) for field in expected):
             return False
 
@@ -3391,7 +3471,7 @@ class AgentLoop:
         if any(not self._skill_slot_satisfied(slots, field) for field in required):
             return False
 
-        actions = self._step_actions(steps[step_index])
+        actions = self._step_actions(current_step)
         if not actions:
             return True
         terminal_actions = {
@@ -3462,22 +3542,17 @@ class AgentLoop:
             },
         )
 
-    def _get_default_model(self, tenant_id: str) -> ModelConfig | None:
-        return self.db.exec(
-            select(ModelConfig).where(
-                ModelConfig.tenant_id == tenant_id,
-                ModelConfig.is_default == True,  # noqa: E712
-                ModelConfig.enabled == True,  # noqa: E712
-            )
-        ).first()
+    def _get_default_model(self, tenant_id: str, agent_id: str | None = None, role: str = "default") -> ModelConfig | None:
+        return model_for_agent(self.db, tenant_id, agent_id, role)
 
     def _get_persona_prompt(self, tenant_id: str, agent_id: str | None = None) -> str | None:
-        row = self.db.get(PersonaConfig, tenant_id)
-        base_prompt = row.system_prompt if row else None
         agent = self._get_agent_profile(tenant_id, agent_id)
-        if agent and agent.persona_prompt:
-            return f"{base_prompt}\n\n{agent.persona_prompt}" if base_prompt else agent.persona_prompt
-        return base_prompt
+        if agent and not agent.is_overall:
+            return agent.persona_prompt
+        if agent and agent.is_overall and agent.persona_prompt:
+            return agent.persona_prompt
+        row = self.db.get(PersonaConfig, tenant_id)
+        return row.system_prompt if row else None
 
     def _get_reflection_max_rounds(self, tenant_id: str) -> int:
         row = self.db.get(UIConfig, tenant_id)
@@ -3492,13 +3567,7 @@ class AgentLoop:
         return max(1, min(int(value), 20))
 
     def _list_published_skills(self, tenant_id: str, agent_id: str | None = None) -> list[Skill]:
-        statement = select(Skill).where(Skill.tenant_id == tenant_id, Skill.status == "published")
-        if self._agent_requires_resource_filter(tenant_id, agent_id):
-            resource_ids = self._agent_resource_ids(tenant_id, agent_id, "skill")
-            if not resource_ids:
-                return []
-            statement = statement.where(Skill.id.in_(resource_ids))  # type: ignore[attr-defined]
-        return list(self.db.exec(statement).all())
+        return visible_published_skills(self.db, tenant_id, agent_id)
 
     def _list_published_general_skills(self, tenant_id: str, agent_id: str | None = None) -> list[GeneralSkill]:
         statement = select(GeneralSkill).where(
@@ -3595,16 +3664,12 @@ class AgentLoop:
         ]
 
     def _agent_visible_knowledge_base_ids(self, tenant_id: str, agent_id: str | None) -> list[str]:
-        if not self._agent_requires_resource_filter(tenant_id, agent_id):
-            return []
-        return self._agent_resource_ids(tenant_id, agent_id, "knowledge_base")
+        return visible_knowledge_base_ids(self.db, tenant_id, agent_id)
 
-    def _get_active_skill(self, tenant_id: str, skill_id: str | None) -> Skill | None:
+    def _get_active_skill(self, tenant_id: str, skill_id: str | None, agent_id: str | None = None) -> Skill | None:
         if not skill_id:
             return None
-        return self.db.exec(
-            select(Skill).where(Skill.tenant_id == tenant_id, Skill.skill_id == skill_id)
-        ).first()
+        return visible_skill(self.db, tenant_id, skill_id, agent_id)
 
     def _recent_messages(self, chat_session: ChatSession, limit: int = 8) -> list[dict[str, str]]:
         if not hasattr(self, "db"):

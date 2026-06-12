@@ -49,8 +49,26 @@ export default function PersonaPage() {
 
   useEffect(() => {
     const agent = agents.find((item) => item.id === selectedAgentId);
-    if (agent && !agent.is_overall) {
-      form.setFieldsValue({ system_prompt: agent.persona_prompt || '' });
+    if (agent) {
+      if (agent.is_overall) {
+        api
+          .get<PersonaRead>(`/api/enterprise/persona?tenant_id=${TENANT_ID}`)
+          .then((row) => {
+            form.setFieldsValue({
+              agent_name: agent.name,
+              agent_description: agent.description || '',
+              system_prompt: agent.persona_prompt || row.system_prompt,
+            });
+            setUpdatedAt(agent.updated_at || row.updated_at);
+          })
+          .catch((error) => message.error(error.message));
+        return;
+      }
+      form.setFieldsValue({
+        agent_name: agent.name,
+        agent_description: agent.description || '',
+        system_prompt: agent.persona_prompt || '',
+      });
       setUpdatedAt(agent.updated_at);
       return;
     }
@@ -82,17 +100,24 @@ export default function PersonaPage() {
     setLoading(true);
     try {
       const values = await form.validateFields();
-      if (!isOverallPersona && selectedAgent) {
+      if (selectedAgent) {
         const row = await api.put<AgentProfileRead>(`/api/enterprise/agents/${selectedAgent.id}`, {
           tenant_id: TENANT_ID,
-          name: selectedAgent.name,
-          description: selectedAgent.description,
+          name: values.agent_name,
+          description: values.agent_description,
           persona_prompt: values.system_prompt,
           status: selectedAgent.status,
         });
         setAgents((prev) => prev.map((item) => (item.id === row.id ? { ...row, resources: item.resources } : item)));
         setUpdatedAt(row.updated_at);
-        message.success('智能体人设已保存');
+        if (row.is_overall) {
+          await api.put<PersonaRead>('/api/enterprise/persona', {
+            tenant_id: TENANT_ID,
+            system_prompt: values.system_prompt,
+          });
+        }
+        window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', { detail: { agentId: row.id } }));
+        message.success('智能体配置已保存');
       } else {
         const row = await api.put<PersonaRead>('/api/enterprise/persona', {
           tenant_id: TENANT_ID,
@@ -134,19 +159,22 @@ export default function PersonaPage() {
       <div className="page-title">
         <div>
           <Typography.Title level={3}>人设</Typography.Title>
-          <Typography.Text type="secondary">
-            当前域：{selectedAgent?.name || '整体智能体'}，{isOverallPersona ? '保存为全局 System Prompt' : '保存为该智能体专属人设'}
-          </Typography.Text>
         </div>
         <Button type="primary" icon={<SaveOutlined />} loading={loading} onClick={save}>保存</Button>
       </div>
-      <Card className="editor-card" title={<><UserOutlined /> {isOverallPersona ? 'System Prompt' : '智能体专属人设'}</>}>
+      <Card className="editor-card" title={<><UserOutlined /> 智能体人设</>}>
         <Form form={form} layout="vertical">
+          <Form.Item name="agent_name" label="名称" rules={[{ required: true }]}>
+            <Input placeholder="智能体名称" />
+          </Form.Item>
+          <Form.Item name="agent_description" label="描述">
+            <Input.TextArea rows={2} placeholder="智能体描述" />
+          </Form.Item>
           <Form.Item name="system_prompt" label="人设 Prompt" rules={[{ required: true }]}>
             <Input.TextArea
               className="persona-editor"
               rows={12}
-              placeholder={isOverallPersona ? '输入整体默认人设' : '输入仅当前智能体可见的人设补充'}
+              placeholder={isOverallPersona ? '输入整体默认人设' : '输入仅当前智能体可见的人设'}
             />
           </Form.Item>
         </Form>

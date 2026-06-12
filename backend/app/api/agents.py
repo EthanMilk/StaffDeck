@@ -4,19 +4,47 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from app.agents.schema import (
+    AgentModelsUpdateRequest,
     AgentProfileCreateRequest,
     AgentProfileRead,
     AgentProfileUpdateRequest,
     AgentResourceBindingInput,
     AgentResourceBindingRead,
     AgentResourcesUpdateRequest,
+    AgentScopeRead,
+    AgentSkillRollbackRequest,
+)
+from app.agents.branching import (
+    branch_versions,
+    copy_overall_scope_to_agent,
+    get_overall_agent,
+    promote_branch_to_overall,
+    rollback_branch,
+    sync_branch_from_overall,
+    visible_skill_rows,
 )
 from app.db import get_session
-from app.db.models import AgentProfile, AgentResourceBinding, GeneralSkill, KnowledgeBase, Skill, utc_now
+from app.db.models import (
+    AgentModelBinding,
+    AgentProfile,
+    AgentResourceBinding,
+    AgentSkillBranch,
+    GeneralSkill,
+    KnowledgeBase,
+    Skill,
+    utc_now,
+)
 from app.security.tenant import ensure_tenant
 
 enterprise_router = APIRouter(prefix="/api/enterprise/agents", tags=["enterprise:agents"])
 chat_router = APIRouter(prefix="/api/chat/agents", tags=["chat:agents"])
+scope_router = APIRouter(prefix="/api/enterprise/agent-scope", tags=["enterprise:agent-scope"])
+
+
+@scope_router.get("", response_model=AgentScopeRead)
+def get_agent_scope(tenant_id: str = Query(...), db: Session = Depends(get_session)) -> AgentScopeRead:
+    ensure_tenant(db, tenant_id)
+    return AgentScopeRead(tenant_id=tenant_id, agents=list_agents(tenant_id, db))
 
 
 @enterprise_router.get("", response_model=list[AgentProfileRead])
@@ -50,9 +78,15 @@ def create_agent(request: AgentProfileCreateRequest, db: Session = Depends(get_s
         metadata_json=request.metadata,
     )
     db.add(row)
+    db.flush()
+    if not row.is_overall:
+        overall = get_overall_agent(db, request.tenant_id)
+        if overall and not row.persona_prompt:
+            row.persona_prompt = overall.persona_prompt
+        copy_overall_scope_to_agent(db, request.tenant_id, row)
     db.commit()
     db.refresh(row)
-    return agent_read(row, [])
+    return agent_read(row, _bindings_by_agent(db, request.tenant_id).get(row.id, []))
 
 
 @enterprise_router.get("/{agent_id}", response_model=AgentProfileRead)
@@ -164,6 +198,130 @@ def update_agent_resources(
     return get_agent_resources(agent_id, request.tenant_id, db)
 
 
+@enterprise_router.get("/{agent_id}/skills")
+def get_agent_skills(
+    agent_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+) -> list[dict[str, object]]:
+    _get_agent(db, tenant_id, agent_id)
+    return [_skill_branch_read(skill) for skill in visible_skill_rows(db, tenant_id, agent_id)]
+
+
+@enterprise_router.post("/{agent_id}/skills/{skill_id}/sync-from-overall")
+def sync_agent_skill_from_overall(
+    agent_id: str,
+    skill_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+) -> dict[str, object]:
+    agent = _get_agent(db, tenant_id, agent_id)
+    if agent.is_overall:
+        raise HTTPException(status_code=400, detail="Overall agent is already the trunk")
+    skill = _get_global_skill(db, tenant_id, skill_id)
+    branch = sync_branch_from_overall(db, tenant_id, agent_id, skill)
+    db.commit()
+    return {"status": "synced", "skill_id": skill_id, "head_version": branch.head_version}
+
+
+@enterprise_router.post("/{agent_id}/skills/{skill_id}/promote-to-overall")
+def promote_agent_skill_to_overall(
+    agent_id: str,
+    skill_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+) -> dict[str, object]:
+    agent = _get_agent(db, tenant_id, agent_id)
+    if agent.is_overall:
+        raise HTTPException(status_code=400, detail="Overall agent does not have a branch to promote")
+    branch = db.exec(
+        select(AgentSkillBranch).where(
+            AgentSkillBranch.tenant_id == tenant_id,
+            AgentSkillBranch.agent_id == agent_id,
+            AgentSkillBranch.skill_id == skill_id,
+        )
+    ).first()
+    if not branch:
+        raise HTTPException(status_code=404, detail="Branch not found")
+    skill = promote_branch_to_overall(db, tenant_id, branch)
+    db.commit()
+    return {"status": "promoted", "skill_id": skill_id, "version": skill.version}
+
+
+@enterprise_router.post("/{agent_id}/skills/{skill_id}/rollback")
+def rollback_agent_skill(
+    agent_id: str,
+    skill_id: str,
+    request: AgentSkillRollbackRequest,
+    db: Session = Depends(get_session),
+) -> dict[str, object]:
+    agent = _get_agent(db, request.tenant_id, agent_id)
+    if agent.is_overall:
+        raise HTTPException(status_code=400, detail="Use the global skill rollback endpoint for overall agent")
+    branch = rollback_branch(db, request.tenant_id, agent_id, skill_id, request.version)
+    db.commit()
+    return {"status": "rolled_back", "skill_id": skill_id, "head_version": branch.head_version}
+
+
+@enterprise_router.get("/{agent_id}/skills/{skill_id}/versions")
+def list_agent_skill_versions(
+    agent_id: str,
+    skill_id: str,
+    tenant_id: str = Query(...),
+    db: Session = Depends(get_session),
+) -> list[dict[str, object]]:
+    _get_agent(db, tenant_id, agent_id)
+    return [
+        {
+            "id": row.id,
+            "tenant_id": row.tenant_id,
+            "agent_id": row.agent_id,
+            "skill_id": row.skill_id,
+            "version": row.version,
+            "base_version": row.base_version,
+            "sync_state": row.sync_state,
+            "status": row.status,
+            "content": row.content_json,
+            "change_summary": row.change_summary,
+            "created_at": row.created_at.isoformat(),
+            "updated_at": row.updated_at.isoformat(),
+        }
+        for row in branch_versions(db, tenant_id, agent_id, skill_id)
+    ]
+
+
+@enterprise_router.put("/{agent_id}/models")
+def update_agent_models(
+    agent_id: str,
+    request: AgentModelsUpdateRequest,
+    db: Session = Depends(get_session),
+) -> dict[str, object]:
+    _get_agent(db, request.tenant_id, agent_id)
+    for item in request.bindings:
+        existing = db.exec(
+            select(AgentModelBinding).where(
+                AgentModelBinding.tenant_id == request.tenant_id,
+                AgentModelBinding.agent_id == agent_id,
+                AgentModelBinding.role == item.role,
+            )
+        ).first()
+        if existing:
+            existing.model_config_id = item.model_config_id
+            existing.updated_at = utc_now()
+            db.add(existing)
+            continue
+        db.add(
+            AgentModelBinding(
+                tenant_id=request.tenant_id,
+                agent_id=agent_id,
+                role=item.role,
+                model_config_id=item.model_config_id,
+            )
+        )
+    db.commit()
+    return {"status": "updated", "agent_id": agent_id}
+
+
 @chat_router.get("", response_model=list[AgentProfileRead])
 def list_chat_agents(tenant_id: str = Query(...), db: Session = Depends(get_session)) -> list[AgentProfileRead]:
     ensure_tenant(db, tenant_id)
@@ -237,3 +395,35 @@ def _ensure_resource_exists(db: Session, tenant_id: str, item: AgentResourceBind
     row = db.get(model, item.resource_id)
     if not row or row.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail=f"Resource not found: {item.resource_type}:{item.resource_id}")
+
+
+def _get_global_skill(db: Session, tenant_id: str, skill_id: str) -> Skill:
+    row = db.exec(select(Skill).where(Skill.tenant_id == tenant_id, Skill.skill_id == skill_id)).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return row
+
+
+def _skill_branch_read(skill: Skill) -> dict[str, object]:
+    metadata = getattr(skill, "agent_branch_meta", {}) or {}
+    content = skill.content_json or {}
+    if not metadata and isinstance(content.get("metadata"), dict):
+        metadata = content.get("metadata", {}).get("agent_branch", {}) or {}
+    return {
+        "id": skill.id,
+        "tenant_id": skill.tenant_id,
+        "skill_id": skill.skill_id,
+        "version": skill.version,
+        "name": skill.name,
+        "business_domain": skill.business_domain,
+        "description": skill.description,
+        "content": skill.content_json,
+        "status": skill.status,
+        "agent_id": metadata.get("agent_id"),
+        "branch_status": metadata.get("status"),
+        "branch_sync_state": metadata.get("sync_state"),
+        "branch_base_version": metadata.get("base_version"),
+        "branch_head_version": metadata.get("head_version"),
+        "created_at": skill.created_at.isoformat(),
+        "updated_at": skill.updated_at.isoformat(),
+    }

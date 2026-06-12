@@ -20,12 +20,22 @@ class KnowledgeBaseUpdateRequest(BaseModel):
     metadata: Optional[dict[str, Any]] = None
 
 
+class KnowledgeBaseRollbackRequest(BaseModel):
+    tenant_id: str
+    agent_id: str
+    version: str
+
+
 class KnowledgeBaseRead(BaseModel):
     id: str
     tenant_id: str
     name: str
     description: Optional[str] = None
     status: str
+    version: Optional[str] = None
+    branch_sync_state: Optional[str] = None
+    branch_base_version: Optional[str] = None
+    branch_head_version: Optional[str] = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     document_count: int = 0
     bucket_count: int = 0
@@ -119,8 +129,10 @@ class KnowledgeChunkRead(BaseModel):
 
 class KnowledgeSearchRequest(BaseModel):
     tenant_id: str
+    agent_id: Optional[str] = None
     query: str
     knowledge_base_ids: list[str] = Field(default_factory=list)
+    knowledge_base_version_ids: list[str] = Field(default_factory=list)
     document_ids: list[str] = Field(default_factory=list)
     max_bucket_rounds: int = 2
     max_buckets: int = 4

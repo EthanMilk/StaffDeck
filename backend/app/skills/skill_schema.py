@@ -174,6 +174,11 @@ class SkillRead(BaseModel):
     recent_negative_feedback_count: int = 0
     recent_positive_rate: float = 0.0
     recent_negative_rate: float = 0.0
+    agent_id: Optional[str] = None
+    branch_status: Optional[str] = None
+    branch_sync_state: Optional[str] = None
+    branch_base_version: Optional[str] = None
+    branch_head_version: Optional[str] = None
     created_at: str
     updated_at: str
 
@@ -195,6 +200,9 @@ class SkillVersionRead(BaseModel):
     negative_feedback_count: int = 0
     positive_rate: float = 0.0
     negative_rate: float = 0.0
+    agent_id: Optional[str] = None
+    branch_sync_state: Optional[str] = None
+    branch_base_version: Optional[str] = None
     created_at: str
     updated_at: str
 

@@ -53,6 +53,11 @@ class AgentProfileRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AgentScopeRead(BaseModel):
+    tenant_id: str
+    agents: list[AgentProfileRead] = Field(default_factory=list)
+
+
 class AgentResourceBindingInput(BaseModel):
     resource_type: Literal["skill", "general_skill", "knowledge_base"]
     resource_id: str
@@ -63,3 +68,18 @@ class AgentResourceBindingInput(BaseModel):
 class AgentResourcesUpdateRequest(BaseModel):
     tenant_id: str
     resources: list[AgentResourceBindingInput] = Field(default_factory=list)
+
+
+class AgentModelBindingInput(BaseModel):
+    role: Literal["default", "router", "step", "response", "general_skill"]
+    model_config_id: str
+
+
+class AgentModelsUpdateRequest(BaseModel):
+    tenant_id: str
+    bindings: list[AgentModelBindingInput] = Field(default_factory=list)
+
+
+class AgentSkillRollbackRequest(BaseModel):
+    tenant_id: str
+    version: str

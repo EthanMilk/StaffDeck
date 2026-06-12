@@ -124,6 +124,7 @@ const DEFAULT_DISTILL_MESSAGES: ChatItem[] = [
     content: '请粘贴原始技能说明，或点击右侧某一块后告诉我需要怎样改写。',
   },
 ];
+const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
 type DistillCacheSnapshot = {
   draft: SkillCard | null;
@@ -187,7 +188,12 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
   const searchParams = searchParamsOverride || routerSearchParams;
   const skillId = searchParams.get('skill_id');
   const mode = searchParams.get('mode') || '';
-  const cacheKey = `skill-distill:${TENANT_ID}:${skillId || mode || 'new'}`;
+  const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+  const activeAgentId = searchParams.get('agent_id') || selectedAgentId;
+  const agentQuery = activeAgentId ? `&agent_id=${encodeURIComponent(activeAgentId)}` : '';
+  const agentSearchParam = activeAgentId ? `agent_id=${encodeURIComponent(activeAgentId)}` : '';
+  const agentOnlyQuery = agentSearchParam ? `?${agentSearchParam}` : '';
+  const cacheKey = `skill-distill:${TENANT_ID}:${activeAgentId || 'default'}:${skillId || mode || 'new'}`;
   const [draft, setDraft] = useState<SkillCard | null>(null);
   const [loadedSkill, setLoadedSkill] = useState<SkillRead | null>(null);
   const [lastSavedDraft, setLastSavedDraft] = useState<SkillCard | null>(null);
@@ -229,6 +235,15 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
   const chatMessagesRef = useRef<HTMLDivElement | null>(null);
   const [cacheReady, setCacheReady] = useState(false);
   const [hydratedCacheKey, setHydratedCacheKey] = useState('');
+
+  useEffect(() => {
+    const onScopeChange = (event: Event) => {
+      const agentId = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || '';
+      setSelectedAgentId(agentId || window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+    };
+    window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
+    return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
+  }, []);
 
   useEffect(() => {
     setCacheReady(false);
@@ -284,7 +299,7 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
     }
 
     api
-      .get<SkillRead>(`/api/enterprise/skills/${encodeURIComponent(skillId)}?tenant_id=${TENANT_ID}`)
+      .get<SkillRead>(`/api/enterprise/skills/${encodeURIComponent(skillId)}?tenant_id=${TENANT_ID}${agentQuery}`)
       .then((result) => {
         setDraft(result.content);
         setLoadedSkill(result);
@@ -315,7 +330,7 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
         setHydratedCacheKey(cacheKey);
         setCacheReady(true);
       });
-  }, [cacheKey, skillId]);
+  }, [agentQuery, cacheKey, skillId]);
 
   useEffect(() => {
     if (!cacheReady || hydratedCacheKey !== cacheKey) return;
@@ -718,17 +733,17 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
     try {
       let savedSkill: SkillRead;
       if (loadedSkill) {
-        savedSkill = await api.put<SkillRead>(`/api/enterprise/skills/${loadedSkill.skill_id}`, {
+        savedSkill = await api.put<SkillRead>(`/api/enterprise/skills/${loadedSkill.skill_id}${agentOnlyQuery}`, {
           tenant_id: TENANT_ID,
           content: finalDraft,
           status: loadedSkill.status,
         });
       } else {
         try {
-          savedSkill = await api.post<SkillRead>('/api/enterprise/skills', { tenant_id: TENANT_ID, content: finalDraft, status: 'draft' });
+          savedSkill = await api.post<SkillRead>(`/api/enterprise/skills${agentOnlyQuery}`, { tenant_id: TENANT_ID, content: finalDraft, status: 'draft' });
         } catch (error) {
           if (!(error instanceof Error) || !error.message.includes('409')) throw error;
-          savedSkill = await api.put<SkillRead>(`/api/enterprise/skills/${finalDraft.skill_id}`, {
+          savedSkill = await api.put<SkillRead>(`/api/enterprise/skills/${finalDraft.skill_id}${agentOnlyQuery}`, {
             tenant_id: TENANT_ID,
             content: finalDraft,
             status: 'draft',
@@ -1545,7 +1560,7 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
     const toolOps = operations.filter((operation) => operation.kind === 'tool_add' && operation.toolId);
     for (const operation of toolOps) {
       try {
-        await api.delete(`/api/enterprise/tools/${encodeURIComponent(String(operation.toolId))}?tenant_id=${TENANT_ID}`);
+        await api.delete(`/api/enterprise/tools/${encodeURIComponent(String(operation.toolId))}?tenant_id=${TENANT_ID}${agentQuery}`);
       } catch {
         // Tool may already have been removed. Local state is restored from the snapshot below.
       }
@@ -1555,7 +1570,7 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
     for (const operation of versionOps) {
       const skillId = String(operation.skillId);
       if (snapshot.loadedSkill) {
-        await api.put<SkillRead>(`/api/enterprise/skills/${encodeURIComponent(snapshot.loadedSkill.skill_id)}`, {
+        await api.put<SkillRead>(`/api/enterprise/skills/${encodeURIComponent(snapshot.loadedSkill.skill_id)}${agentOnlyQuery}`, {
           tenant_id: TENANT_ID,
           content: snapshot.loadedSkill.content,
           status: snapshot.loadedSkill.status,
@@ -1563,7 +1578,7 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
         if (operation.version && operation.version !== snapshot.loadedSkill.version) {
           try {
             await api.delete(
-              `/api/enterprise/skills/${encodeURIComponent(skillId)}/versions/${encodeURIComponent(operation.version)}?tenant_id=${TENANT_ID}`,
+              `/api/enterprise/skills/${encodeURIComponent(skillId)}/versions/${encodeURIComponent(operation.version)}?tenant_id=${TENANT_ID}${agentQuery}`,
             );
           } catch {
             // A saved version may be shared with current state or already removed. The active draft has been restored.
@@ -1571,7 +1586,7 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
         }
       } else {
         try {
-          await api.delete(`/api/enterprise/skills/${encodeURIComponent(skillId)}?tenant_id=${TENANT_ID}`);
+          await api.delete(`/api/enterprise/skills/${encodeURIComponent(skillId)}?tenant_id=${TENANT_ID}${agentQuery}`);
         } catch {
           // If the skill was not persisted, there is nothing else to roll back.
         }
@@ -2241,6 +2256,8 @@ function SkillFlow({
 }) {
   const nodes = skillGraphSteps(skill);
   const edgeMap = skillGraphEdgeMap(skill);
+  const layout = buildSkillFlowLayout(skill, nodes);
+  const terminalSet = new Set(asStringList(skill.terminal_node_ids));
   return (
     <div className="skill-flow" ref={containerRef}>
       <SelectableTarget
@@ -2265,57 +2282,119 @@ function SkillFlow({
           </FlowMetaRow>
         </div>
       </SelectableTarget>
-      {nodes.map((step, index) => {
-        const stepId = String(step.step_id || `step_${index + 1}`);
-        const path = stepTargetPath(index);
-        const toolActions = asStringList(step.allowed_actions).filter((action) =>
-          String(action).startsWith('call_tool:'),
-        );
-        const outgoingEdges = edgeMap[stepId] || [];
-        const conditionText = String(step.condition || '');
-        return (
-          <div className="skill-flow-step" key={path}>
-            <div className="skill-flow-line" />
-            <SelectableTarget
-              className={targetClass('skill-flow-node', path, selectedPaths, highlightedPaths, updatingPaths, dirtyPaths)}
-              target={{ path, label: `节点 ${index + 1}：${step.name || stepId}` }}
-              onToggle={onToggle}
-            >
-              {selectedPaths.includes(path) && <span className="selection-mark"><CheckOutlined /></span>}
-              <span>节点 {index + 1}</span>
-              <strong><InlineDiffText path={path} field="name" value={String(step.name || stepId)} diffs={textDiffs} /></strong>
-              <small>{stepId}</small>
-              <div className="skill-flow-node-badges">
-                <span className="skill-flow-chip">{nodeTypeLabel(String(step.type || 'collect_info'))}</span>
-                {Boolean(step.optional) && <span className="skill-flow-chip">可选</span>}
-                {conditionText ? <span className="skill-flow-chip">条件：{conditionText}</span> : null}
-              </div>
-              <p><InlineDiffText path={path} field="instruction" value={String(step.instruction || '暂无说明')} diffs={textDiffs} /></p>
-              <div className="skill-flow-meta">
-                <FlowMetaRow label="期望字段">
-                  <PlainChipList values={asStringList(step.expected_user_info)} />
-                </FlowMetaRow>
-                <FlowMetaRow label="知识范围">
-                  <PlainChipList values={knowledgeScopeLabels(step.knowledge_scope)} />
-                </FlowMetaRow>
-                <FlowMetaRow label="允许动作">
-                  <ActionList actions={asStringList(step.allowed_actions)} toolDescriptions={toolDescriptions} toolStatuses={toolStatuses} />
-                </FlowMetaRow>
-                <FlowMetaRow label="流转">
-                  <PlainChipList values={outgoingEdges.length > 0 ? outgoingEdges.map(edgeLabel) : ['默认下一步']} />
-                </FlowMetaRow>
-              </div>
-            </SelectableTarget>
-            {toolActions.length > 0 && (
-              <div className="skill-flow-tools">
-                {toolActions.map((action) => (
-                  <ActionChip action={String(action)} toolDescriptions={toolDescriptions} toolStatuses={toolStatuses} className="skill-flow-tool" key={String(action)} />
+      <div className="skill-flow-graph-canvas">
+        {layout.layers.map((layer, layerIndex) => {
+          const layerEdges = layer.flatMap((item) => edgeMap[item.nodeId] || []);
+          return (
+            <div className="skill-flow-layer-block" key={`layer_${layerIndex}`}>
+              {layerIndex > 0 && <div className="skill-flow-layer-line" />}
+              <div className="skill-flow-layer">
+                {layer.map((item) => (
+                  <SkillFlowNodeCard
+                    key={item.nodeId}
+                    index={item.index}
+                    step={item.step}
+                    terminal={terminalSet.has(item.nodeId)}
+                    outgoingEdges={edgeMap[item.nodeId] || []}
+                    selectedPaths={selectedPaths}
+                    highlightedPaths={highlightedPaths}
+                    updatingPaths={updatingPaths}
+                    dirtyPaths={dirtyPaths}
+                    textDiffs={textDiffs}
+                    toolDescriptions={toolDescriptions}
+                    toolStatuses={toolStatuses}
+                    onToggle={onToggle}
+                  />
                 ))}
               </div>
-            )}
-          </div>
-        );
-      })}
+              {layerEdges.length > 0 && (
+                <div className="skill-flow-edge-row">
+                  {layerEdges.map((edge, edgeIndex) => (
+                    <span className="skill-flow-edge-chip" key={`${String(edge.source_node_id)}_${String(edge.next_node_id)}_${edgeIndex}`}>
+                      {edgeLabel(edge)}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SkillFlowNodeCard({
+  index,
+  step,
+  terminal,
+  outgoingEdges,
+  selectedPaths,
+  highlightedPaths,
+  updatingPaths,
+  dirtyPaths,
+  textDiffs,
+  toolDescriptions,
+  toolStatuses,
+  onToggle,
+}: {
+  index: number;
+  step: Record<string, unknown>;
+  terminal: boolean;
+  outgoingEdges: Array<Record<string, unknown>>;
+  selectedPaths: string[];
+  highlightedPaths: string[];
+  updatingPaths: string[];
+  dirtyPaths: string[];
+  textDiffs: TextDiffAnimation[];
+  toolDescriptions: ToolDescriptionMap;
+  toolStatuses: ToolStatusMap;
+  onToggle: (target: TargetSelection) => void;
+}) {
+  const nodeId = String(step.node_id || step.step_id || `node_${index + 1}`);
+  const path = stepTargetPath(index);
+  const conditionText = String(step.condition || '');
+  const toolActions = asStringList(step.allowed_actions).filter((action) => String(action).startsWith('call_tool:'));
+  return (
+    <div className="skill-flow-node-shell">
+      <SelectableTarget
+        className={targetClass('skill-flow-node', path, selectedPaths, highlightedPaths, updatingPaths, dirtyPaths)}
+        target={{ path, label: `节点 ${index + 1}：${step.name || nodeId}` }}
+        onToggle={onToggle}
+      >
+        {selectedPaths.includes(path) && <span className="selection-mark"><CheckOutlined /></span>}
+        <span>节点 {index + 1}</span>
+        <strong><InlineDiffText path={path} field="name" value={String(step.name || nodeId)} diffs={textDiffs} /></strong>
+        <small>{nodeId}</small>
+        <div className="skill-flow-node-badges">
+          <span className="skill-flow-chip">{nodeTypeLabel(String(step.type || 'collect_info'))}</span>
+          {Boolean(step.optional) && <span className="skill-flow-chip">可选</span>}
+          {terminal && <span className="skill-flow-chip terminal">终止</span>}
+          {conditionText ? <span className="skill-flow-chip">条件：{conditionText}</span> : null}
+        </div>
+        <p><InlineDiffText path={path} field="instruction" value={String(step.instruction || '暂无说明')} diffs={textDiffs} /></p>
+        <div className="skill-flow-meta">
+          <FlowMetaRow label="期望字段">
+            <PlainChipList values={asStringList(step.expected_user_info)} />
+          </FlowMetaRow>
+          <FlowMetaRow label="知识范围">
+            <PlainChipList values={knowledgeScopeLabels(step.knowledge_scope)} />
+          </FlowMetaRow>
+          <FlowMetaRow label="允许动作">
+            <ActionList actions={asStringList(step.allowed_actions)} toolDescriptions={toolDescriptions} toolStatuses={toolStatuses} />
+          </FlowMetaRow>
+          <FlowMetaRow label="流转">
+            <PlainChipList values={outgoingEdges.length > 0 ? outgoingEdges.map(edgeLabel) : ['无后继']} />
+          </FlowMetaRow>
+        </div>
+      </SelectableTarget>
+      {toolActions.length > 0 && (
+        <div className="skill-flow-tools">
+          {toolActions.map((action) => (
+            <ActionChip action={String(action)} toolDescriptions={toolDescriptions} toolStatuses={toolStatuses} className="skill-flow-tool" key={String(action)} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2372,6 +2451,55 @@ function skillGraphEdgeMap(skill: SkillCard): Record<string, Array<Record<string
     map[source].push(edge);
   });
   return map;
+}
+
+function buildSkillFlowLayout(skill: SkillCard, nodes: Array<Record<string, unknown>>) {
+  const byId = new Map(nodes.map((node, index) => [
+    String(node.node_id || node.step_id || `node_${index + 1}`),
+    { node, index },
+  ]));
+  const edgeMap = skillGraphEdgeMap(skill);
+  const startId = String(skill.start_node_id || nodes[0]?.node_id || nodes[0]?.step_id || '');
+  const layers: Array<Array<{ nodeId: string; step: Record<string, unknown>; index: number }>> = [];
+  const visited = new Set<string>();
+  let current = startId && byId.has(startId)
+    ? [startId]
+    : nodes.length > 0
+      ? [String(nodes[0].node_id || nodes[0].step_id || 'node_1')]
+      : [];
+
+  while (current.length > 0) {
+    const layer: Array<{ nodeId: string; step: Record<string, unknown>; index: number }> = [];
+    const nextIds: string[] = [];
+    current.forEach((nodeId) => {
+      if (visited.has(nodeId)) return;
+      const item = byId.get(nodeId);
+      if (!item) return;
+      visited.add(nodeId);
+      layer.push({ nodeId, step: item.node, index: item.index });
+      (edgeMap[nodeId] || [])
+        .slice()
+        .sort((a, b) => Number(a.priority || 0) - Number(b.priority || 0))
+        .forEach((edge) => {
+          const nextId = String(edge.next_node_id || '');
+          if (nextId && byId.has(nextId) && !visited.has(nextId) && !nextIds.includes(nextId)) {
+            nextIds.push(nextId);
+          }
+        });
+    });
+    if (layer.length > 0) layers.push(layer);
+    current = nextIds;
+  }
+
+  const remainder = nodes
+    .map((node, index) => ({
+      nodeId: String(node.node_id || node.step_id || `node_${index + 1}`),
+      step: node,
+      index,
+    }))
+    .filter((item) => !visited.has(item.nodeId));
+  if (remainder.length > 0) layers.push(remainder);
+  return { layers };
 }
 
 function edgeLabel(edge: Record<string, unknown>): string {

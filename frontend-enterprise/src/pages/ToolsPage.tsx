@@ -3,12 +3,16 @@ import { Button, Card, Form, Input, Modal, Select, Space, Switch, Table, Typogra
 import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useState } from 'react';
 import { api, TENANT_ID } from '../api/client';
-import type { ToolRead } from '../types';
+import type { AgentProfileRead, ToolRead } from '../types';
+
+const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
 export default function ToolsPage() {
   const [rows, setRows] = useState<ToolRead[]>([]);
   const [selected, setSelected] = useState<ToolRead | null>(null);
   const [testToolId, setTestToolId] = useState<string | undefined>();
+  const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+  const [isOverallAgent, setIsOverallAgent] = useState(true);
   const [form] = Form.useForm();
   const [testJson, setTestJson] = useState('{}');
   const [testResult, setTestResult] = useState('');
@@ -21,6 +25,28 @@ export default function ToolsPage() {
 
   useEffect(() => {
     load();
+  }, []);
+
+  useEffect(() => {
+    const loadAgentScope = async () => {
+      try {
+        const agents = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
+        const selectedAgent = agents.find((agent) => agent.id === agentId) || agents.find((agent) => agent.is_overall) || null;
+        setIsOverallAgent(Boolean(selectedAgent?.is_overall));
+      } catch {
+        setIsOverallAgent(true);
+      }
+    };
+    void loadAgentScope();
+  }, [agentId]);
+
+  useEffect(() => {
+    const onScopeChange = (event: Event) => {
+      const nextAgentId = (event as CustomEvent<{ agentId?: string }>).detail?.agentId || window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '';
+      setAgentId(nextAgentId);
+    };
+    window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
+    return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
   }, []);
 
   useEffect(() => {
@@ -89,7 +115,8 @@ export default function ToolsPage() {
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
-        await api.delete(`/api/enterprise/tools/${row.id}?tenant_id=${TENANT_ID}`);
+        const agentQuery = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+        await api.delete(`/api/enterprise/tools/${row.id}?tenant_id=${TENANT_ID}${agentQuery}`);
         if (selected?.id === row.id) clearEditor();
         if (testToolId === row.id) {
           setTestToolId(undefined);
@@ -140,7 +167,7 @@ export default function ToolsPage() {
         <span className="table-actions">
           <Button size="small" onClick={() => edit(row)}>编辑</Button>
           <Button size="small" icon={<ExperimentOutlined />} onClick={() => test(row)}>测试</Button>
-          <Button size="small" danger icon={<DeleteOutlined />} onClick={() => void remove(row)}>删除</Button>
+          {isOverallAgent && <Button size="small" danger icon={<DeleteOutlined />} onClick={() => void remove(row)}>删除</Button>}
         </span>
       ),
     },

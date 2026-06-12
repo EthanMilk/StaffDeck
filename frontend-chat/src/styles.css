@@ -195,6 +195,10 @@ textarea,
   backdrop-filter: blur(18px) saturate(1.2);
 }
 
+.session-pane .session-card:last-of-type {
+  margin-bottom: 8px;
+}
+
 .chat-layout.sidebar-collapsed .session-pane {
   padding: 12px 8px;
   align-items: center;
@@ -355,6 +359,52 @@ textarea,
   padding: 0 2px 6px;
 }
 
+.chat-agent-dock {
+  width: 100%;
+  min-width: 0;
+  margin-top: auto;
+  padding: 10px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 92%, transparent), color-mix(in srgb, var(--surface-subtle) 72%, transparent));
+  box-shadow: var(--shadow-soft);
+}
+
+.chat-agent-mark {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-radius: 10px;
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-size: 12px;
+  font-weight: 820;
+  letter-spacing: 0;
+}
+
+.chat-agent-main {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.chat-agent-label {
+  min-width: 0;
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 760;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-switcher .ant-select {
   width: 100%;
 }
@@ -366,6 +416,10 @@ textarea,
 }
 
 .chat-layout.sidebar-collapsed .agent-switcher {
+  display: none;
+}
+
+.chat-layout.sidebar-collapsed .chat-agent-dock {
   display: none;
 }
 
@@ -654,12 +708,12 @@ textarea,
 }
 
 .chat-agent-select {
-  width: clamp(138px, 18vw, 220px);
+  width: 100%;
 }
 
 .chat-agent-select .ant-select-selector {
-  height: 34px !important;
-  border-radius: 999px !important;
+  height: 28px !important;
+  border-radius: 8px !important;
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--surface) 92%, transparent), color-mix(in srgb, var(--surface-muted) 58%, transparent)) !important;
   border-color: var(--border) !important;
@@ -1679,6 +1733,19 @@ textarea,
   color: rgba(248, 250, 252, 0.94) !important;
 }
 
+:root[data-theme='dark'] .chat-agent-dock {
+  background:
+    linear-gradient(180deg, rgba(30, 41, 59, 0.76), rgba(15, 23, 42, 0.9));
+  border-color: rgba(228, 185, 118, 0.18);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+:root[data-theme='dark'] .chat-agent-mark {
+  color: #0f172a;
+  background: #e4b976;
+  border-color: rgba(228, 185, 118, 0.44);
+}
+
 :root[data-theme='dark'] .session-card:hover,
 :root[data-theme='dark'] .session-card.active {
   background: rgba(228, 185, 118, 0.11);
@@ -1850,6 +1917,7 @@ textarea,
 
   .brand-block > div,
   .agent-switcher,
+  .chat-agent-dock,
   .session-section-label,
   .session-summary,
   .session-actions,

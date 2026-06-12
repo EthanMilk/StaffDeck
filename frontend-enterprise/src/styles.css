@@ -153,7 +153,16 @@ select,
   background: rgba(248, 247, 244, 0.92) !important;
   border-right: 1px solid var(--border);
   backdrop-filter: blur(18px) saturate(1.2);
-  overflow: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar .ant-layout-sider-children {
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .brand {
@@ -204,6 +213,78 @@ select,
   border-inline-end: 0 !important;
   background: transparent !important;
   padding: 0 10px;
+  flex: 1 1 auto;
+  overflow: auto;
+}
+
+.agent-dock {
+  margin: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  box-shadow: var(--shadow-soft);
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 28px 28px;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.agent-dock-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-size: 16px;
+}
+
+.agent-dock-main {
+  min-width: 0;
+}
+
+.agent-dock-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.1;
+  margin-bottom: 3px;
+}
+
+.agent-dock-select {
+  width: 100%;
+}
+
+.agent-dock-select .ant-select-selector {
+  padding-inline: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.agent-dock-icon {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 9px;
+  display: inline-grid;
+  place-items: center;
+}
+
+.agent-editor-form {
+  display: grid;
+  gap: 14px;
+}
+
+.agent-editor-form label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .nav-menu .ant-menu-item,
@@ -2301,24 +2382,72 @@ body.skill-distill-fixed .content {
   display: grid;
   align-content: start;
   justify-items: center;
+  gap: 18px;
 }
 
-.skill-flow-step {
-  width: min(760px, 100%);
+.skill-flow-graph-canvas {
+  width: 100%;
+  min-width: min(760px, 100%);
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  gap: 16px;
+  overflow-x: auto;
+  padding: 2px 0 18px;
+}
+
+.skill-flow-layer-block {
+  min-width: max-content;
   display: grid;
   justify-items: center;
-  justify-self: center;
+  gap: 10px;
 }
 
-.skill-flow-line {
+.skill-flow-layer {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 16px;
+}
+
+.skill-flow-layer-line {
   width: 1px;
-  height: 30px;
+  height: 22px;
   background: #d9d2c7;
+}
+
+.skill-flow-edge-row {
+  max-width: min(820px, calc(100vw - 80px));
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.skill-flow-edge-chip {
+  max-width: min(420px, 78vw);
+  padding: 5px 10px;
+  color: var(--muted);
+  background: var(--surface-subtle);
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-flow-node-shell {
+  width: clamp(320px, 36vw, 520px);
+  display: grid;
+  justify-items: center;
+  gap: 8px;
 }
 
 .skill-flow-node {
   position: relative;
-  width: min(760px, 100%);
+  width: 100%;
   min-height: 118px;
   padding: 18px;
   display: grid;
@@ -2336,6 +2465,7 @@ body.skill-distill-fixed .content {
 
 .skill-flow-node.root {
   justify-self: center;
+  width: min(760px, 100%);
   background: #f2f0eb;
 }
 
@@ -3185,6 +3315,7 @@ pre {
 }
 
 :root[data-theme='dark'] .skill-flow-chip,
+:root[data-theme='dark'] .skill-flow-edge-chip,
 :root[data-theme='dark'] .skill-action-chip,
 :root[data-theme='dark'] .skill-source-action-add {
   color: rgba(203, 213, 225, 0.78);

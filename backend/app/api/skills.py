@@ -13,9 +13,30 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
+from app.agents.branching import (
+    branch_versions,
+    ensure_agent_skill_branch,
+    get_agent,
+    project_skill_with_branch,
+    require_overall_agent,
+    rollback_branch,
+    update_branch_skill,
+    visible_skill,
+    visible_skill_rows,
+)
 from app.async_jobs import enqueue_async_job
 from app.db import get_session
-from app.db.models import AgentEvent, ModelConfig, Skill, SkillFeedback, SkillVersion, Tool, utc_now
+from app.db.models import (
+    AgentEvent,
+    AgentResourceBinding,
+    AgentSkillBranchVersion,
+    ModelConfig,
+    Skill,
+    SkillFeedback,
+    SkillVersion,
+    Tool,
+    utc_now,
+)
 from app.llm import LLMError
 from app.security.tenant import ensure_tenant
 from app.skills import SkillDistiller, SkillEditor
@@ -48,6 +69,7 @@ def skill_read(
     total_stats = all_stats.get(row.skill_id, {})
     recent_skill_stats = (recent_stats or {}).get(row.skill_id, {})
     content, _warnings = skill_card_with_unique_step_ids(SkillCard.model_validate(row.content_json))
+    branch_meta = getattr(row, "agent_branch_meta", {}) or {}
     return SkillRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -74,6 +96,11 @@ def skill_read(
         recent_negative_feedback_count=int(recent_skill_stats.get("negative_feedback_count", 0)),
         recent_positive_rate=float(recent_skill_stats.get("positive_rate", 0.0)),
         recent_negative_rate=float(recent_skill_stats.get("negative_rate", 0.0)),
+        agent_id=branch_meta.get("agent_id"),
+        branch_status=branch_meta.get("status"),
+        branch_sync_state=branch_meta.get("sync_state"),
+        branch_base_version=branch_meta.get("base_version"),
+        branch_head_version=branch_meta.get("head_version"),
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
@@ -104,17 +131,50 @@ def skill_version_read(
     )
 
 
+def _branch_version_read(row: AgentSkillBranchVersion) -> SkillVersionRead:
+    content, _warnings = skill_card_with_unique_step_ids(SkillCard.model_validate(row.content_json))
+    return SkillVersionRead(
+        id=row.id,
+        tenant_id=row.tenant_id,
+        skill_id=row.skill_id,
+        version=row.version,
+        name=content.name,
+        business_domain=content.business_domain,
+        description=content.description,
+        content=content,
+        status=row.status,
+        call_count=0,
+        positive_feedback_count=0,
+        negative_feedback_count=0,
+        positive_rate=0.0,
+        negative_rate=0.0,
+        agent_id=row.agent_id,
+        branch_sync_state=row.sync_state,
+        branch_base_version=row.base_version,
+        created_at=row.created_at.isoformat(),
+        updated_at=row.updated_at.isoformat(),
+    )
+
+
 @router.get("", response_model=list[SkillRead])
-def list_skills(tenant_id: str = Query(...), db: Session = Depends(get_session)) -> list[SkillRead]:
+def list_skills(
+    tenant_id: str = Query(...),
+    agent_id: str | None = Query(None),
+    db: Session = Depends(get_session),
+) -> list[SkillRead]:
     ensure_tenant(db, tenant_id)
-    rows = db.exec(select(Skill).where(Skill.tenant_id == tenant_id)).all()
+    rows = visible_skill_rows(db, tenant_id, agent_id)
     stats = _skill_stats(db, tenant_id)
     recent_stats = _recent_skill_stats(db, tenant_id, stats)
     return [skill_read(row, stats, recent_stats) for row in rows]
 
 
 @router.post("", response_model=SkillRead)
-def create_skill(request: SkillCreateRequest, db: Session = Depends(get_session)) -> SkillRead:
+def create_skill(
+    request: SkillCreateRequest,
+    agent_id: str | None = Query(None),
+    db: Session = Depends(get_session),
+) -> SkillRead:
     ensure_tenant(db, request.tenant_id)
     existing = db.exec(
         select(Skill).where(
@@ -139,23 +199,68 @@ def create_skill(request: SkillCreateRequest, db: Session = Depends(get_session)
     db.commit()
     db.refresh(row)
     _upsert_skill_version(db, row)
+    agent = get_agent(db, request.tenant_id, agent_id)
+    if agent and not agent.is_overall:
+        db.add(
+            AgentResourceBinding(
+                tenant_id=request.tenant_id,
+                agent_id=agent.id,
+                resource_type="skill",
+                resource_id=row.id,
+                status="active",
+            )
+        )
+        ensure_agent_skill_branch(db, request.tenant_id, agent.id, row)
+        db.commit()
     stats = _skill_stats(db, request.tenant_id)
     return skill_read(row, stats, _recent_skill_stats(db, request.tenant_id, stats))
 
 
 @router.get("/{skill_id}", response_model=SkillRead)
-def get_skill(skill_id: str, tenant_id: str = Query(...), db: Session = Depends(get_session)) -> SkillRead:
-    row = _get_skill(db, tenant_id, skill_id)
+def get_skill(
+    skill_id: str,
+    tenant_id: str = Query(...),
+    agent_id: str | None = Query(None),
+    db: Session = Depends(get_session),
+) -> SkillRead:
+    agent = get_agent(db, tenant_id, agent_id)
+    if agent and not agent.is_overall:
+        row = visible_skill(db, tenant_id, skill_id, agent.id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Skill not visible to this agent")
+    else:
+        row = _get_skill(db, tenant_id, skill_id)
     stats = _skill_stats(db, tenant_id)
     return skill_read(row, stats, _recent_skill_stats(db, tenant_id, stats))
 
 
 @router.put("/{skill_id}", response_model=SkillRead)
-def update_skill(skill_id: str, request: SkillUpdateRequest, db: Session = Depends(get_session)) -> SkillRead:
+def update_skill(
+    skill_id: str,
+    request: SkillUpdateRequest,
+    agent_id: str | None = Query(None),
+    db: Session = Depends(get_session),
+) -> SkillRead:
     if request.content.skill_id != skill_id:
         raise HTTPException(status_code=400, detail="Path skill_id must match content.skill_id")
     row = _get_skill(db, request.tenant_id, skill_id)
     normalized_content, _warnings = skill_card_with_unique_step_ids(request.content)
+    agent = get_agent(db, request.tenant_id, agent_id)
+    if agent and not agent.is_overall:
+        branch = update_branch_skill(
+            db,
+            request.tenant_id,
+            agent.id,
+            row,
+            normalized_content.model_dump(),
+            "技能分支改写",
+        )
+        db.commit()
+        projected = visible_skill(db, request.tenant_id, skill_id, agent.id)
+        if not projected:
+            raise HTTPException(status_code=500, detail="Branch update failed")
+        stats = _skill_stats(db, request.tenant_id)
+        return skill_read(projected, stats, _recent_skill_stats(db, request.tenant_id, stats))
     row.version = normalized_content.version
     row.name = normalized_content.name
     row.business_domain = normalized_content.business_domain
@@ -173,8 +278,23 @@ def update_skill(skill_id: str, request: SkillUpdateRequest, db: Session = Depen
 
 
 @router.post("/{skill_id}/publish", response_model=SkillRead)
-def publish_skill(skill_id: str, tenant_id: str = Query(...), db: Session = Depends(get_session)) -> SkillRead:
+def publish_skill(
+    skill_id: str,
+    tenant_id: str = Query(...),
+    agent_id: str | None = Query(None),
+    db: Session = Depends(get_session),
+) -> SkillRead:
     row = _get_skill(db, tenant_id, skill_id)
+    agent = get_agent(db, tenant_id, agent_id)
+    if agent and not agent.is_overall:
+        branch = ensure_agent_skill_branch(db, tenant_id, agent.id, row)
+        branch.status = "active"
+        branch.updated_at = utc_now()
+        db.add(branch)
+        db.commit()
+        projected = project_skill_with_branch(row, branch)
+        stats = _skill_stats(db, tenant_id)
+        return skill_read(projected, stats, _recent_skill_stats(db, tenant_id, stats))
     row.status = "published"
     row.updated_at = utc_now()
     db.add(row)
@@ -186,8 +306,23 @@ def publish_skill(skill_id: str, tenant_id: str = Query(...), db: Session = Depe
 
 
 @router.post("/{skill_id}/archive", response_model=SkillRead)
-def archive_skill(skill_id: str, tenant_id: str = Query(...), db: Session = Depends(get_session)) -> SkillRead:
+def archive_skill(
+    skill_id: str,
+    tenant_id: str = Query(...),
+    agent_id: str | None = Query(None),
+    db: Session = Depends(get_session),
+) -> SkillRead:
     row = _get_skill(db, tenant_id, skill_id)
+    agent = get_agent(db, tenant_id, agent_id)
+    if agent and not agent.is_overall:
+        branch = ensure_agent_skill_branch(db, tenant_id, agent.id, row)
+        branch.status = "inactive"
+        branch.updated_at = utc_now()
+        db.add(branch)
+        db.commit()
+        projected = project_skill_with_branch(row, branch)
+        stats = _skill_stats(db, tenant_id)
+        return skill_read(projected, stats, _recent_skill_stats(db, tenant_id, stats))
     row.status = "archived"
     row.updated_at = utc_now()
     db.add(row)
@@ -203,7 +338,9 @@ def delete_skill(
     skill_id: str,
     tenant_id: str = Query(...),
     db: Session = Depends(get_session),
+    agent_id: str | None = None,
 ) -> dict[str, str]:
+    require_overall_agent(db, tenant_id, agent_id)
     row = _get_skill(db, tenant_id, skill_id)
     feedback_rows = db.exec(
         select(SkillFeedback).where(
@@ -227,8 +364,13 @@ def delete_skill(
 def list_skill_versions(
     skill_id: str,
     tenant_id: str = Query(...),
+    agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
 ) -> list[SkillVersionRead]:
+    agent = get_agent(db, tenant_id, agent_id)
+    if agent and not agent.is_overall:
+        rows = branch_versions(db, tenant_id, agent.id, skill_id)
+        return [_branch_version_read(row) for row in rows]
     row = _get_skill(db, tenant_id, skill_id)
     current_snapshot = db.exec(
         select(SkillVersion).where(
@@ -280,8 +422,18 @@ def rollback_skill_version(
     skill_id: str,
     version: str,
     tenant_id: str = Query(...),
+    agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
 ) -> SkillRead:
+    agent = get_agent(db, tenant_id, agent_id)
+    if agent and not agent.is_overall:
+        rollback_branch(db, tenant_id, agent.id, skill_id, version)
+        db.commit()
+        projected = visible_skill(db, tenant_id, skill_id, agent.id)
+        if not projected:
+            raise HTTPException(status_code=404, detail="Branch skill not found")
+        stats = _skill_stats(db, tenant_id)
+        return skill_read(projected, stats, _recent_skill_stats(db, tenant_id, stats))
     row = _get_skill(db, tenant_id, skill_id)
     version_row = _get_skill_version(db, tenant_id, skill_id, version)
     normalized_content, _warnings = skill_card_with_unique_step_ids(

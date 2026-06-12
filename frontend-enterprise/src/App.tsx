@@ -3,21 +3,22 @@ import {
   DashboardOutlined,
   DatabaseOutlined,
   DislikeOutlined,
+  EditOutlined,
   FileAddOutlined,
   FileSearchOutlined,
   MessageOutlined,
+  PlusOutlined,
   ProfileOutlined,
   RobotOutlined,
   ToolOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { Button, ConfigProvider, Layout, Menu, Select, Typography, theme as antdTheme } from 'antd';
+import { Button, ConfigProvider, Input, Layout, Menu, Modal, Select, Typography, theme as antdTheme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { api, TENANT_ID } from './api/client';
 import DashboardPage from './pages/DashboardPage';
-import AgentsPage from './pages/AgentsPage';
 import DistillPage from './pages/DistillPage';
 import FeedbackPage from './pages/FeedbackPage';
 import GeneralSkillsPage from './pages/GeneralSkillsPage';
@@ -38,6 +39,8 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
   const location = useLocation();
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+  const [agentModalMode, setAgentModalMode] = useState<'create' | 'edit' | null>(null);
+  const [agentForm, setAgentForm] = useState({ name: '', description: '' });
   const selected = location.pathname === '/enterprise'
     ? '/enterprise/dashboard'
     : location.pathname.startsWith('/enterprise/knowledge/new')
@@ -55,7 +58,11 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
   }, [isDistillRoute, location.search]);
 
   useEffect(() => {
-    api
+    loadAgents();
+  }, []);
+
+  function loadAgents() {
+    return api
       .get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
       .then((rows) => {
         setAgents(rows);
@@ -67,7 +74,7 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
         });
       })
       .catch(() => setAgents([]));
-  }, []);
+  }
 
   function changeAgentScope(agentId: string) {
     setSelectedAgentId(agentId);
@@ -76,6 +83,37 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
   }
 
   const selectedAgent = agents.find((item) => item.id === selectedAgentId);
+
+  function openAgentModal(mode: 'create' | 'edit') {
+    const target = mode === 'edit' ? selectedAgent : undefined;
+    setAgentForm({
+      name: target?.name || '',
+      description: target?.description || '',
+    });
+    setAgentModalMode(mode);
+  }
+
+  async function saveAgentModal() {
+    const name = agentForm.name.trim();
+    if (!name) return;
+    if (agentModalMode === 'create') {
+      const created = await api.post<AgentProfileRead>('/api/enterprise/agents', {
+        tenant_id: TENANT_ID,
+        name,
+        description: agentForm.description,
+      });
+      await loadAgents();
+      changeAgentScope(created.id);
+    } else if (agentModalMode === 'edit' && selectedAgent) {
+      await api.put<AgentProfileRead>(`/api/enterprise/agents/${selectedAgent.id}`, {
+        tenant_id: TENANT_ID,
+        name,
+        description: agentForm.description,
+      });
+      await loadAgents();
+    }
+    setAgentModalMode(null);
+  }
 
   return (
     <Layout className="app-shell">
@@ -87,7 +125,6 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
             <div className="brand-subtitle">Skill Studio</div>
           </div>
         </div>
-        <div className="nav-label">Workspace</div>
         <Menu
           className="nav-menu"
           mode="inline"
@@ -99,8 +136,8 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
               type: 'group',
               label: '工作区',
               children: [
-                { key: '/enterprise/dashboard', icon: <DashboardOutlined />, label: 'Dashboard' },
-                { key: '/enterprise/memories', icon: <DatabaseOutlined />, label: 'Memory 查询' },
+                { key: '/enterprise/dashboard', icon: <DashboardOutlined />, label: '看板' },
+                { key: '/enterprise/memories', icon: <DatabaseOutlined />, label: '记忆查询' },
                 { key: '/enterprise/feedback', icon: <DislikeOutlined />, label: '负反馈会话' },
               ],
             },
@@ -120,34 +157,41 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
               children: [
                 { key: '/enterprise/skills', icon: <ProfileOutlined />, label: '技能管理' },
                 { key: '/enterprise/skills/distill', icon: <MessageOutlined />, label: '技能改写' },
-                { key: '/enterprise/agents', icon: <RobotOutlined />, label: '智能体' },
                 { key: '/enterprise/tools', icon: <ToolOutlined />, label: '工具配置' },
               ],
             },
             { key: '/enterprise/models', icon: <ApiOutlined />, label: '模型配置' },
           ]}
         />
-      </Sider>
-      <Layout>
-        <Header className="topbar">
-          <div className="topbar-scope">
-            <div className="topbar-copy">
-              <Typography.Text strong>{selectedAgent?.name || '智能体域'}</Typography.Text>
-              <div className="topbar-subtitle">
-                {selectedAgent?.is_overall ? '整体资源池' : selectedAgent?.description || '当前模型可视域'}
-              </div>
-            </div>
+        <div className="agent-dock">
+          <div className="agent-dock-mark">
+            <RobotOutlined />
+          </div>
+          <div className="agent-dock-main">
+            <div className="agent-dock-label">智能体</div>
             <Select
-              className="enterprise-agent-scope-select"
+              className="agent-dock-select"
               value={selectedAgentId || undefined}
-              placeholder="选择智能体域"
-              popupMatchSelectWidth={280}
+              placeholder="选择智能体"
+              popupMatchSelectWidth={260}
               options={agents.map((agent) => ({
                 value: agent.id,
                 label: agent.is_overall ? `整体 · ${agent.name}` : agent.name,
               }))}
               onChange={changeAgentScope}
             />
+          </div>
+          <Button className="agent-dock-icon" icon={<EditOutlined />} onClick={() => openAgentModal('edit')} />
+          <Button className="agent-dock-icon" icon={<PlusOutlined />} onClick={() => openAgentModal('create')} />
+        </div>
+      </Sider>
+      <Layout>
+        <Header className="topbar">
+          <div className="topbar-scope">
+            <Typography.Text strong>{selectedAgent?.name || '智能体'}</Typography.Text>
+            <div className="topbar-subtitle">
+              {selectedAgent?.is_overall ? '整体资源池' : selectedAgent?.description || '分支工作域'}
+            </div>
           </div>
           <div className="topbar-actions">
             <ThemeToggleButton />
@@ -168,7 +212,6 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
               <Route path="/enterprise/feedback" element={<FeedbackPage />} />
               <Route path="/enterprise/skills" element={<SkillsPage />} />
               <Route path="/enterprise/general-skills" element={<GeneralSkillsPage />} />
-              <Route path="/enterprise/agents" element={<AgentsPage />} />
               <Route path="/enterprise/models" element={<ModelsPage />} />
               <Route path="/enterprise/tools" element={<ToolsPage />} />
               <Route path="/enterprise/persona" element={<PersonaPage />} />
@@ -177,6 +220,29 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
           )}
         </Content>
       </Layout>
+      <Modal
+        title={agentModalMode === 'create' ? '新增智能体' : '编辑智能体'}
+        open={agentModalMode !== null}
+        onCancel={() => setAgentModalMode(null)}
+        onOk={saveAgentModal}
+        okText="保存"
+        cancelText="取消"
+      >
+        <div className="agent-editor-form">
+          <label>
+            名称
+            <Input value={agentForm.name} onChange={(event) => setAgentForm((prev) => ({ ...prev, name: event.target.value }))} />
+          </label>
+          <label>
+            描述
+            <Input.TextArea
+              rows={3}
+              value={agentForm.description}
+              onChange={(event) => setAgentForm((prev) => ({ ...prev, description: event.target.value }))}
+            />
+          </label>
+        </div>
+      </Modal>
     </Layout>
   );
 }

@@ -39,6 +39,10 @@ export type KnowledgeBaseRead = {
   name: string;
   description?: string;
   status: string;
+  version?: string;
+  branch_sync_state?: string;
+  branch_base_version?: string;
+  branch_head_version?: string;
   metadata: Record<string, unknown>;
   document_count: number;
   bucket_count: number;
@@ -179,6 +183,11 @@ export type SkillRead = {
   recent_negative_feedback_count: number;
   recent_positive_rate: number;
   recent_negative_rate: number;
+  agent_id?: string;
+  branch_status?: string;
+  branch_sync_state?: string;
+  branch_base_version?: string;
+  branch_head_version?: string;
   created_at: string;
   updated_at: string;
 };

@@ -48,6 +48,7 @@ class IngestPayload:
     knowledge_base_id: str
     filename: str
     content_base64: str
+    knowledge_base_version_id: str | None = None
     title: str | None = None
     metadata: dict[str, Any] | None = None
 
@@ -60,6 +61,8 @@ class KnowledgeService:
         job = KnowledgeIngestJob(
             tenant_id=payload.tenant_id,
             knowledge_base_id=payload.knowledge_base_id,
+            knowledge_base_version_id=payload.knowledge_base_version_id
+            or _default_knowledge_base_version_id(payload.knowledge_base_id),
             filename=payload.filename,
             status="queued",
             stage="queued",
@@ -96,6 +99,7 @@ class KnowledgeService:
             document = KnowledgeDocument(
                 tenant_id=job.tenant_id,
                 knowledge_base_id=job.knowledge_base_id,
+                knowledge_base_version_id=job.knowledge_base_version_id,
                 filename=job.filename,
                 file_type=file_type,
                 title=str(metadata.get("title") or Path(job.filename).stem),
@@ -140,9 +144,13 @@ class KnowledgeService:
         query = request.query.strip()
         if not query:
             return KnowledgeSearchResponse()
+        if request.agent_id and not request.knowledge_base_version_ids:
+            return KnowledgeSearchResponse(trace=[{"phase": "no_visible_knowledge", "message": "当前智能体没有可见知识"}])
         stmt = select(KnowledgeBucket).where(KnowledgeBucket.tenant_id == request.tenant_id)
         if request.knowledge_base_ids:
             stmt = stmt.where(KnowledgeBucket.knowledge_base_id.in_(request.knowledge_base_ids))
+        if request.knowledge_base_version_ids:
+            stmt = stmt.where(KnowledgeBucket.knowledge_base_version_id.in_(request.knowledge_base_version_ids))
         if request.document_ids:
             stmt = stmt.where(KnowledgeBucket.document_id.in_(request.document_ids))
         buckets = self.db.exec(stmt.order_by(KnowledgeBucket.created_at.desc())).all()
@@ -218,6 +226,7 @@ class KnowledgeService:
             row = KnowledgeBucket(
                 tenant_id=tenant_id,
                 knowledge_base_id=knowledge_base_id,
+                knowledge_base_version_id=document.knowledge_base_version_id,
                 document_id=document.id,
                 bucket_key=str(spec.get("bucket_key") or f"bucket_{index + 1}"),
                 title=str(spec.get("title") or f"知识桶 {index + 1}"),
@@ -247,6 +256,7 @@ class KnowledgeService:
                 row = KnowledgeChunk(
                     tenant_id=tenant_id,
                     knowledge_base_id=knowledge_base_id,
+                    knowledge_base_version_id=document.knowledge_base_version_id,
                     document_id=document.id,
                     bucket_id=bucket.id,
                     chunk_index=index,
@@ -303,6 +313,7 @@ class KnowledgeService:
             row = KnowledgeDiscoverySuggestion(
                 tenant_id=tenant_id,
                 knowledge_base_id=knowledge_base_id,
+                knowledge_base_version_id=document.knowledge_base_version_id,
                 document_id=document.id,
                 bucket_id=_optional_str(item.get("bucket_id")),
                 suggestion_type=suggestion_type,
@@ -594,3 +605,7 @@ def _optional_str(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _default_knowledge_base_version_id(knowledge_base_id: str) -> str:
+    return f"kbver_{knowledge_base_id}_1_0_0"

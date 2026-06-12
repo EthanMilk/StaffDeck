@@ -6,6 +6,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
+from app.agents.branching import require_overall_agent
 from app.config import get_settings
 from app.db import get_session
 from app.db.models import Tool, utc_now
@@ -148,7 +149,9 @@ def delete_tool(
     tool_id: str,
     tenant_id: str = Query(...),
     db: Session = Depends(get_session),
+    agent_id: str | None = None,
 ) -> dict[str, str]:
+    require_overall_agent(db, tenant_id, agent_id)
     row = _get_tool(db, tenant_id, tool_id)
     db.delete(row)
     db.commit()

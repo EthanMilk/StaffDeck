@@ -213,6 +213,7 @@ def _migrate_sqlite_skill_schema() -> None:
             if "skill_versions" in tables:
                 _normalize_existing_skill_version_rows(conn, legacy_id_prefix)
                 _seed_skill_versions(conn)
+            _seed_agent_branch_state(conn, inspector, tables)
 
 
 def _migrate_skill_content(value: object, skill_id: str) -> dict[str, object]:
@@ -458,6 +459,74 @@ def _migrate_knowledge_base_schema(conn, inspector, tables: set[str]) -> None:
                     {"tenant_id": tenant_id, "knowledge_base_id": _default_knowledge_base_id(tenant_id)},
                 )
 
+    if "knowledge_base_versions" in tables and "knowledge_bases" in tables:
+        knowledge_bases = conn.execute(text("SELECT * FROM knowledge_bases")).mappings().all()
+        for row in knowledge_bases:
+            version_id = _knowledge_base_version_id(str(row["id"]), "1.0.0")
+            existing = conn.execute(
+                text("SELECT id FROM knowledge_base_versions WHERE id = :id"),
+                {"id": version_id},
+            ).first()
+            if not existing:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO knowledge_base_versions (
+                            id, tenant_id, knowledge_base_id, version, name, description,
+                            status, metadata_json, created_at, updated_at
+                        )
+                        VALUES (
+                            :id, :tenant_id, :knowledge_base_id, '1.0.0', :name, :description,
+                            :status, :metadata_json, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    {
+                        "id": version_id,
+                        "tenant_id": row["tenant_id"],
+                        "knowledge_base_id": row["id"],
+                        "name": row["name"],
+                        "description": row.get("description"),
+                        "status": row.get("status") or "active",
+                        "metadata_json": row.get("metadata_json") or "{}",
+                    },
+                )
+
+    for table_name in table_names:
+        if table_name not in tables:
+            continue
+        columns = {column["name"] for column in inspector.get_columns(table_name)}
+        if "knowledge_base_version_id" not in columns:
+            conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN knowledge_base_version_id VARCHAR"))
+        rows = conn.execute(
+            text(
+                f"""
+                SELECT DISTINCT knowledge_base_id FROM {table_name}
+                WHERE knowledge_base_id IS NOT NULL
+                  AND knowledge_base_id != ''
+                  AND (knowledge_base_version_id IS NULL OR knowledge_base_version_id = '')
+                """
+            )
+        ).mappings().all()
+        for row in rows:
+            knowledge_base_id = str(row.get("knowledge_base_id") or "")
+            if not knowledge_base_id:
+                continue
+            conn.execute(
+                text(
+                    f"""
+                    UPDATE {table_name}
+                    SET knowledge_base_version_id = :version_id
+                    WHERE knowledge_base_id = :knowledge_base_id
+                      AND (knowledge_base_version_id IS NULL OR knowledge_base_version_id = '')
+                    """
+                ),
+                {
+                    "knowledge_base_id": knowledge_base_id,
+                    "version_id": _knowledge_base_version_id(knowledge_base_id, "1.0.0"),
+                },
+            )
+
 
 def _seed_default_agents(conn, tables: set[str]) -> None:
     if "agent_profiles" not in tables:
@@ -554,6 +623,200 @@ def _seed_default_agent_bindings(conn, tenant_id: str) -> None:
             )
 
 
+def _seed_agent_branch_state(conn, inspector, tables: set[str]) -> None:
+    if "agent_profiles" not in tables:
+        return
+    if "agent_skill_branches" in tables and "skills" in tables:
+        agents = conn.execute(
+            text("SELECT id, tenant_id FROM agent_profiles WHERE is_overall = 0 AND status != 'archived'")
+        ).mappings().all()
+        for agent in agents:
+            tenant_id = str(agent["tenant_id"])
+            agent_id = str(agent["id"])
+            _seed_default_agent_bindings(conn, tenant_id)
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT s.*
+                    FROM skills s
+                    JOIN agent_resource_bindings b
+                      ON b.resource_id = s.id
+                     AND b.resource_type = 'skill'
+                     AND b.tenant_id = s.tenant_id
+                    WHERE s.tenant_id = :tenant_id
+                      AND b.agent_id = :agent_id
+                      AND s.status != 'archived'
+                    """
+                ),
+                {"tenant_id": tenant_id, "agent_id": agent_id},
+            ).mappings().all()
+            for row in rows:
+                _seed_agent_skill_branch(conn, agent_id, row)
+
+    if "agent_knowledge_branches" in tables and "knowledge_bases" in tables:
+        agents = conn.execute(
+            text("SELECT id, tenant_id FROM agent_profiles WHERE is_overall = 0 AND status != 'archived'")
+        ).mappings().all()
+        for agent in agents:
+            tenant_id = str(agent["tenant_id"])
+            agent_id = str(agent["id"])
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT kb.*
+                    FROM knowledge_bases kb
+                    JOIN agent_resource_bindings b
+                      ON b.resource_id = kb.id
+                     AND b.resource_type = 'knowledge_base'
+                     AND b.tenant_id = kb.tenant_id
+                    WHERE kb.tenant_id = :tenant_id
+                      AND b.agent_id = :agent_id
+                      AND kb.status != 'archived'
+                    """
+                ),
+                {"tenant_id": tenant_id, "agent_id": agent_id},
+            ).mappings().all()
+            for row in rows:
+                _seed_agent_knowledge_branch(conn, agent_id, row)
+
+    if "agent_model_bindings" in tables and "model_configs" in tables:
+        default_models = conn.execute(
+            text("SELECT tenant_id, id FROM model_configs WHERE is_default = 1 AND enabled = 1")
+        ).mappings().all()
+        model_by_tenant = {str(row["tenant_id"]): str(row["id"]) for row in default_models}
+        agents = conn.execute(
+            text("SELECT id, tenant_id FROM agent_profiles WHERE status != 'archived'")
+        ).mappings().all()
+        for agent in agents:
+            tenant_id = str(agent["tenant_id"])
+            model_id = model_by_tenant.get(tenant_id)
+            if not model_id:
+                continue
+            existing = conn.execute(
+                text(
+                    """
+                    SELECT id FROM agent_model_bindings
+                    WHERE tenant_id = :tenant_id AND agent_id = :agent_id AND role = 'default'
+                    """
+                ),
+                {"tenant_id": tenant_id, "agent_id": agent["id"]},
+            ).first()
+            if existing:
+                continue
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO agent_model_bindings (
+                        id, tenant_id, agent_id, role, model_config_id, created_at, updated_at
+                    )
+                    VALUES (
+                        :id, :tenant_id, :agent_id, 'default', :model_config_id,
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    )
+                    """
+                ),
+                {
+                    "id": _agent_model_binding_id(str(agent["id"]), "default"),
+                    "tenant_id": tenant_id,
+                    "agent_id": agent["id"],
+                    "model_config_id": model_id,
+                },
+            )
+
+
+def _seed_agent_skill_branch(conn, agent_id: str, row) -> None:
+    branch_id = _agent_skill_branch_id(agent_id, str(row["skill_id"]))
+    existing = conn.execute(text("SELECT id FROM agent_skill_branches WHERE id = :id"), {"id": branch_id}).first()
+    if existing:
+        return
+    version = row.get("version") or "1.0.0"
+    content_json = row.get("content_json") or "{}"
+    conn.execute(
+        text(
+            """
+            INSERT INTO agent_skill_branches (
+                id, tenant_id, agent_id, skill_id, source_skill_id, base_version, head_version,
+                content_json, status, sync_state, metadata_json, created_at, updated_at
+            )
+            VALUES (
+                :id, :tenant_id, :agent_id, :skill_id, :source_skill_id, :base_version, :head_version,
+                :content_json, 'active', 'synced', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """
+        ),
+        {
+            "id": branch_id,
+            "tenant_id": row["tenant_id"],
+            "agent_id": agent_id,
+            "skill_id": row["skill_id"],
+            "source_skill_id": row["id"],
+            "base_version": version,
+            "head_version": version,
+            "content_json": content_json,
+        },
+    )
+    if "agent_skill_branch_versions" not in {table for table in inspect(engine).get_table_names()}:
+        return
+    branch_version_id = _agent_skill_branch_version_id(agent_id, str(row["skill_id"]), version)
+    existing_version = conn.execute(
+        text("SELECT id FROM agent_skill_branch_versions WHERE id = :id"),
+        {"id": branch_version_id},
+    ).first()
+    if existing_version:
+        return
+    conn.execute(
+        text(
+            """
+            INSERT INTO agent_skill_branch_versions (
+                id, tenant_id, agent_id, skill_id, source_skill_id, version, base_version,
+                content_json, status, sync_state, change_summary, created_at, updated_at
+            )
+            VALUES (
+                :id, :tenant_id, :agent_id, :skill_id, :source_skill_id, :version, :base_version,
+                :content_json, 'active', 'synced', '初始化分支', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """
+        ),
+        {
+            "id": branch_version_id,
+            "tenant_id": row["tenant_id"],
+            "agent_id": agent_id,
+            "skill_id": row["skill_id"],
+            "source_skill_id": row["id"],
+            "version": version,
+            "base_version": version,
+            "content_json": content_json,
+        },
+    )
+
+
+def _seed_agent_knowledge_branch(conn, agent_id: str, row) -> None:
+    branch_id = _agent_knowledge_branch_id(agent_id, str(row["id"]))
+    existing = conn.execute(text("SELECT id FROM agent_knowledge_branches WHERE id = :id"), {"id": branch_id}).first()
+    if existing:
+        return
+    conn.execute(
+        text(
+            """
+            INSERT INTO agent_knowledge_branches (
+                id, tenant_id, agent_id, knowledge_base_id, base_version, head_version,
+                status, sync_state, metadata_json, created_at, updated_at
+            )
+            VALUES (
+                :id, :tenant_id, :agent_id, :knowledge_base_id, '1.0.0', '1.0.0',
+                'active', 'synced', '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            """
+        ),
+        {
+            "id": branch_id,
+            "tenant_id": row["tenant_id"],
+            "agent_id": agent_id,
+            "knowledge_base_id": row["id"],
+        },
+    )
+
+
 def _tenant_ids(conn, tables: set[str]) -> list[str]:
     ids: set[str] = set()
     if "tenants" in tables:
@@ -575,6 +838,27 @@ def _overall_agent_id(tenant_id: str) -> str:
 
 def _default_agent_id(tenant_id: str) -> str:
     return f"agent_{tenant_id}_default"
+
+
+def _knowledge_base_version_id(knowledge_base_id: str, version: str) -> str:
+    return f"kbver_{knowledge_base_id}_{version.replace('.', '_').replace('-', '_')}"
+
+
+def _agent_skill_branch_id(agent_id: str, skill_id: str) -> str:
+    return f"agentbranch_{agent_id}_{skill_id}"
+
+
+def _agent_skill_branch_version_id(agent_id: str, skill_id: str, version: str) -> str:
+    safe_version = version.replace(".", "_").replace("-", "_")
+    return f"agentbranchver_{agent_id}_{skill_id}_{safe_version}"
+
+
+def _agent_knowledge_branch_id(agent_id: str, knowledge_base_id: str) -> str:
+    return f"agentkb_{agent_id}_{knowledge_base_id}"
+
+
+def _agent_model_binding_id(agent_id: str, role: str) -> str:
+    return f"agentmodel_{agent_id}_{role}"
 
 
 def get_session() -> Generator[Session, None, None]:

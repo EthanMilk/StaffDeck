@@ -8,6 +8,8 @@ import {
   PlusOutlined,
   RollbackOutlined,
   StopOutlined,
+  SyncOutlined,
+  UploadOutlined,
 } from '@ant-design/icons';
 import { Button, Card, Col, Descriptions, Dropdown, Modal, Row, Segmented, Table, Tabs, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
@@ -16,6 +18,8 @@ import { useNavigate } from 'react-router-dom';
 import { api, TENANT_ID } from '../api/client';
 import type { SkillRead, SkillVersionRead } from '../types';
 import GeneralSkillsPage from './GeneralSkillsPage';
+
+const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
 const STATUS_LABELS: Record<SkillRead['status'], { text: string; color: string }> = {
   draft: { text: '草稿', color: 'blue' },
@@ -56,12 +60,17 @@ export default function SkillsPage() {
   const [versionModalTitle, setVersionModalTitle] = useState('');
   const [versionModalOpen, setVersionModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+  const [isOverallAgent, setIsOverallAgent] = useState(true);
 
   const load = async () => {
     setLoading(true);
     try {
-      const result = await api.get<SkillRead[]>(`/api/enterprise/skills?tenant_id=${TENANT_ID}`);
+      const suffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+      const result = await api.get<SkillRead[]>(`/api/enterprise/skills?tenant_id=${TENANT_ID}${suffix}`);
       setRows(result);
+      const agents = await api.get<Array<{ id: string; is_overall: boolean }>>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
+      setIsOverallAgent(Boolean(agents.find((item) => item.id === agentId)?.is_overall ?? true));
     } catch (error) {
       message.error(error instanceof Error ? error.message : '加载失败');
     } finally {
@@ -71,6 +80,15 @@ export default function SkillsPage() {
 
   useEffect(() => {
     load();
+  }, [agentId]);
+
+  useEffect(() => {
+    const onScopeChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ agentId?: string }>).detail;
+      setAgentId(detail?.agentId || window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+    };
+    window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
+    return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
   }, []);
 
   const columns: ColumnsType<SkillRead> = useMemo(
@@ -79,6 +97,15 @@ export default function SkillsPage() {
       { title: '技能 ID', dataIndex: 'skill_id', width: 190, ellipsis: true },
       { title: '业务域', dataIndex: 'business_domain', width: 140, ellipsis: true },
       { title: '版本', dataIndex: 'version', width: 90 },
+      {
+        title: '分支',
+        width: 120,
+        render: (_, row) => {
+          if (isOverallAgent) return <Tag>主干</Tag>;
+          const state = row.branch_sync_state || 'synced';
+          return <Tag color={state === 'diverged' ? 'orange' : 'green'}>{state === 'diverged' ? '已分叉' : '已同步'}</Tag>;
+        },
+      },
       {
         title: '状态',
         dataIndex: 'status',
@@ -110,12 +137,17 @@ export default function SkillsPage() {
             trigger={['click']}
             menu={{
               items: [
-                { key: 'edit', icon: <EditOutlined />, label: '编辑' },
+                { key: 'edit', icon: <EditOutlined />, label: isOverallAgent ? '编辑' : '编辑分支' },
                 { key: 'versions', icon: <HistoryOutlined />, label: '版本管理' },
-                { key: 'publish', icon: <CheckCircleOutlined />, label: '发布' },
-                { key: 'archive', icon: <StopOutlined />, label: '下线' },
-                { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true },
-              ],
+                { key: 'publish', icon: <CheckCircleOutlined />, label: isOverallAgent ? '发布' : '分支上线' },
+                { key: 'archive', icon: <StopOutlined />, label: isOverallAgent ? '下线' : '分支下线' },
+                ...(!isOverallAgent
+                  ? [
+                      { key: 'sync', icon: <SyncOutlined />, label: '同步整体' },
+                      { key: 'promote', icon: <UploadOutlined />, label: '推送到整体' },
+                    ]
+                  : [{ key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true }]),
+              ] as any,
               onClick: ({ key }) => handleAction(key, row),
             }}
           >
@@ -183,21 +215,22 @@ export default function SkillsPage() {
   );
 
   function openCreate() {
-    navigate('/enterprise/skills/distill?mode=create');
+    navigate(`/enterprise/skills/distill?mode=create${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`);
   }
 
   function openEdit(row: SkillRead) {
-    navigate(`/enterprise/skills/distill?skill_id=${encodeURIComponent(row.skill_id)}`);
+    const suffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+    navigate(`/enterprise/skills/distill?skill_id=${encodeURIComponent(row.skill_id)}${suffix}`);
   }
 
   async function publish(row: SkillRead) {
-    await api.post(`/api/enterprise/skills/${row.skill_id}/publish?tenant_id=${TENANT_ID}`);
+    await api.post(`/api/enterprise/skills/${row.skill_id}/publish?tenant_id=${TENANT_ID}${agentQuery()}`);
     message.success('已发布');
     load();
   }
 
   async function archive(row: SkillRead) {
-    await api.post(`/api/enterprise/skills/${row.skill_id}/archive?tenant_id=${TENANT_ID}`);
+    await api.post(`/api/enterprise/skills/${row.skill_id}/archive?tenant_id=${TENANT_ID}${agentQuery()}`);
     message.success('已下线');
     load();
   }
@@ -208,7 +241,7 @@ export default function SkillsPage() {
     setVersionModalOpen(true);
     try {
       const result = await api.get<SkillVersionRead[]>(
-        `/api/enterprise/skills/${encodeURIComponent(row.skill_id)}/versions?tenant_id=${TENANT_ID}`,
+        `/api/enterprise/skills/${encodeURIComponent(row.skill_id)}/versions?tenant_id=${TENANT_ID}${agentQuery()}`,
       );
       setVersionRows(result);
     } catch (error) {
@@ -235,7 +268,7 @@ export default function SkillsPage() {
       cancelText: '取消',
       onOk: async () => {
         const result = await api.post<SkillRead>(
-          `/api/enterprise/skills/${encodeURIComponent(row.skill_id)}/versions/${encodeURIComponent(row.version)}/rollback?tenant_id=${TENANT_ID}`,
+          `/api/enterprise/skills/${encodeURIComponent(row.skill_id)}/versions/${encodeURIComponent(row.version)}/rollback?tenant_id=${TENANT_ID}${agentQuery()}`,
         );
         message.success(`已回滚到 ${row.version}`);
         await load();
@@ -252,7 +285,7 @@ export default function SkillsPage() {
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
-        await api.delete(`/api/enterprise/skills/${row.skill_id}?tenant_id=${TENANT_ID}`);
+        await api.delete(`/api/enterprise/skills/${row.skill_id}?tenant_id=${TENANT_ID}${agentQuery()}`);
         message.success('已删除');
         load();
       },
@@ -265,6 +298,34 @@ export default function SkillsPage() {
     if (key === 'publish') void publish(row);
     if (key === 'archive') void archive(row);
     if (key === 'delete') remove(row);
+    if (key === 'sync') void syncFromOverall(row);
+    if (key === 'promote') void promoteToOverall(row);
+  }
+
+  async function syncFromOverall(row: SkillRead) {
+    if (!agentId) return;
+    await api.post(`/api/enterprise/agents/${agentId}/skills/${encodeURIComponent(row.skill_id)}/sync-from-overall?tenant_id=${TENANT_ID}`);
+    message.success('已同步整体版本');
+    load();
+  }
+
+  async function promoteToOverall(row: SkillRead) {
+    if (!agentId) return;
+    Modal.confirm({
+      title: `将「${row.name}」推送到整体？`,
+      content: '这会在整体智能体中生成一个新的技能版本。',
+      okText: '推送',
+      cancelText: '取消',
+      onOk: async () => {
+        await api.post(`/api/enterprise/agents/${agentId}/skills/${encodeURIComponent(row.skill_id)}/promote-to-overall?tenant_id=${TENANT_ID}`);
+        message.success('已推送到整体');
+        load();
+      },
+    });
+  }
+
+  function agentQuery() {
+    return agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
   }
 
   return (

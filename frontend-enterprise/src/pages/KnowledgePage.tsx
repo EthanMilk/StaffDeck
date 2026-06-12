@@ -22,6 +22,7 @@ import type {
 } from '../types';
 
 const { Dragger } = Upload;
+const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
 export default function KnowledgeManagePage() {
   const navigate = useNavigate();
@@ -31,21 +32,31 @@ export default function KnowledgeManagePage() {
   const [selectedDocument, setSelectedDocument] = useState<KnowledgeDocumentRead | null>(null);
   const [buckets, setBuckets] = useState<KnowledgeBucketRead[]>([]);
   const [loading, setLoading] = useState(false);
+  const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
 
   const actionableDiscoveries = discoveries.filter((item) => item.status === 'pending' && item.suggestion_type !== 'warning');
   const warningDiscoveries = discoveries.filter((item) => item.suggestion_type === 'warning' || item.status !== 'pending');
 
   useEffect(() => {
     void refresh();
+  }, [agentId]);
+
+  useEffect(() => {
+    const onScopeChange = (event: Event) => {
+      setAgentId((event as CustomEvent<{ agentId?: string }>).detail?.agentId || window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+    };
+    window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
+    return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
   }, []);
 
   async function refresh() {
     setLoading(true);
+    const suffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
     try {
       const [docRows, discoveryRows, kbRows] = await Promise.all([
-        api.get<KnowledgeDocumentRead[]>(`/api/enterprise/knowledge/documents?tenant_id=${TENANT_ID}`),
-        api.get<KnowledgeDiscoveryRead[]>(`/api/enterprise/knowledge/discoveries?tenant_id=${TENANT_ID}`),
-        api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}`),
+        api.get<KnowledgeDocumentRead[]>(`/api/enterprise/knowledge/documents?tenant_id=${TENANT_ID}${suffix}`),
+        api.get<KnowledgeDiscoveryRead[]>(`/api/enterprise/knowledge/discoveries?tenant_id=${TENANT_ID}${suffix}`),
+        api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${suffix}`),
       ]);
       setDocuments(docRows);
       setDiscoveries(discoveryRows);
@@ -146,6 +157,10 @@ export default function KnowledgeManagePage() {
                     </div>
                     <Space size={6} wrap>
                       {statusTag(item.status)}
+                      {item.version && <Tag>v{item.version}</Tag>}
+                      {item.branch_sync_state && <Tag color={item.branch_sync_state === 'diverged' ? 'gold' : 'green'}>
+                        {item.branch_sync_state === 'diverged' ? '分支修改' : '已同步'}
+                      </Tag>}
                       <Tag>{item.document_count} 文档</Tag>
                       <Tag>{item.bucket_count} 桶</Tag>
                       <Tag>{item.chunk_count} 片段</Tag>
@@ -233,6 +248,7 @@ export function KnowledgeAddPage() {
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState('');
   const [newKnowledgeBaseName, setNewKnowledgeBaseName] = useState('');
   const [jobs, setJobs] = useState<Record<string, KnowledgeIngestJobRead>>({});
+  const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
   const activeJobs = useMemo(
     () => Object.values(jobs).filter((job) => ['queued', 'running'].includes(job.status)),
     [jobs],
@@ -240,6 +256,14 @@ export function KnowledgeAddPage() {
 
   useEffect(() => {
     void refreshKnowledgeBases();
+  }, [agentId]);
+
+  useEffect(() => {
+    const onScopeChange = (event: Event) => {
+      setAgentId((event as CustomEvent<{ agentId?: string }>).detail?.agentId || window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+    };
+    window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
+    return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
   }, []);
 
   useEffect(() => {
@@ -257,7 +281,8 @@ export function KnowledgeAddPage() {
 
   async function refreshKnowledgeBases() {
     try {
-      const rows = await api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}`);
+      const suffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+      const rows = await api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${suffix}`);
       setKnowledgeBases(rows);
       setSelectedKnowledgeBaseId((current) => current || rows.find((item) => item.status === 'active')?.id || rows[0]?.id || '');
     } catch (error) {
@@ -272,7 +297,8 @@ export function KnowledgeAddPage() {
       return;
     }
     try {
-      const row = await api.post<KnowledgeBaseRead>('/api/enterprise/knowledge-bases', {
+      const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
+      const row = await api.post<KnowledgeBaseRead>(`/api/enterprise/knowledge-bases${query}`, {
         tenant_id: TENANT_ID,
         name,
         description: '',
@@ -293,7 +319,8 @@ export function KnowledgeAddPage() {
     }
     try {
       const contentBase64 = await fileToBase64(file);
-      const job = await api.post<KnowledgeIngestJobRead>('/api/enterprise/knowledge/documents', {
+      const suffix = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
+      const job = await api.post<KnowledgeIngestJobRead>(`/api/enterprise/knowledge/documents${suffix}`, {
         tenant_id: TENANT_ID,
         knowledge_base_id: selectedKnowledgeBaseId,
         filename: file.name,
