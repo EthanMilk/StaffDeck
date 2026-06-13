@@ -2501,15 +2501,13 @@ body.skill-distill-fixed .content {
   min-height: 0;
   overflow: auto;
   padding: clamp(16px, 2.6vw, 28px) clamp(14px, 2.6vw, 28px) 52px;
-  display: grid;
-  align-content: start;
-  justify-items: start;
-  gap: 22px;
+  display: block;
 }
 
 .skill-flow-graph-canvas {
   position: relative;
   min-width: 100%;
+  width: max-content;
   margin-inline: 0;
   border-radius: 18px;
   background:
@@ -2543,7 +2541,7 @@ body.skill-distill-fixed .content {
 .skill-flow-edge-label {
   position: absolute;
   z-index: 3;
-  max-width: 246px;
+  max-width: 220px;
   padding: 5px 10px;
   color: #6c655b;
   background: rgba(255, 253, 248, 0.94);
@@ -2557,6 +2555,11 @@ body.skill-distill-fixed .content {
   white-space: nowrap;
   transform: translate(-50%, -50%);
   pointer-events: none;
+}
+
+.skill-flow-root-position {
+  position: absolute;
+  z-index: 4;
 }
 
 .skill-flow-node-position {
@@ -2631,7 +2634,9 @@ body.skill-distill-fixed .content {
   position: relative;
   z-index: 1;
   justify-self: start;
-  width: min(720px, 100%);
+  width: 100%;
+  height: auto;
+  min-height: 0;
   background: #f2f0eb;
   box-shadow: 0 14px 34px rgba(37, 32, 24, 0.08);
 }

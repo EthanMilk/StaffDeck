@@ -2266,28 +2266,6 @@ function SkillFlow({
   const graphLayout = buildSkillFlowCanvasLayout(skill, nodes, nodeNameMap);
   return (
     <div className="skill-flow" ref={containerRef}>
-      <SelectableTarget
-        className={targetClass('skill-flow-node root', 'basic', selectedPaths, highlightedPaths, updatingPaths, dirtyPaths)}
-        target={{ path: 'basic', label: '基础信息' }}
-        onToggle={onToggle}
-      >
-        {selectedPaths.includes('basic') && <span className="selection-mark"><CheckOutlined /></span>}
-        <span>基础信息</span>
-        <strong><InlineDiffText path="basic" field="name" value={skill.name} diffs={textDiffs} /></strong>
-        <small>{skill.skill_id}</small>
-        <p><InlineDiffText path="basic" field="description" value={skill.description || '暂无描述'} diffs={textDiffs} /></p>
-        <div className="skill-flow-meta">
-          <FlowMetaRow label="业务域">
-            <span className="skill-flow-chip">{skill.business_domain || '-'}</span>
-          </FlowMetaRow>
-          <FlowMetaRow label="必填信息">
-            <PlainChipList values={skill.required_info} />
-          </FlowMetaRow>
-          <FlowMetaRow label="触发意图">
-            <PlainChipList values={skill.trigger_intents} />
-          </FlowMetaRow>
-        </div>
-      </SelectableTarget>
       <div
         className="skill-flow-graph-canvas"
         style={{ width: graphLayout.width, height: graphLayout.height }}
@@ -2323,6 +2301,33 @@ function SkillFlow({
             {edge.label}
           </span>
         ))}
+        <div
+          className="skill-flow-root-position"
+          style={{ left: graphLayout.root.x, top: graphLayout.root.y, width: graphLayout.root.width }}
+        >
+          <SelectableTarget
+            className={targetClass('skill-flow-node root', 'basic', selectedPaths, highlightedPaths, updatingPaths, dirtyPaths)}
+            target={{ path: 'basic', label: '基础信息' }}
+            onToggle={onToggle}
+          >
+            {selectedPaths.includes('basic') && <span className="selection-mark"><CheckOutlined /></span>}
+            <span>基础信息</span>
+            <strong><InlineDiffText path="basic" field="name" value={skill.name} diffs={textDiffs} /></strong>
+            <small>{skill.skill_id}</small>
+            <p><InlineDiffText path="basic" field="description" value={skill.description || '暂无描述'} diffs={textDiffs} /></p>
+            <div className="skill-flow-meta">
+              <FlowMetaRow label="业务域">
+                <span className="skill-flow-chip">{skill.business_domain || '-'}</span>
+              </FlowMetaRow>
+              <FlowMetaRow label="必填信息">
+                <PlainChipList values={skill.required_info} />
+              </FlowMetaRow>
+              <FlowMetaRow label="触发意图">
+                <PlainChipList values={skill.trigger_intents} />
+              </FlowMetaRow>
+            </div>
+          </SelectableTarget>
+        </div>
         {graphLayout.nodes.map((item) => (
           <div
             className="skill-flow-node-position"
@@ -2500,23 +2505,34 @@ function buildSkillFlowCanvasLayout(
   const layerLayout = buildSkillFlowLayout(skill, nodes);
   const cardWidth = 340;
   const cardHeight = 248;
-  const columnGap = 74;
-  const rowGap = 148;
-  const paddingX = 56;
-  const paddingY = 36;
+  const rootWidth = 380;
+  const rootHeight = 380;
+  const columnGap = 120;
+  const rowGap = 168;
+  const rootGap = 96;
+  const paddingX = 36;
+  const paddingY = 42;
   const maxLayerSize = Math.max(1, ...layerLayout.layers.map((layer) => layer.length));
-  const width = Math.max(760, paddingX * 2 + maxLayerSize * cardWidth + (maxLayerSize - 1) * columnGap);
+  const width = Math.max(
+    980,
+    paddingX * 2 + maxLayerSize * cardWidth + Math.max(0, maxLayerSize - 1) * columnGap,
+    paddingX * 2 + rootWidth,
+  );
+  const root = {
+    x: paddingX,
+    y: paddingY,
+    width: rootWidth,
+    height: rootHeight,
+  };
   const positionedNodes: SkillFlowCanvasNode[] = [];
   const positionMap = new Map<string, SkillFlowCanvasNode>();
 
   layerLayout.layers.forEach((layer, layerIndex) => {
-    const layerWidth = layer.length * cardWidth + Math.max(0, layer.length - 1) * columnGap;
-    const startX = paddingX + Math.max(0, (width - paddingX * 2 - layerWidth) / 2);
     layer.forEach((item, itemIndex) => {
       const positioned = {
         ...item,
-        x: startX + itemIndex * (cardWidth + columnGap),
-        y: paddingY + layerIndex * (cardHeight + rowGap),
+        x: paddingX + itemIndex * (cardWidth + columnGap),
+        y: paddingY + rootHeight + rootGap + layerIndex * (cardHeight + rowGap),
       };
       positionedNodes.push(positioned);
       positionMap.set(item.nodeId, positioned);
@@ -2531,25 +2547,52 @@ function buildSkillFlowCanvasLayout(
   }, {});
   const edgeSiblingIndexes: Record<string, number> = {};
   const layoutEdges: SkillFlowCanvasEdge[] = [];
+  const startNode = positionMap.get(String(skill.start_node_id || positionedNodes[0]?.nodeId || ''));
+  if (startNode) {
+    const sourceX = root.x + root.width / 2;
+    const sourceY = root.y + root.height;
+    const targetX = startNode.x + cardWidth / 2;
+    const targetY = startNode.y;
+    const bendY = sourceY + Math.max(76, targetY - sourceY) * 0.5;
+    layoutEdges.push({
+      id: `root_${startNode.nodeId}`,
+      label: '开始',
+      title: `开始 -> ${nodeNameMap[startNode.nodeId] || startNode.nodeId}`,
+      path: `M ${sourceX} ${sourceY} C ${sourceX} ${bendY}, ${targetX} ${bendY}, ${targetX} ${targetY}`,
+      labelX: (sourceX + targetX) / 2,
+      labelY: bendY,
+    });
+  }
   rawEdges.forEach((edge, index) => {
     const sourceId = String(edge.source_node_id || '');
     const targetId = String(edge.next_node_id || '');
     const source = positionMap.get(sourceId);
     const target = positionMap.get(targetId);
     if (!source || !target) return;
-    const sourceX = source.x + cardWidth / 2;
-    const sourceY = source.y + cardHeight;
-    const targetX = target.x + cardWidth / 2;
-    const targetY = target.y;
-    const distanceY = Math.max(80, targetY - sourceY);
-    const bendY = sourceY + distanceY * 0.5;
-    const path = `M ${sourceX} ${sourceY} C ${sourceX} ${bendY}, ${targetX} ${bendY}, ${targetX} ${targetY}`;
+    const sameLayer = Math.abs(source.y - target.y) < 8;
+    let sourceX = source.x + cardWidth / 2;
+    let sourceY = source.y + cardHeight;
+    let targetX = target.x + cardWidth / 2;
+    let targetY = target.y;
+    let bendY = sourceY + Math.max(80, targetY - sourceY) * 0.5;
+    let path = '';
+    if (sameLayer) {
+      const routeY = source.y + cardHeight + 54;
+      path = `M ${sourceX} ${sourceY} C ${sourceX} ${routeY}, ${targetX} ${routeY}, ${targetX} ${targetY + cardHeight}`;
+      bendY = routeY;
+    } else {
+      const distanceY = Math.max(80, targetY - sourceY);
+      bendY = sourceY + distanceY * 0.5;
+      path = targetY <= sourceY
+        ? `M ${sourceX} ${sourceY} C ${sourceX} ${sourceY + 76}, ${targetX} ${targetY - 76}, ${targetX} ${targetY}`
+        : `M ${sourceX} ${sourceY} C ${sourceX} ${bendY}, ${targetX} ${bendY}, ${targetX} ${targetY}`;
+    }
     const label = edgeDisplayLabel(edge, nodeNameMap);
     const title = incomingEdgeLabel(edge, nodeNameMap);
     const siblingCount = edgeSiblingCounts[sourceId] || 1;
     const siblingIndex = edgeSiblingIndexes[sourceId] || 0;
     edgeSiblingIndexes[sourceId] = siblingIndex + 1;
-    const labelOffset = siblingCount > 1 ? (siblingIndex - (siblingCount - 1) / 2) * 28 : 0;
+    const labelOffset = siblingCount > 1 ? (siblingIndex - (siblingCount - 1) / 2) * 34 : 0;
     layoutEdges.push({
       id: `${sourceId}_${targetId}_${index}`,
       label,
@@ -2560,8 +2603,8 @@ function buildSkillFlowCanvasLayout(
     });
   });
 
-  const height = paddingY * 2 + layerLayout.layers.length * cardHeight + Math.max(0, layerLayout.layers.length - 1) * rowGap;
-  return { width, height, nodes: positionedNodes, edges: layoutEdges };
+  const height = paddingY * 2 + rootHeight + rootGap + layerLayout.layers.length * cardHeight + Math.max(0, layerLayout.layers.length - 1) * rowGap;
+  return { width, height, root, nodes: positionedNodes, edges: layoutEdges };
 }
 
 function buildSkillFlowLayout(skill: SkillCard, nodes: Array<Record<string, unknown>>) {
@@ -2571,36 +2614,72 @@ function buildSkillFlowLayout(skill: SkillCard, nodes: Array<Record<string, unkn
   ]));
   const edgeMap = skillGraphEdgeMap(skill);
   const startId = String(skill.start_node_id || nodes[0]?.node_id || nodes[0]?.step_id || '');
-  const layers: Array<Array<{ nodeId: string; step: Record<string, unknown>; index: number }>> = [];
-  const visited = new Set<string>();
-  let current = startId && byId.has(startId)
-    ? [startId]
+  const start = startId && byId.has(startId)
+    ? startId
     : nodes.length > 0
-      ? [String(nodes[0].node_id || nodes[0].step_id || 'node_1')]
-      : [];
-
-  while (current.length > 0) {
-    const layer: Array<{ nodeId: string; step: Record<string, unknown>; index: number }> = [];
-    const nextIds: string[] = [];
-    current.forEach((nodeId) => {
-      if (visited.has(nodeId)) return;
-      const item = byId.get(nodeId);
-      if (!item) return;
-      visited.add(nodeId);
-      layer.push({ nodeId, step: item.node, index: item.index });
-      (edgeMap[nodeId] || [])
-        .slice()
-        .sort((a, b) => Number(a.priority || 0) - Number(b.priority || 0))
-        .forEach((edge) => {
-          const nextId = String(edge.next_node_id || '');
-          if (nextId && byId.has(nextId) && !visited.has(nextId) && !nextIds.includes(nextId)) {
-            nextIds.push(nextId);
-          }
-        });
-    });
-    if (layer.length > 0) layers.push(layer);
-    current = nextIds;
+      ? String(nodes[0].node_id || nodes[0].step_id || 'node_1')
+      : '';
+  const branchParentByTarget = new Map<string, string>();
+  Object.entries(edgeMap).forEach(([sourceId, edges]) => {
+    const validTargets = edges
+      .map((edge) => String(edge.next_node_id || ''))
+      .filter((targetId) => targetId && byId.has(targetId));
+    if (validTargets.length < 3) return;
+    validTargets.forEach((targetId) => branchParentByTarget.set(targetId, sourceId));
+  });
+  const reachable = new Set<string>();
+  const queue = start ? [start] : [];
+  while (queue.length > 0) {
+    const nodeId = queue.shift() || '';
+    if (!nodeId || reachable.has(nodeId) || !byId.has(nodeId)) continue;
+    reachable.add(nodeId);
+    (edgeMap[nodeId] || [])
+      .slice()
+      .sort((a, b) => Number(a.priority || 0) - Number(b.priority || 0))
+      .forEach((edge) => {
+        const nextId = String(edge.next_node_id || '');
+        if (nextId && byId.has(nextId) && !reachable.has(nextId)) queue.push(nextId);
+      });
   }
+
+  const ranks = new Map<string, number>();
+  if (start) ranks.set(start, 0);
+  for (let pass = 0; pass < nodes.length + 2; pass += 1) {
+    let changed = false;
+    (Array.isArray(skill.edges) ? skill.edges : []).forEach((edge) => {
+      const sourceId = String(edge.source_node_id || '');
+      const targetId = String(edge.next_node_id || '');
+      if (!reachable.has(sourceId) || !reachable.has(targetId)) return;
+      const sourceRank = ranks.get(sourceId);
+      if (sourceRank === undefined) return;
+      const branchParent = branchParentByTarget.get(targetId);
+      if (branchParent && branchParent !== sourceId && ranks.has(targetId)) return;
+      const nextRank = sourceRank + 1;
+      if ((ranks.get(targetId) ?? -1) < nextRank) {
+        ranks.set(targetId, nextRank);
+        changed = true;
+      }
+    });
+    if (!changed) break;
+  }
+
+  const layerMap = new Map<number, Array<{ nodeId: string; step: Record<string, unknown>; index: number }>>();
+  const orderedReachable = nodes
+    .map((node, index) => ({
+      nodeId: String(node.node_id || node.step_id || `node_${index + 1}`),
+      step: node,
+      index,
+    }))
+    .filter((item) => reachable.has(item.nodeId));
+  orderedReachable.forEach((item) => {
+    const rank = ranks.get(item.nodeId) ?? 0;
+    if (!layerMap.has(rank)) layerMap.set(rank, []);
+    layerMap.get(rank)?.push(item);
+  });
+
+  const layers = Array.from(layerMap.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([, layer]) => layer);
 
   const remainder = nodes
     .map((node, index) => ({
@@ -2608,7 +2687,7 @@ function buildSkillFlowLayout(skill: SkillCard, nodes: Array<Record<string, unkn
       step: node,
       index,
     }))
-    .filter((item) => !visited.has(item.nodeId));
+    .filter((item) => !reachable.has(item.nodeId));
   if (remainder.length > 0) layers.push(remainder);
   return { layers };
 }
