@@ -223,13 +223,22 @@ def get_skill(
     agent_id: str | None = None,
     db: Session = Depends(get_session),
 ) -> SkillRead:
+    row = _get_skill(db, tenant_id, skill_id)
     agent = get_agent(db, tenant_id, agent_id)
     if agent and not agent.is_overall:
-        row = visible_skill(db, tenant_id, skill_id, agent.id)
-        if not row:
+        binding = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == tenant_id,
+                AgentResourceBinding.agent_id == agent.id,
+                AgentResourceBinding.resource_type == "skill",
+                AgentResourceBinding.resource_id == row.id,
+                AgentResourceBinding.status == "active",
+            )
+        ).first()
+        if not binding:
             raise HTTPException(status_code=404, detail="Skill not visible to this agent")
-    else:
-        row = _get_skill(db, tenant_id, skill_id)
+        branch = ensure_agent_skill_branch(db, tenant_id, agent.id, row)
+        row = project_skill_with_branch(row, branch)
     stats = _skill_stats(db, tenant_id)
     return skill_read(row, stats, _recent_skill_stats(db, tenant_id, stats))
 
@@ -427,11 +436,10 @@ def rollback_skill_version(
 ) -> SkillRead:
     agent = get_agent(db, tenant_id, agent_id)
     if agent and not agent.is_overall:
-        rollback_branch(db, tenant_id, agent.id, skill_id, version)
+        branch = rollback_branch(db, tenant_id, agent.id, skill_id, version)
         db.commit()
-        projected = visible_skill(db, tenant_id, skill_id, agent.id)
-        if not projected:
-            raise HTTPException(status_code=404, detail="Branch skill not found")
+        skill = _get_skill(db, tenant_id, skill_id)
+        projected = project_skill_with_branch(skill, branch)
         stats = _skill_stats(db, tenant_id)
         return skill_read(projected, stats, _recent_skill_stats(db, tenant_id, stats))
     row = _get_skill(db, tenant_id, skill_id)

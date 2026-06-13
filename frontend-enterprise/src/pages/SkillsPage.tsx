@@ -24,7 +24,7 @@ const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const STATUS_LABELS: Record<SkillRead['status'], { text: string; color: string }> = {
   draft: { text: '草稿', color: 'blue' },
   published: { text: '已发布', color: 'green' },
-  archived: { text: '已归档', color: 'default' },
+  archived: { text: '已下线', color: 'default' },
 };
 
 type RankingMode = 'calls' | 'positive' | 'negative';
@@ -156,7 +156,7 @@ export default function SkillsPage() {
         ),
       },
     ],
-    [],
+    [agentId, isOverallAgent],
   );
 
   const rankingRows = useMemo(

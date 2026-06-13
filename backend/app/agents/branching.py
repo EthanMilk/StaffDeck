@@ -99,7 +99,7 @@ def visible_skill_rows(db: Session, tenant_id: str, agent_id: str | None = None)
         return list(
             db.exec(
                 select(Skill)
-                .where(Skill.tenant_id == tenant_id, Skill.status != "archived")
+                .where(Skill.tenant_id == tenant_id)
                 .order_by(Skill.updated_at.desc())
             ).all()
         )
@@ -114,11 +114,10 @@ def visible_skill_rows(db: Session, tenant_id: str, agent_id: str | None = None)
     ).all()
     for binding in bindings:
         skill = db.get(Skill, binding.resource_id)
-        if not skill or skill.tenant_id != tenant_id or skill.status == "archived":
+        if not skill or skill.tenant_id != tenant_id:
             continue
         branch = ensure_agent_skill_branch(db, tenant_id, agent.id, skill)
-        if branch.status == "active":
-            rows.append(project_skill_with_branch(skill, branch))
+        rows.append(project_skill_with_branch(skill, branch))
     return sorted(rows, key=lambda item: item.updated_at, reverse=True)
 
 

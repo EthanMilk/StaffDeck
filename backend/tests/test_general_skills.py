@@ -16,7 +16,7 @@ from app.api.general_skills import (
     run_general_skill,
 )
 from app.core import AgentLoop
-from app.db.models import AgentEvent, ChatSession, GeneralSkill, ModelConfig, Skill, Tenant, User
+from app.db.models import AgentEvent, AgentProfile, ChatSession, GeneralSkill, ModelConfig, Skill, Tenant, User
 from app.general_skills.runner import GeneralSkillRunner
 from app.general_skills.schema import GeneralSkillClawHubImportRequest, GeneralSkillImportRequest, GeneralSkillRunRequest
 from app.llm import LLMClient, LLMError
@@ -235,6 +235,32 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
             assert error.status_code == 404
         else:
             raise AssertionError("deleted general skill should be gone")
+
+
+def test_non_overall_agent_cannot_delete_general_skill() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        db.add(AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="客服分支", is_overall=False))
+        imported = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="天气",
+                slug="weather-zh",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+        )
+        db.commit()
+
+        try:
+            delete_general_skill(imported.slug, "tenant_demo", db, agent_id="agent_branch")
+        except HTTPException as error:
+            assert error.status_code == 403
+        else:
+            raise AssertionError("non-overall agent should not delete global general skill")
+
+        assert get_general_skill(imported.slug, "tenant_demo", db).slug == "weather-zh"
 
 
 def test_chat_turn_uses_general_skill_after_scene_router_skips_unmatched_scene(

@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
+from app.agents.branching import require_overall_agent
 from app.db import get_session
 from app.db.models import GeneralSkill, ModelConfig, utc_now
 from app.general_skills import (
@@ -225,7 +226,9 @@ def delete_general_skill(
     slug: str,
     tenant_id: str = Query(...),
     db: Session = Depends(get_session),
+    agent_id: str | None = None,
 ) -> dict[str, str]:
+    require_overall_agent(db, tenant_id, agent_id)
     row = _get_general_skill(db, tenant_id, slug)
     db.delete(row)
     db.commit()

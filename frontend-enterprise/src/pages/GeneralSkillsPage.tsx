@@ -28,6 +28,7 @@ const DEFAULT_GENERAL_META = {
   description: '中国城市天气查询工具',
   homepage: 'https://www.weather.com.cn/',
 };
+const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
 type GeneralSkillFile = {
   path: string;
@@ -287,6 +288,8 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
   const [clawhubModalOpen, setClawhubModalOpen] = useState(false);
   const [clawhubSource, setClawhubSource] = useState('');
   const [clawhubLoading, setClawhubLoading] = useState(false);
+  const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+  const [isOverallAgent, setIsOverallAgent] = useState(true);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -321,6 +324,24 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
 
   useEffect(() => {
     load();
+  }, []);
+
+  useEffect(() => {
+    api
+      .get<Array<{ id: string; is_overall: boolean }>>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`)
+      .then((items) => {
+        setIsOverallAgent(Boolean(items.find((item) => item.id === agentId)?.is_overall ?? true));
+      })
+      .catch(() => setIsOverallAgent(true));
+  }, [agentId]);
+
+  useEffect(() => {
+    const onScopeChange = (event: Event) => {
+      const detail = (event as CustomEvent<{ agentId?: string }>).detail;
+      setAgentId(detail?.agentId || window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+    };
+    window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
+    return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
   }, []);
 
   useEffect(() => {
@@ -453,7 +474,8 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
       cancelText: '取消',
       async onOk() {
         try {
-          await api.delete(`/api/enterprise/general-skills/${row.slug}?tenant_id=${TENANT_ID}`);
+          const agentSuffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
+          await api.delete(`/api/enterprise/general-skills/${row.slug}?tenant_id=${TENANT_ID}${agentSuffix}`);
           const nextRows = rows.filter((item) => item.id !== row.id);
           setRows(nextRows);
           if (selectedSlug === row.slug || editingSlug === row.slug) {
@@ -1046,8 +1068,8 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
                             row.status === 'published'
                               ? { key: 'archive', label: '下线' }
                               : { key: 'publish', label: '发布' },
-                            { key: 'delete', label: '删除', danger: true },
-                          ],
+                            isOverallAgent ? { key: 'delete', label: '删除', danger: true } : null,
+                          ].filter(Boolean),
                           onClick: ({ key, domEvent }) => {
                             domEvent.stopPropagation();
                             if (key === 'publish') {

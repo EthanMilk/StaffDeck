@@ -7,7 +7,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import copy_overall_scope_to_agent, require_overall_agent, update_branch_skill, visible_skill_rows
 from app.api.agents import _skill_branch_read
-from app.db.models import AgentProfile, Skill, Tenant
+from app.db.models import AgentProfile, AgentSkillBranch, Skill, Tenant
 
 
 def test_agent_skill_branch_is_copy_on_write_and_reports_branch_state() -> None:
@@ -60,6 +60,56 @@ def test_non_overall_agent_cannot_delete_global_resources() -> None:
             require_overall_agent(db, "tenant_demo", "agent_branch")
 
         assert exc_info.value.status_code == 403
+
+
+def test_management_rows_keep_archived_global_and_inactive_branch_skills() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        agent = AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="客服分支", is_overall=False)
+        global_archived = Skill(
+            tenant_id="tenant_demo",
+            skill_id="global_archived",
+            version="1.0.0",
+            name="主干下线技能",
+            business_domain="电商",
+            description="已下线但仍应管理可见",
+            status="archived",
+            content_json=_graph("主干下线技能", "1.0.0"),
+        )
+        branch_skill = Skill(
+            tenant_id="tenant_demo",
+            skill_id="branch_inactive",
+            version="1.0.0",
+            name="分支下线技能",
+            business_domain="电商",
+            description="分支下线但仍应管理可见",
+            status="published",
+            content_json=_graph("分支下线技能", "1.0.0"),
+        )
+        db.add(agent)
+        db.add(global_archived)
+        db.add(branch_skill)
+        db.commit()
+
+        copy_overall_scope_to_agent(db, "tenant_demo", agent)
+        branch = db.exec(
+            select(AgentSkillBranch).where(
+                AgentSkillBranch.tenant_id == "tenant_demo",
+                AgentSkillBranch.agent_id == agent.id,
+                AgentSkillBranch.skill_id == branch_skill.skill_id,
+            )
+        ).one()
+        branch.status = "inactive"
+        db.add(branch)
+        db.commit()
+
+        overall_ids = {row.skill_id for row in visible_skill_rows(db, "tenant_demo")}
+        branch_rows = visible_skill_rows(db, "tenant_demo", agent.id)
+        branch_by_id = {row.skill_id: row for row in branch_rows}
+
+        assert "global_archived" in overall_ids
+        assert branch_by_id["branch_inactive"].status == "archived"
 
 
 def _graph(name: str, version: str) -> dict[str, object]:
