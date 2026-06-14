@@ -297,6 +297,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | GeneralSkillRead['status']>('all');
   const [selectedFilePath, setSelectedFilePath] = useState('SKILL.md');
   const [editorScroll, setEditorScroll] = useState({ top: 0, left: 0 });
@@ -318,10 +319,15 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
     [skillFiles, selectedFilePath],
   );
   const selectedFileLanguage = useMemo(() => languageFromFilePath(selectedFile?.path), [selectedFile?.path]);
-  const filteredRows = useMemo(
-    () => rows.filter((row) => statusFilter === 'all' || row.status === statusFilter),
-    [rows, statusFilter],
-  );
+  const filteredRows = useMemo(() => {
+    const keyword = searchText.trim().toLowerCase();
+    return rows.filter((row) => {
+      const matchesStatus = statusFilter === 'all' || row.status === statusFilter;
+      const haystack = [row.name, row.slug, row.description, row.homepage].filter(Boolean).join(' ').toLowerCase();
+      const matchesKeyword = !keyword || haystack.includes(keyword);
+      return matchesStatus && matchesKeyword;
+    });
+  }, [rows, searchText, statusFilter]);
 
   const load = () =>
     api
@@ -1146,17 +1152,26 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
         <aside className="general-skill-side">
           <Card className="data-card general-skill-list-card" title="通用技能">
             <div className="general-skill-list-toolbar">
-              <Select
-                size="small"
-                value={statusFilter}
-                onChange={setStatusFilter}
-                options={[
-                  { label: '全部状态', value: 'all' },
-                  { label: '已发布', value: 'published' },
-                  { label: '草稿', value: 'draft' },
-                  { label: '已下线', value: 'archived' },
-                ]}
-              />
+              <div className="general-skill-search-combo">
+                <Input.Search
+                  allowClear
+                  size="small"
+                  placeholder="搜索名称、Slug、描述"
+                  value={searchText}
+                  onChange={(event) => setSearchText(event.target.value)}
+                />
+                <Select
+                  size="small"
+                  value={statusFilter}
+                  onChange={setStatusFilter}
+                  options={[
+                    { label: '全部状态', value: 'all' },
+                    { label: '已发布', value: 'published' },
+                    { label: '草稿', value: 'draft' },
+                    { label: '已下线', value: 'archived' },
+                  ]}
+                />
+              </div>
             </div>
             <div className="general-skill-list">
               {filteredRows.length === 0 && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={rows.length === 0 ? '暂无通用技能' : '没有符合筛选的通用技能'} />}

@@ -455,21 +455,20 @@ export default function SkillsPage() {
                   )}
                 >
                   <div className="skill-table-toolbar">
-                    <Input.Search
-                      allowClear
-                      placeholder="搜索技能名称、ID、业务域"
-                      value={searchText}
-                      onChange={(event) => setSearchText(event.target.value)}
-                      style={{ maxWidth: 360 }}
-                    />
-                    <div className="skill-table-filter-group">
-                      <span className="skill-table-filter-label">状态筛选</span>
+                    <div className="skill-filter-combo">
+                      <Input.Search
+                        allowClear
+                        placeholder="搜索技能名称、ID、业务域"
+                        value={searchText}
+                        onChange={(event) => setSearchText(event.target.value)}
+                        className="skill-filter-search"
+                      />
                       <Select<SkillStatusFilter>
                         value={statusFilter}
                         onChange={setStatusFilter}
-                        className="skill-table-filter-select"
+                        className="skill-filter-select skill-filter-select-status"
                         options={[
-                          { label: '全部（含下线）', value: 'all' },
+                          { label: '全部状态', value: 'all' },
                           { label: '已发布', value: 'published' },
                           { label: '草稿', value: 'draft' },
                           { label: '已下线', value: 'archived' },
@@ -477,13 +476,12 @@ export default function SkillsPage() {
                       />
                       {!isOverallAgent && (
                         <>
-                          <span className="skill-table-filter-label">分支筛选</span>
                           <Select<BranchFilter>
                             value={branchFilter}
                             onChange={setBranchFilter}
-                            className="skill-table-filter-select"
+                            className="skill-filter-select skill-filter-select-branch"
                             options={[
-                              { label: '全部（含下线）', value: 'all' },
+                              { label: '全部分支', value: 'all' },
                               { label: '已同步', value: 'synced' },
                               { label: '已分叉', value: 'diverged' },
                               { label: '分支下线', value: 'inactive' },
