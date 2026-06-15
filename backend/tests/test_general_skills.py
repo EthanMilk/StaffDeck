@@ -155,7 +155,7 @@ def test_import_clawhub_skill_reads_zip_package_without_overwriting(monkeypatch)
         archive.writestr("skill-pack-main/weather/data/cities.json", "{\"北京\": \"101010100\"}")
 
     def fake_download(url: str):  # noqa: ANN001
-        assert url == "https://github.com/example/skill-pack/archive/refs/heads/main.zip"
+        assert url == "https://example.com/weather.zip"
         return package.getvalue(), "application/zip"
 
     monkeypatch.setattr("app.api.general_skills._download_url", fake_download)
@@ -163,11 +163,11 @@ def test_import_clawhub_skill_reads_zip_package_without_overwriting(monkeypatch)
     with _test_session() as db:
         _seed_minimal_tenant(db)
         first = import_clawhub_skill(
-            GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="https://github.com/example/skill-pack/tree/main/weather"),
+            GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="https://example.com/weather.zip"),
             db,
         )
         second = import_clawhub_skill(
-            GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="https://github.com/example/skill-pack/tree/main/weather"),
+            GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="https://example.com/weather.zip"),
             db,
         )
 
@@ -175,6 +175,126 @@ def test_import_clawhub_skill_reads_zip_package_without_overwriting(monkeypatch)
         assert second.slug == "weather-pack-2"
         assert [file.path for file in first.skill_files] == ["SKILL.md", "scripts/run.py", "data/cities.json"]
         assert first.skill_markdown.startswith("---\nname: 天气包")
+
+
+def test_import_clawhub_skill_reads_github_directory_package(monkeypatch) -> None:
+    def fake_json(url: str):  # noqa: ANN001
+        if url == "https://api.github.com/repos/example/skill-pack/contents/weather?ref=main":
+            return [
+                {
+                    "type": "file",
+                    "path": "weather/SKILL.md",
+                    "download_url": "https://raw.githubusercontent.com/example/skill-pack/main/weather/SKILL.md",
+                    "size": 46,
+                },
+                {
+                    "type": "dir",
+                    "path": "weather/scripts",
+                },
+                {
+                    "type": "file",
+                    "path": "weather/data/cities.json",
+                    "download_url": "https://raw.githubusercontent.com/example/skill-pack/main/weather/data/cities.json",
+                    "size": 24,
+                },
+            ]
+        if url == "https://api.github.com/repos/example/skill-pack/contents/weather/scripts?ref=main":
+            return [
+                {
+                    "type": "file",
+                    "path": "weather/scripts/run.py",
+                    "download_url": "https://raw.githubusercontent.com/example/skill-pack/main/weather/scripts/run.py",
+                    "size": 12,
+                }
+            ]
+        raise AssertionError(f"unexpected github api url: {url}")
+
+    def fake_download(url: str):  # noqa: ANN001
+        content = {
+            "https://raw.githubusercontent.com/example/skill-pack/main/weather/SKILL.md": "---\nname: 目录天气\nslug: weather-dir\n---\n\n# 天气\n",
+            "https://raw.githubusercontent.com/example/skill-pack/main/weather/scripts/run.py": "print('ok')\n",
+            "https://raw.githubusercontent.com/example/skill-pack/main/weather/data/cities.json": "{\"北京\":\"101010100\"}",
+        }.get(url)
+        if content is None:
+            raise AssertionError(f"unexpected raw url: {url}")
+        return content.encode("utf-8"), "text/plain"
+
+    monkeypatch.setattr("app.api.general_skills._download_json", fake_json)
+    monkeypatch.setattr("app.api.general_skills._download_url", fake_download)
+
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        row = import_clawhub_skill(
+            GeneralSkillClawHubImportRequest(
+                tenant_id="tenant_demo",
+                source="https://github.com/example/skill-pack/tree/main/weather",
+            ),
+            db,
+        )
+
+        assert row.slug == "weather-dir"
+        assert [file.path for file in row.skill_files] == ["SKILL.md", "scripts/run.py", "data/cities.json"]
+        assert row.skill_files[1].content == "print('ok')\n"
+
+
+def test_import_clawhub_skill_follows_page_to_real_skill_package(monkeypatch) -> None:
+    def fake_download(url: str):  # noqa: ANN001
+        if url == "https://clawhub.example/skills/weather":
+            return (
+                b'<html><a href="https://github.com/example/skill-pack/tree/main/weather">download</a></html>',
+                "text/html",
+            )
+        content = {
+            "https://raw.githubusercontent.com/example/skill-pack/main/weather/SKILL.md": "---\nname: 页面天气\nslug: weather-page\n---\n\n# 天气\n",
+        }.get(url)
+        if content is None:
+            raise AssertionError(f"unexpected url: {url}")
+        return content.encode("utf-8"), "text/plain"
+
+    def fake_json(url: str):  # noqa: ANN001
+        assert url == "https://api.github.com/repos/example/skill-pack/contents/weather?ref=main"
+        return [
+            {
+                "type": "file",
+                "path": "weather/SKILL.md",
+                "download_url": "https://raw.githubusercontent.com/example/skill-pack/main/weather/SKILL.md",
+                "size": 46,
+            }
+        ]
+
+    monkeypatch.setattr("app.api.general_skills._download_json", fake_json)
+    monkeypatch.setattr("app.api.general_skills._download_url", fake_download)
+
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        row = import_clawhub_skill(
+            GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="https://clawhub.example/skills/weather"),
+            db,
+        )
+
+        assert row.slug == "weather-page"
+        assert row.skill_files[0].path == "SKILL.md"
+
+
+def test_import_clawhub_skill_rejects_plain_html_page(monkeypatch) -> None:
+    def fake_download(url: str):  # noqa: ANN001
+        assert url == "https://clawhub.example/skills/weather"
+        return b"<html><body>skill landing page without package</body></html>", "text/html"
+
+    monkeypatch.setattr("app.api.general_skills._download_url", fake_download)
+
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        try:
+            import_clawhub_skill(
+                GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="https://clawhub.example/skills/weather"),
+                db,
+            )
+        except HTTPException as error:
+            assert error.status_code == 400
+            assert "HTML pages are not imported" in str(error.detail)
+        else:
+            raise AssertionError("plain HTML page must not be imported as SKILL.md")
 
 
 def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:

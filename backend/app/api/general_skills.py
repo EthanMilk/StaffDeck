@@ -6,10 +6,11 @@ import re
 import threading
 import zipfile
 from collections.abc import Iterator
+from html import unescape
 from io import BytesIO
 from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import quote, unquote, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -35,6 +36,8 @@ router = APIRouter(prefix="/api/enterprise/general-skills", tags=["enterprise:ge
 MAX_CLAWHUB_PACKAGE_BYTES = 24 * 1024 * 1024
 MAX_CLAWHUB_FILE_BYTES = 2 * 1024 * 1024
 MAX_CLAWHUB_FILES = 240
+GITHUB_HOSTS = {"github.com", "www.github.com"}
+RAW_GITHUB_HOST = "raw.githubusercontent.com"
 
 
 def _agent_id_or_none(agent_id: object | None) -> str | None:
@@ -578,25 +581,75 @@ def _looks_like_github_shorthand(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/.+)?", value.strip()))
 
 
-def _load_remote_skill_source(url: str) -> list[GeneralSkillFile]:
-    parsed = urlparse(url)
-    if parsed.netloc in {"github.com", "www.github.com"}:
+def _load_remote_skill_source(url: str, visited: set[str] | None = None) -> list[GeneralSkillFile]:
+    normalized_url = url.strip()
+    parsed = urlparse(normalized_url)
+    if not parsed.scheme or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Remote skill source must be a valid URL")
+    visited = visited or set()
+    if normalized_url in visited:
+        raise HTTPException(status_code=400, detail="Remote skill source redirects to itself")
+    if len(visited) >= 5:
+        raise HTTPException(status_code=400, detail="Remote skill source contains too many indirections")
+    visited.add(normalized_url)
+    if parsed.netloc in GITHUB_HOSTS or parsed.netloc == RAW_GITHUB_HOST:
         return _load_github_skill_source(parsed)
-    data, content_type = _download_url(url)
-    if url.lower().endswith(".zip") or "zip" in content_type:
+    data, content_type = _download_url(normalized_url)
+    lower_content_type = content_type.lower()
+    if parsed.path.lower().endswith(".zip") or "zip" in lower_content_type:
         return _files_from_zip(data)
     text = _decode_text(data)
-    return [GeneralSkillFile(path="SKILL.md", content=text, size=len(data), mime_type=content_type or "text/markdown")]
+    if _looks_like_html_response(text, lower_content_type):
+        linked_source = _extract_skill_source_from_html(text, normalized_url)
+        if linked_source:
+            return _load_remote_skill_source(linked_source, visited)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "ClawHub page did not expose a downloadable skill package or GitHub directory. "
+                "HTML pages are not imported as SKILL.md."
+            ),
+        )
+    if _looks_like_markdown_source(parsed.path, lower_content_type):
+        file_name = unquote(parsed.path.rstrip("/").rsplit("/", 1)[-1]) or "SKILL.md"
+        if not file_name.lower().endswith(".md"):
+            file_name = "SKILL.md"
+        return [
+            GeneralSkillFile(
+                path=_clean_package_path(file_name),
+                content=text,
+                size=len(data),
+                mime_type=content_type or "text/markdown",
+            )
+        ]
+    raise HTTPException(
+        status_code=400,
+        detail="Remote source must be a zip package, GitHub skill directory, or raw Markdown skill file",
+    )
 
 
 def _load_github_skill_source(parsed) -> list[GeneralSkillFile]:
     parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if parsed.netloc == RAW_GITHUB_HOST:
+        if len(parts) < 4:
+            raise HTTPException(status_code=400, detail="Raw GitHub source must include owner, repo, branch and path")
+        owner, repo, branch = parts[0], parts[1], parts[2]
+        file_path = "/".join(parts[3:])
+        data, content_type = _download_url(parsed.geturl())
+        return [
+            GeneralSkillFile(
+                path=file_path.rsplit("/", 1)[-1] or "SKILL.md",
+                content=_decode_text(data),
+                size=len(data),
+                mime_type=content_type or "text/markdown",
+            )
+        ]
     if len(parts) < 2:
         raise HTTPException(status_code=400, detail="GitHub source must include owner and repository")
-    owner, repo = parts[0], parts[1]
-    if "raw.githubusercontent.com" in parsed.netloc:
-        data, content_type = _download_url(parsed.geturl())
-        return [GeneralSkillFile(path="SKILL.md", content=_decode_text(data), size=len(data), mime_type=content_type or "text/markdown")]
+    owner, repo = parts[0], parts[1].removesuffix(".git")
+    if len(parts) >= 3 and parts[2] == "archive":
+        data, _ = _download_url(parsed.geturl())
+        return _files_from_zip(data)
     if len(parts) >= 5 and parts[2] in {"blob", "raw"}:
         branch = parts[3]
         file_path = "/".join(parts[4:])
@@ -606,9 +659,84 @@ def _load_github_skill_source(parsed) -> list[GeneralSkillFile]:
     if len(parts) >= 5 and parts[2] == "tree":
         branch = parts[3]
         subtree = "/".join(parts[4:])
-        return _download_github_archive(owner, repo, [branch], subtree)
+        return _download_github_directory(owner, repo, branch, subtree)
     subtree = "/".join(parts[2:]) if len(parts) > 2 else ""
+    errors: list[str] = []
+    for branch in ["main", "master"]:
+        try:
+            return _download_github_directory(owner, repo, branch, subtree)
+        except HTTPException as exc:
+            errors.append(str(exc.detail))
     return _download_github_archive(owner, repo, ["main", "master"], subtree)
+
+
+def _download_github_directory(owner: str, repo: str, branch: str, subtree: str = "") -> list[GeneralSkillFile]:
+    try:
+        return _download_github_directory_contents(owner, repo, branch, subtree)
+    except HTTPException as api_error:
+        try:
+            return _download_github_archive(owner, repo, [branch], subtree)
+        except HTTPException:
+            raise api_error
+
+
+def _download_github_directory_contents(owner: str, repo: str, branch: str, subtree: str = "") -> list[GeneralSkillFile]:
+    normalized_subtree = subtree.strip("/")
+    files: list[GeneralSkillFile] = []
+    visited_dirs: set[str] = set()
+
+    def walk(path: str) -> None:
+        if len(files) >= MAX_CLAWHUB_FILES:
+            return
+        if path in visited_dirs:
+            return
+        visited_dirs.add(path)
+        api_path = quote(path, safe="/")
+        api_url = f"https://api.github.com/repos/{quote(owner)}/{quote(repo)}/contents"
+        if api_path:
+            api_url = f"{api_url}/{api_path}"
+        api_url = f"{api_url}?ref={quote(branch, safe='')}"
+        payload = _download_json(api_url)
+        entries = payload if isinstance(payload, list) else [payload]
+        for entry in entries:
+            if len(files) >= MAX_CLAWHUB_FILES:
+                break
+            if not isinstance(entry, dict):
+                continue
+            item_type = str(entry.get("type") or "")
+            item_path = str(entry.get("path") or "").strip("/")
+            if not item_path or _skip_package_path(item_path):
+                continue
+            if item_type == "dir":
+                walk(item_path)
+                continue
+            if item_type != "file":
+                continue
+            size = int(entry.get("size") or 0)
+            if size > MAX_CLAWHUB_FILE_BYTES:
+                continue
+            download_url = str(entry.get("download_url") or "")
+            if not download_url:
+                continue
+            relative = item_path
+            if normalized_subtree and item_path.startswith(f"{normalized_subtree}/"):
+                relative = item_path[len(normalized_subtree) + 1 :]
+            data, content_type = _download_url(download_url)
+            if len(data) > MAX_CLAWHUB_FILE_BYTES:
+                continue
+            files.append(
+                GeneralSkillFile(
+                    path=_clean_package_path(relative),
+                    content=_decode_text(data),
+                    size=len(data),
+                    mime_type=content_type or _guess_mime_type(relative),
+                )
+            )
+
+    walk(normalized_subtree)
+    if not _find_skill_file(files):
+        raise HTTPException(status_code=400, detail="GitHub directory does not contain SKILL.md")
+    return files
 
 
 def _download_github_archive(owner: str, repo: str, branches: list[str], subtree: str = "") -> list[GeneralSkillFile]:
@@ -621,6 +749,65 @@ def _download_github_archive(owner: str, repo: str, branches: list[str], subtree
         except HTTPException as exc:
             errors.append(str(exc.detail))
     raise HTTPException(status_code=400, detail=f"Unable to download GitHub skill package: {'; '.join(errors)}")
+
+
+def _download_json(url: str) -> object:
+    data, _ = _download_url(url)
+    try:
+        return json.loads(_decode_text(data))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Remote GitHub API returned invalid JSON") from exc
+
+
+def _looks_like_markdown_source(path: str, content_type: str) -> bool:
+    lower_path = path.lower()
+    lower_content_type = content_type.lower()
+    return (
+        lower_path.endswith(".md")
+        or lower_path.endswith("/skill")
+        or "text/markdown" in lower_content_type
+        or "text/plain" in lower_content_type
+    )
+
+
+def _looks_like_html_response(text: str, content_type: str) -> bool:
+    stripped = text.lstrip().lower()
+    return "text/html" in content_type or stripped.startswith("<!doctype html") or stripped.startswith("<html")
+
+
+def _extract_skill_source_from_html(text: str, base_url: str) -> str | None:
+    normalized = (
+        unescape(text)
+        .replace("\\/", "/")
+        .replace("\\u002F", "/")
+        .replace("\\u002f", "/")
+    )
+    candidates: list[str] = []
+    candidates.extend(re.findall(r"https?://[^\s\"'<>]+", normalized))
+    for match in re.finditer(r"""(?:href|src)\s*=\s*["']([^"']+)["']""", normalized, flags=re.IGNORECASE):
+        candidates.append(urljoin(base_url, match.group(1)))
+    seen: set[str] = set()
+    for candidate in candidates:
+        cleaned = candidate.strip().rstrip("),.;]")
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        parsed = urlparse(cleaned)
+        if not parsed.scheme or not parsed.netloc:
+            continue
+        lower_path = parsed.path.lower()
+        if parsed.netloc == RAW_GITHUB_HOST:
+            return cleaned
+        if parsed.netloc in GITHUB_HOSTS and (
+            "/tree/" in lower_path
+            or "/blob/" in lower_path
+            or lower_path.endswith(".zip")
+            or "/archive/" in lower_path
+        ):
+            return cleaned
+        if lower_path.endswith(".zip"):
+            return cleaned
+    return None
 
 
 def _download_url(url: str) -> tuple[bytes, str]:
