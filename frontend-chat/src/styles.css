@@ -405,6 +405,15 @@ textarea,
   white-space: nowrap;
 }
 
+.chat-agent-bound {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-switcher .ant-select {
   width: 100%;
 }
@@ -725,6 +734,86 @@ textarea,
   color: var(--foreground) !important;
   font-size: 12px;
   font-weight: 720;
+}
+
+.chat-agent-select.ant-select-disabled .ant-select-selector {
+  opacity: 0.76;
+}
+
+.new-session-agent-copy {
+  margin-bottom: 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.new-session-agent-list {
+  display: grid;
+  gap: 10px;
+  max-height: min(420px, 58vh);
+  overflow: auto;
+  padding: 2px;
+}
+
+.new-session-agent-card {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  color: var(--foreground);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, transparent), color-mix(in srgb, var(--surface-subtle) 72%, transparent));
+  cursor: pointer;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.new-session-agent-card:hover,
+.new-session-agent-card.selected {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  box-shadow: 0 12px 34px rgba(15, 23, 42, 0.08);
+}
+
+.new-session-agent-card.selected {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 44%, var(--surface)), var(--surface));
+}
+
+.new-session-agent-logo {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-size: 12px;
+  font-weight: 820;
+}
+
+.new-session-agent-info {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.new-session-agent-name {
+  color: var(--foreground);
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.new-session-agent-desc {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .theme-toggle-button,
@@ -1744,6 +1833,24 @@ textarea,
   color: #0f172a;
   background: #e4b976;
   border-color: rgba(228, 185, 118, 0.44);
+}
+
+:root[data-theme='dark'] .new-session-agent-card {
+  background:
+    linear-gradient(180deg, rgba(30, 41, 59, 0.92), rgba(15, 23, 42, 0.94));
+  border-color: rgba(226, 232, 240, 0.12);
+  box-shadow: none;
+}
+
+:root[data-theme='dark'] .new-session-agent-card:hover,
+:root[data-theme='dark'] .new-session-agent-card.selected {
+  border-color: rgba(228, 185, 118, 0.48);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.26);
+}
+
+:root[data-theme='dark'] .new-session-agent-card.selected {
+  background:
+    linear-gradient(180deg, rgba(38, 52, 78, 0.95), rgba(16, 25, 42, 0.96));
 }
 
 :root[data-theme='dark'] .session-card:hover,

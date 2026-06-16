@@ -15,7 +15,7 @@ import {
   StopOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
-import { Button, Input, Modal, Select, Typography, message } from 'antd';
+import { Button, Empty, Input, Modal, Select, Typography, message } from 'antd';
 import type { MouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -578,6 +578,8 @@ export default function ChatWindowPage() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem('skill_agent_selected_agent') || '');
+  const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [newSessionAgentId, setNewSessionAgentId] = useState('');
   const [input, setInput] = useState('');
   const [lastTurn, setLastTurn] = useState<ChatTurnResponse | null>(null);
   const [renameSession, setRenameSession] = useState<ChatSession | null>(null);
@@ -626,7 +628,12 @@ export default function ChatWindowPage() {
     });
   }, []);
 
-  const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) || agents[0] || null;
+  const currentSession = sessions.find((item) => item.id === sessionId) || null;
+  const defaultAgent = agents.find((agent) => agent.id === selectedAgentId) || agents[0] || null;
+  const sessionAgent = currentSession?.agent_id
+    ? agents.find((agent) => agent.id === currentSession.agent_id) || null
+    : null;
+  const displayedAgent = sessionAgent || defaultAgent;
 
   const changeAgent = useCallback((value: string) => {
     setSelectedAgentId(value);
@@ -644,9 +651,14 @@ export default function ChatWindowPage() {
           if (next) window.localStorage.setItem('skill_agent_selected_agent', next);
           return next;
         });
+        setNewSessionAgentId((current) => (
+          current && rows.some((item) => item.id === current)
+            ? current
+            : (rows.find((item) => item.id === selectedAgentId)?.id || rows[0]?.id || '')
+        ));
       })
       .catch(() => setAgents([]));
-  }, [tenantId]);
+  }, [selectedAgentId, tenantId]);
   const toggleTrace = useCallback((turnId: string) => {
     setExpandedTraceIds((current) => (
       current.includes(turnId)
@@ -906,11 +918,26 @@ export default function ChatWindowPage() {
     };
   }, []);
 
+  function openCreateSession() {
+    const fallbackAgentId = selectedAgentId && agents.some((agent) => agent.id === selectedAgentId)
+      ? selectedAgentId
+      : agents[0]?.id || '';
+    setNewSessionAgentId(fallbackAgentId);
+    setNewSessionOpen(true);
+  }
+
   async function createSession() {
+    const agentId = newSessionAgentId || selectedAgentId || agents[0]?.id || '';
+    if (!agentId) {
+      message.warning('请先选择智能体');
+      return;
+    }
     const session = await api.post<ChatSession>('/api/chat/sessions', {
       tenant_id: tenantId,
-      agent_id: selectedAgentId || undefined,
+      agent_id: agentId,
     });
+    changeAgent(agentId);
+    setNewSessionOpen(false);
     getSlot(session.id);
     loadSessions();
     navigate(`/chat/${session.id}`);
@@ -1007,6 +1034,16 @@ export default function ChatWindowPage() {
   async function send() {
     if (!input.trim() || !sessionId) return;
     const currentSessionId = sessionId;
+    const activeSession = sessions.find((item) => item.id === currentSessionId);
+    if (!activeSession) {
+      message.warning('会话信息还在加载，请稍后再发送');
+      return;
+    }
+    const sessionAgentId = activeSession?.agent_id || selectedAgentId || '';
+    if (!sessionAgentId) {
+      message.warning('该会话没有绑定智能体，请新建会话后再发送');
+      return;
+    }
     const stream = getStreamSlot(currentSessionId);
     if (stream.loading) return;
     const userText = input.trim();
@@ -1035,7 +1072,7 @@ export default function ChatWindowPage() {
         tenant_id: tenantId,
         session_id: currentSessionId,
         user_id: userId,
-        agent_id: selectedAgentId || undefined,
+        agent_id: sessionAgentId,
         message: userText,
         channel: 'web',
       }, (item) => {
@@ -1329,7 +1366,7 @@ export default function ChatWindowPage() {
             </div>
           </div>
           <div className="sidebar-actions">
-            <Button className="icon-button primary" icon={<PlusOutlined />} onClick={createSession} />
+            <Button className="icon-button primary" icon={<PlusOutlined />} onClick={openCreateSession} />
             <Button
               className="icon-button sidebar-logout"
               icon={<LogoutOutlined />}
@@ -1396,16 +1433,22 @@ export default function ChatWindowPage() {
         <div className="chat-agent-dock">
           <span className="chat-agent-mark">UR</span>
           <div className="chat-agent-main">
-            <span className="chat-agent-label">{selectedAgent?.name || '智能体'}</span>
+            <span className="chat-agent-label">
+              {sessionId ? '当前会话智能体' : '新会话默认智能体'}
+            </span>
             <Select
               className="chat-agent-select"
               size="small"
-              value={selectedAgentId || undefined}
+              value={displayedAgent?.id || undefined}
               placeholder="选择智能体"
               popupMatchSelectWidth={220}
+              disabled={Boolean(sessionId)}
               onChange={changeAgent}
               options={agents.map((agent) => ({ value: agent.id, label: agent.name }))}
             />
+            {sessionId && displayedAgent && (
+              <span className="chat-agent-bound">{displayedAgent.name}</span>
+            )}
           </div>
         </div>
       </aside>
@@ -1559,6 +1602,40 @@ export default function ChatWindowPage() {
           </form>
         </div>
       </main>
+      <Modal
+        className="new-session-agent-modal"
+        title="选择智能体"
+        open={newSessionOpen}
+        okText="创建会话"
+        cancelText="取消"
+        okButtonProps={{ disabled: !newSessionAgentId }}
+        onOk={createSession}
+        onCancel={() => setNewSessionOpen(false)}
+      >
+        <div className="new-session-agent-copy">
+          一个对话只绑定一个智能体。创建后，该会话不会随左下角默认选择变化。
+        </div>
+        <div className="new-session-agent-list">
+          {agents.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可用智能体" />
+          ) : (
+            agents.map((agent) => (
+              <button
+                key={agent.id}
+                type="button"
+                className={`new-session-agent-card ${newSessionAgentId === agent.id ? 'selected' : ''}`}
+                onClick={() => setNewSessionAgentId(agent.id)}
+              >
+                <span className="new-session-agent-logo">UR</span>
+                <span className="new-session-agent-info">
+                  <span className="new-session-agent-name">{agent.name}</span>
+                  <span className="new-session-agent-desc">{agent.description || '使用该智能体的技能、知识和人设范围'}</span>
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      </Modal>
       <Modal
         title="重命名会话"
         open={Boolean(renameSession)}

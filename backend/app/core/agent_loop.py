@@ -3415,7 +3415,7 @@ class AgentLoop:
             )
             self.db.add(chat_session)
             self.db.flush()
-        elif request.agent_id and chat_session.agent_id != request.agent_id:
+        elif not chat_session.agent_id and request.agent_id:
             chat_session.agent_id = request.agent_id
         return chat_session
 

@@ -13,7 +13,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, clearAuthSession, getAuthSession, isAuthError } from '../api/client';
 import { ThemeToggleButton } from '../theme';
-import type { ChatSession } from '../types';
+import type { AgentProfileRead, ChatSession } from '../types';
 
 function SessionChatIcon() {
   return (
@@ -26,6 +26,10 @@ function SessionChatIcon() {
 
 export default function SessionListPage() {
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [agents, setAgents] = useState<AgentProfileRead[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem('skill_agent_selected_agent') || '');
+  const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [newSessionAgentId, setNewSessionAgentId] = useState('');
   const [renameSession, setRenameSession] = useState<ChatSession | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
   const navigate = useNavigate();
@@ -52,8 +56,44 @@ export default function SessionListPage() {
     load();
   }, []);
 
+  useEffect(() => {
+    api
+      .get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}`)
+      .then((rows) => {
+        setAgents(rows);
+        setSelectedAgentId((current) => {
+          if (current && rows.some((item) => item.id === current)) return current;
+          const next = rows[0]?.id || '';
+          if (next) window.localStorage.setItem('skill_agent_selected_agent', next);
+          return next;
+        });
+        setNewSessionAgentId((current) => (
+          current && rows.some((item) => item.id === current)
+            ? current
+            : (rows.find((item) => item.id === selectedAgentId)?.id || rows[0]?.id || '')
+        ));
+      })
+      .catch(() => setAgents([]));
+  }, [selectedAgentId, tenantId]);
+
+  function openCreateSession() {
+    const fallbackAgentId = selectedAgentId && agents.some((agent) => agent.id === selectedAgentId)
+      ? selectedAgentId
+      : agents[0]?.id || '';
+    setNewSessionAgentId(fallbackAgentId);
+    setNewSessionOpen(true);
+  }
+
   async function createSession() {
-    const session = await api.post<ChatSession>('/api/chat/sessions', { tenant_id: tenantId });
+    const agentId = newSessionAgentId || selectedAgentId || agents[0]?.id || '';
+    if (!agentId) {
+      message.warning('请先选择智能体');
+      return;
+    }
+    const session = await api.post<ChatSession>('/api/chat/sessions', { tenant_id: tenantId, agent_id: agentId });
+    setSelectedAgentId(agentId);
+    window.localStorage.setItem('skill_agent_selected_agent', agentId);
+    setNewSessionOpen(false);
     navigate(`/chat/${session.id}`);
   }
 
@@ -123,7 +163,7 @@ export default function SessionListPage() {
           </div>
           <div className="sidebar-actions">
             <Button className="icon-button" icon={<ReloadOutlined />} onClick={load} />
-            <Button className="icon-button primary" icon={<PlusOutlined />} onClick={createSession} />
+            <Button className="icon-button primary" icon={<PlusOutlined />} onClick={openCreateSession} />
             <Button
               className="icon-button sidebar-logout"
               icon={<LogoutOutlined />}
@@ -203,6 +243,40 @@ export default function SessionListPage() {
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />
         </div>
       </main>
+      <Modal
+        className="new-session-agent-modal"
+        title="选择智能体"
+        open={newSessionOpen}
+        okText="创建会话"
+        cancelText="取消"
+        okButtonProps={{ disabled: !newSessionAgentId }}
+        onOk={createSession}
+        onCancel={() => setNewSessionOpen(false)}
+      >
+        <div className="new-session-agent-copy">
+          一个对话只绑定一个智能体。创建后，该会话不会随默认选择变化。
+        </div>
+        <div className="new-session-agent-list">
+          {agents.length === 0 ? (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无可用智能体" />
+          ) : (
+            agents.map((agent) => (
+              <button
+                key={agent.id}
+                type="button"
+                className={`new-session-agent-card ${newSessionAgentId === agent.id ? 'selected' : ''}`}
+                onClick={() => setNewSessionAgentId(agent.id)}
+              >
+                <span className="new-session-agent-logo">UR</span>
+                <span className="new-session-agent-info">
+                  <span className="new-session-agent-name">{agent.name}</span>
+                  <span className="new-session-agent-desc">{agent.description || '使用该智能体的技能、知识和人设范围'}</span>
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      </Modal>
       <Modal
         title="重命名会话"
         open={Boolean(renameSession)}
