@@ -24,6 +24,7 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
+  type CSSProperties,
   type DragEvent,
   type KeyboardEvent,
   type MouseEvent,
@@ -3075,10 +3076,21 @@ function knowledgeScopeLabels(value: unknown): string[] {
   return Object.entries(value).map(([key, item]) => `${key}: ${String(item)}`);
 }
 
+function compactInputStyle(value: string, minCh = 8, maxCh = 92): CSSProperties {
+  const longestLine = String(value || '').split('\n').reduce((max, line) => Math.max(max, line.length), 0);
+  const width = Math.max(minCh, Math.min(maxCh, longestLine + 2));
+  return { width: `min(${width}ch, 100%)` };
+}
+
 function EditableSourceHeading({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   return (
     <EditableSourceField>
-      <Input className="skill-source-title-input" value={value} onChange={(event) => onChange(event.target.value)} />
+      <Input
+        className="skill-source-title-input"
+        style={compactInputStyle(value, 10, 56)}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      />
     </EditableSourceField>
   );
 }
@@ -3098,7 +3110,11 @@ function EditableSourceStepHeading({
     <EditableSourceField>
       <div className="skill-source-step-title-edit">
         <span>Node {index + 1}:</span>
-        <Input value={value || fallback} onChange={(event) => onChange(event.target.value)} />
+        <Input
+          value={value || fallback}
+          style={compactInputStyle(value || fallback, 10, 56)}
+          onChange={(event) => onChange(event.target.value)}
+        />
       </div>
     </EditableSourceField>
   );
@@ -3124,11 +3140,17 @@ function EditableSourceTextLine({
             <Input.TextArea
               className="skill-source-edit-input"
               value={value}
+              style={compactInputStyle(value, 14, 110)}
               autoSize={{ minRows: 2, maxRows: 8 }}
               onChange={(event) => onChange(event.target.value)}
             />
           ) : (
-            <Input className="skill-source-edit-input" value={value} onChange={(event) => onChange(event.target.value)} />
+            <Input
+              className="skill-source-edit-input"
+              value={value}
+              style={compactInputStyle(value)}
+              onChange={(event) => onChange(event.target.value)}
+            />
           )}
         </EditableSourceField>
       </span>
@@ -3153,6 +3175,7 @@ function EditableSourceListLine({
           <Input.TextArea
             className="skill-source-edit-input"
             value={values.join('\n')}
+            style={compactInputStyle(values.join('\n'), 10, 86)}
             autoSize={{ minRows: 1, maxRows: 8 }}
             onChange={(event) => onChange(event.target.value)}
           />
@@ -3249,6 +3272,7 @@ function EditableActionList({
             <Input
               key={`editing_${index}`}
               className="skill-source-action-input"
+              style={compactInputStyle(editingAction.value, 8, 42)}
               value={editingAction.value}
               autoFocus
               onBlur={commitEdit}
@@ -3269,6 +3293,7 @@ function EditableActionList({
         {editingAction && editingAction.index >= actions.length && (
           <Input
             className="skill-source-action-input"
+            style={compactInputStyle(editingAction.value, 8, 42)}
             value={editingAction.value}
             autoFocus
             onBlur={commitEdit}
