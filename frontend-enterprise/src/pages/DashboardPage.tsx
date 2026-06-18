@@ -3,9 +3,11 @@ import {
   BookOutlined,
   CheckCircleOutlined,
   DashboardOutlined,
+  DatabaseOutlined,
   FileTextOutlined,
   MessageOutlined,
   ProfileOutlined,
+  RightOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
 import { Avatar, Card, Space, Tag, Typography, message } from 'antd';
@@ -195,6 +197,7 @@ export default function DashboardPage() {
     {
       route: '/enterprise/general-skills',
       title: '已掌握技能',
+      tone: 'skill',
       count: activeGeneralSkills.length,
       body: activeGeneralSkills.slice(0, 3).map((item) => item.name).join(' / ') || '暂无启用技能',
       icon: <ApiOutlined />,
@@ -202,6 +205,7 @@ export default function DashboardPage() {
     {
       route: '/enterprise/skills',
       title: 'SOP管理',
+      tone: 'sop',
       count: activeSkills.length,
       body: activeSkills.slice(0, 3).map((item) => item.name).join(' / ') || '暂无启用 SOP',
       icon: <ProfileOutlined />,
@@ -209,6 +213,7 @@ export default function DashboardPage() {
     {
       route: '/enterprise/knowledge',
       title: '业务资料',
+      tone: 'knowledge',
       count: activeKnowledge.length,
       body: activeKnowledge.slice(0, 3).map((item) => item.name).join(' / ') || '暂无业务资料',
       icon: <FileTextOutlined />,
@@ -216,6 +221,7 @@ export default function DashboardPage() {
     {
       route: '/enterprise/tools',
       title: '工具箱',
+      tone: 'tools',
       count: activeTools.length,
       body: activeTools.slice(0, 3).map((item) => item.display_name || item.name).join(' / ') || '暂无启用工具',
       icon: <ToolOutlined />,
@@ -223,6 +229,7 @@ export default function DashboardPage() {
     {
       route: '/enterprise/feedback',
       title: '对话日志',
+      tone: 'logs',
       count: replyStats.total,
       body: employeeSessions[0]?.summary || employeeSessions[0]?.last_agent_question || '暂无对话任务',
       icon: <MessageOutlined />,
@@ -277,23 +284,25 @@ export default function DashboardPage() {
         <ConversationHeatmap byDay={replyStats.byDay} />
       </section>
 
-      <section className="employee-growth-card" id="growth">
+      <section className="employee-memory-card" id="memory">
         <div className="employee-section-head">
           <div>
-            <Typography.Title level={4}>成长轨迹</Typography.Title>
-            <Typography.Text type="secondary">记录员工什么时候学习 SOP、掌握技能、升级流程和学会新工具。</Typography.Text>
+            <Typography.Title level={4}>
+              <span className="employee-memory-heading"><DatabaseOutlined /> Memory / 员工记忆</span>
+            </Typography.Title>
+            <Typography.Text type="secondary">员工学习 SOP、掌握技能、升级流程和学会工具的时间线。</Typography.Text>
           </div>
         </div>
         {growthItems.length ? (
-          <div className="employee-growth-timeline">
+          <div className="employee-memory-timeline">
             {growthItems.map((item) => (
-              <div className="employee-growth-event" key={item.id}>
-                <div className="employee-growth-date">
+              <div className="employee-memory-event" key={item.id}>
+                <div className="employee-memory-date">
                   <strong>{formatMonthDay(item.timestamp)}</strong>
                   <span>{relativeTime(item.timestamp)}</span>
                 </div>
-                <span className={`employee-growth-dot is-${item.tone}`}>{item.icon}</span>
-                <div className="employee-growth-copy">
+                <span className={`employee-memory-dot is-${item.tone}`}>{item.icon}</span>
+                <div className="employee-memory-copy">
                   <small>{item.kind}</small>
                   <strong>{item.title}</strong>
                   <span>{item.description}</span>
@@ -302,7 +311,7 @@ export default function DashboardPage() {
             ))}
           </div>
         ) : (
-          <div className="employee-growth-empty">暂无学习记录</div>
+          <div className="employee-memory-empty">暂无学习记录</div>
         )}
       </section>
 
@@ -315,13 +324,14 @@ export default function DashboardPage() {
         </div>
         <div className="employee-capability-grid">
           {capabilityCards.map((item) => (
-            <Card key={item.title} className="employee-capability-card" hoverable onClick={() => navigate(item.route)}>
+            <Card key={item.title} className={`employee-capability-card tone-${item.tone}`} hoverable onClick={() => navigate(item.route)}>
               <div className="employee-capability-head">
                 <span>{item.icon}</span>
-                <strong>{item.title}</strong>
                 <em>{item.count}</em>
               </div>
+              <strong className="employee-capability-title">{item.title}</strong>
               <Typography.Paragraph ellipsis={{ rows: 2 }}>{item.body}</Typography.Paragraph>
+              <span className="employee-capability-action">查看详情 <RightOutlined /></span>
             </Card>
           ))}
         </div>
@@ -478,8 +488,8 @@ function growthTimeline(
 
   return events
     .filter((item) => Boolean(item.timestamp))
-    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-    .slice(0, 8);
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    .slice(-8);
 }
 
 function isMeaningfullyUpdated(createdAt?: string, updatedAt?: string): boolean {

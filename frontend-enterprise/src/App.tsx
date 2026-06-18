@@ -163,7 +163,7 @@ function Shell({ effectiveTheme }: { effectiveTheme: EffectiveTheme }) {
               children: [
                 { key: '/enterprise/dashboard', icon: <DashboardOutlined />, label: '看板' },
                 { key: '/enterprise/agents', icon: <TeamOutlined />, label: '员工名册' },
-                { key: '/enterprise/memories', icon: <DatabaseOutlined />, label: '成长轨迹' },
+                { key: '/enterprise/memories', icon: <DatabaseOutlined />, label: 'Memory' },
                 { key: '/enterprise/feedback', icon: <CommentOutlined />, label: '对话日志' },
               ],
             },
