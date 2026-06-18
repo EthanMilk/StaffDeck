@@ -13,7 +13,6 @@ import {
   SolutionOutlined,
   TeamOutlined,
   ToolOutlined,
-  UserAddOutlined,
 } from '@ant-design/icons';
 import { Button, ConfigProvider, Input, Layout, Menu, Modal, Radio, Select, Typography, message, theme as antdTheme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
@@ -57,12 +56,6 @@ type AgentCreateFormState = {
   copyFromAgentId: string;
 };
 
-type AccountCreateFormState = {
-  username: string;
-  displayName: string;
-  password: string;
-};
-
 type LoginFormState = {
   username: string;
   password: string;
@@ -74,12 +67,6 @@ const EMPTY_AGENT_FORM: AgentCreateFormState = {
   roleKey: EMPLOYEE_TEMPLATES[0].key,
   sourceMode: 'copy',
   copyFromAgentId: '',
-};
-
-const EMPTY_ACCOUNT_FORM: AccountCreateFormState = {
-  username: '',
-  displayName: '',
-  password: 'demo',
 };
 
 function Shell({
@@ -97,9 +84,6 @@ function Shell({
   const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
   const [agentCreateOpen, setAgentCreateOpen] = useState(false);
   const [agentForm, setAgentForm] = useState<AgentCreateFormState>(EMPTY_AGENT_FORM);
-  const [accountCreateOpen, setAccountCreateOpen] = useState(false);
-  const [accountForm, setAccountForm] = useState<AccountCreateFormState>(EMPTY_ACCOUNT_FORM);
-  const [accountSaving, setAccountSaving] = useState(false);
   const isAdmin = isEnterpriseAdmin(auth.user);
   const accountRoleLabel = isAdmin ? '管理员' : '员工账号';
   const isDistillRoute = location.pathname === '/enterprise/skills/distill';
@@ -257,11 +241,6 @@ function Shell({
     setAgentCreateOpen(true);
   }
 
-  function openCreateAccountModal() {
-    setAccountForm(EMPTY_ACCOUNT_FORM);
-    setAccountCreateOpen(true);
-  }
-
   async function saveAgentCreateModal() {
     const name = agentForm.name.trim();
     if (!name) {
@@ -285,30 +264,6 @@ function Shell({
     await loadAgents();
     changeAgentScope(created.id);
     setAgentCreateOpen(false);
-  }
-
-  async function saveAccountCreateModal() {
-    const username = accountForm.username.trim();
-    const password = accountForm.password.trim();
-    if (!username || !password) {
-      message.error('请填写账号和密码');
-      return;
-    }
-    setAccountSaving(true);
-    try {
-      await api.post('/api/auth/users', {
-        tenant_id: TENANT_ID,
-        username,
-        password,
-        display_name: accountForm.displayName.trim() || username,
-      });
-      message.success('账号已创建');
-      setAccountCreateOpen(false);
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : '创建账号失败');
-    } finally {
-      setAccountSaving(false);
-    }
   }
 
   return (
@@ -357,11 +312,6 @@ function Shell({
                     <Button type="text" block icon={<PlusOutlined />} onClick={openCreateAgentModal}>
                       新员工入职
                     </Button>
-                    {isAdmin && (
-                      <Button type="text" block icon={<UserAddOutlined />} onClick={openCreateAccountModal}>
-                        新增员工账号
-                      </Button>
-                    )}
                   </div>
                 </>
               )}
@@ -378,11 +328,6 @@ function Shell({
             </div>
           </div>
           <div className="topbar-actions">
-            {isAdmin && (
-              <Button icon={<UserAddOutlined />} onClick={openCreateAccountModal}>
-                新增员工账号
-              </Button>
-            )}
             <span className="account-chip">{accountRoleLabel}</span>
             <ThemeToggleButton />
             <Button icon={<LogoutOutlined />} onClick={onLogout} aria-label="退出登录" />
@@ -486,42 +431,6 @@ function Shell({
               placeholder="概括这个员工的岗位边界、服务风格和执行重点"
             />
           </label>
-        </div>
-      </Modal>
-      <Modal
-        title="新增员工账号"
-        open={accountCreateOpen}
-        onCancel={() => setAccountCreateOpen(false)}
-        onOk={saveAccountCreateModal}
-        okText="创建"
-        cancelText="取消"
-        confirmLoading={accountSaving}
-      >
-        <div className="agent-editor-form">
-          <label>
-            登录账号
-            <Input
-              value={accountForm.username}
-              onChange={(event) => setAccountForm((prev) => ({ ...prev, username: event.target.value }))}
-              placeholder="例如 service_a"
-            />
-          </label>
-          <label>
-            显示名称
-            <Input
-              value={accountForm.displayName}
-              onChange={(event) => setAccountForm((prev) => ({ ...prev, displayName: event.target.value }))}
-              placeholder="例如 华东客服主管"
-            />
-          </label>
-          <label>
-            初始密码
-            <Input.Password
-              value={accountForm.password}
-              onChange={(event) => setAccountForm((prev) => ({ ...prev, password: event.target.value }))}
-            />
-          </label>
-          <div className="agent-definition-note">管理员创建员工账号后，员工账号可在员工名册中管理并发布自己的员工。</div>
         </div>
       </Modal>
     </Layout>
