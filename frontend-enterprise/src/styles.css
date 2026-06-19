@@ -728,6 +728,51 @@ body.skill-distill-fixed .content {
   max-width: min(100%, 360px);
 }
 
+.page-actions {
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.create-dropdown-button {
+  min-width: 96px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.compact-metric-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.compact-metric {
+  min-height: 74px;
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 94%, white), var(--surface));
+  box-shadow: 0 10px 26px rgba(31, 26, 18, 0.04);
+}
+
+.compact-metric span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 680;
+}
+
+.compact-metric strong {
+  color: var(--foreground);
+  font-size: 28px;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
 .ant-statistic-title {
   color: var(--muted) !important;
   font-size: 12px !important;
@@ -1291,6 +1336,7 @@ body.skill-distill-fixed .content {
 
 .employee-work-card,
 .employee-memory-card,
+.employee-task-card,
 .employee-capability-wrap {
   padding: 22px;
   border: 1px solid var(--border);
@@ -1610,6 +1656,75 @@ body.skill-distill-fixed .content {
   background: var(--surface-subtle);
 }
 
+.employee-task-card {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 34%, transparent), transparent 58%),
+    var(--surface);
+}
+
+.employee-task-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.employee-task-item {
+  min-width: 0;
+  min-height: 86px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--surface-subtle) 76%, var(--surface));
+  color: var(--foreground);
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(30, 24, 16, 0.04);
+}
+
+.employee-task-item:hover {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  transform: translateY(-1px);
+}
+
+.employee-task-icon {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 13px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 18px;
+}
+
+.employee-task-copy {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.employee-task-copy strong,
+.employee-task-copy small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.employee-task-copy strong {
+  color: var(--foreground);
+  font-size: 15px;
+}
+
+.employee-task-copy small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .employee-capability-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -1658,6 +1773,10 @@ body.skill-distill-fixed .content {
 
 .employee-capability-card.tone-logs::before {
   background: #5979a8;
+}
+
+.employee-capability-card.tone-tasks::before {
+  background: #7d6ad7;
 }
 
 .employee-capability-card .ant-card-body {
@@ -1716,6 +1835,62 @@ body.skill-distill-fixed .content {
   color: var(--accent);
   font-size: 13px;
   font-weight: 760;
+}
+
+.scheduled-task-page,
+.scheduled-task-editor-page {
+  display: grid;
+  gap: 18px;
+}
+
+.scheduled-task-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.scheduled-task-stat {
+  border: 1px solid color-mix(in srgb, var(--accent) 13%, var(--border));
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), transparent 48%),
+    var(--surface);
+  box-shadow: 0 12px 28px rgba(30, 24, 16, 0.045);
+}
+
+.scheduled-task-stat .ant-card-body {
+  min-height: 96px;
+  display: grid;
+  align-content: center;
+  gap: 8px;
+}
+
+.scheduled-task-stat strong {
+  min-width: 0;
+  color: var(--foreground);
+  font-size: 26px;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scheduled-task-list-card .ant-table-cell {
+  vertical-align: top;
+}
+
+.scheduled-task-editor-grid {
+  align-items: start;
+}
+
+.scheduled-task-policy-note {
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
+  border-radius: 12px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent-soft) 38%, var(--surface));
+  font-size: 13px;
+  line-height: 1.6;
 }
 
 .knowledge-floating-subpage {
@@ -5295,7 +5470,7 @@ pre {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .general-skill-stats {
+  .general-skill-stats:not(.compact-metric-strip) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

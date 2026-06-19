@@ -1,13 +1,14 @@
 import {
   ArrowLeftOutlined,
   DeleteOutlined,
+  DownOutlined,
   ExperimentOutlined,
   PlusOutlined,
   ReloadOutlined,
   SaveOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
-import { AutoComplete, Button, Card, Form, Input, Modal, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
+import { AutoComplete, Button, Card, Dropdown, Form, Input, Modal, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
 import type { FormInstance } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useMemo, useState } from 'react';
@@ -141,21 +142,51 @@ export default function ToolsPage() {
     });
   }, [bucketFilter, searchText, visibleRows]);
 
+  function handleCreateAction(key: string) {
+    if (key === 'blank') {
+      navigate('/enterprise/tools/new');
+      return;
+    }
+    if (key === 'plaza') {
+      message.info('工具广场能力当前已在工具列表中统一管理，请先新建空白工具并在测试子页面验证。');
+      return;
+    }
+    if (key === 'employee') {
+      message.info('员工级工具学习会随工具权限分支能力接入；当前请在工具广场统一维护可用工具。');
+    }
+  }
+
   return (
     <>
       <div className="page-title">
-        <Typography.Title level={3}>工具配置</Typography.Title>
-        <Typography.Text type="secondary">
-          {isOverallAgent ? '管理可开放给员工学习和调用的工具能力。' : '维护当前员工可调用的工具能力。'}
-        </Typography.Text>
+        <div>
+          <Typography.Title level={3}>{isOverallAgent ? '工具广场' : '工具箱'}</Typography.Title>
+          <Typography.Text type="secondary">
+            {isOverallAgent ? '管理可开放给员工调用的工具能力。' : '查看当前员工可调用的工具能力。'}
+          </Typography.Text>
+        </div>
       </div>
       <Card
         className="data-card tools-list-card"
-        title="工具列表"
+        title={isOverallAgent ? '工具广场列表' : '员工工具箱'}
         extra={(
           <Space>
             <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/enterprise/tools/new')}>新建工具</Button>
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: [
+                  { key: 'blank', icon: <PlusOutlined />, label: '新建空白工具' },
+                  { key: 'plaza', label: '从工具广场新增', disabled: isOverallAgent },
+                  { key: 'employee', label: '向其他员工学习工具' },
+                ],
+                onClick: ({ key }) => handleCreateAction(key),
+              }}
+            >
+              <Button type="primary" className="create-dropdown-button">
+                新增 <DownOutlined />
+              </Button>
+            </Dropdown>
           </Space>
         )}
       >
@@ -274,7 +305,7 @@ function ToolEditorPage({ mode }: { mode: 'new' | 'edit' }) {
     <>
       <div className="page-title">
         <div>
-          <Typography.Title level={3}>{isEdit ? '编辑工具' : '新建工具'}</Typography.Title>
+          <Typography.Title level={3}>{isEdit ? '编辑工具' : '新建空白工具'}</Typography.Title>
           <Typography.Text type="secondary">
             {isEdit ? '修改工具定义，并在右侧验证当前配置或已保存版本。' : '填写工具定义后，可先用右侧探测区测试请求与返回结构。'}
           </Typography.Text>

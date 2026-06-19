@@ -1556,6 +1556,69 @@ textarea,
   font-size: 12px;
 }
 
+.scheduled-draft-card {
+  width: min(900px, 100%);
+  margin: 14px auto 0;
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border));
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 42%, transparent), transparent 58%),
+    var(--surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.scheduled-draft-icon {
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 19px;
+}
+
+.scheduled-draft-main {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.scheduled-draft-kicker {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.scheduled-draft-main strong,
+.scheduled-draft-main span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scheduled-draft-main strong {
+  color: var(--foreground);
+  font-size: 15px;
+}
+
+.scheduled-draft-main span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.scheduled-draft-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .chat-input {
   padding: 14px 24px 18px;
   background: rgba(251, 250, 247, 0.92);

@@ -24,6 +24,7 @@ from app.db.models import (
 from app.feedback import enqueue_feedback_analysis
 from app.security.auth import get_current_user
 from app.security.tenant import ensure_tenant
+from app.scheduled_tasks.service import detect_scheduled_task_draft
 from app.session.session_schema import (
     ChatSessionCreateRequest,
     ChatSessionRead,
@@ -107,6 +108,18 @@ def chat_stream(
             ensure_tenant(db, request.tenant_id)
             for item in AgentLoop(db).handle_turn_stream(request):
                 yield _sse(item["event"], item["data"])
+                if item["event"] == "complete" and request.agent_id:
+                    source_session_id = str(item["data"].get("sessionId") or request.session_id or "")
+                    draft = detect_scheduled_task_draft(
+                        db,
+                        request.tenant_id,
+                        request.agent_id,
+                        request.user_id,
+                        request.message,
+                        source_session_id or None,
+                    )
+                    if draft and draft.should_create:
+                        yield _sse("scheduled_task_draft", draft.model_dump(mode="json"))
 
     return StreamingResponse(stream_events(), media_type="text/event-stream")
 

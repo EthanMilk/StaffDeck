@@ -245,6 +245,20 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
     setClawhubModalOpen(true);
   }
 
+  function handleCreateAction(key: string) {
+    if (key === 'blank') {
+      navigate('/enterprise/general-skills/new');
+      return;
+    }
+    if (key === 'plaza') {
+      requestClawHubImport();
+      return;
+    }
+    if (key === 'employee') {
+      void requestAgentImport();
+    }
+  }
+
   async function requestAgentImport() {
     try {
       const agents = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
@@ -411,33 +425,33 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
                 : '查看员工已掌握的通用技能，点击编辑进入完整技能定义和运行测试。'}
             </Typography.Text>
           </div>
-          <Space wrap>
+          <Space wrap className="page-actions">
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
-            <Button icon={<UploadOutlined />} onClick={requestClawHubImport}>从通用技能广场新增</Button>
-            <Button onClick={() => void requestAgentImport()}>向其他员工学习技能</Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/enterprise/general-skills/new')}>新建技能</Button>
+            <Dropdown
+              trigger={['click']}
+              menu={{
+                items: [
+                  { key: 'blank', icon: <PlusOutlined />, label: '新建空白技能' },
+                  { key: 'plaza', icon: <UploadOutlined />, label: '从通用技能广场新增' },
+                  { key: 'employee', label: '向其他员工学习技能' },
+                ],
+                onClick: ({ key }) => handleCreateAction(key),
+              }}
+            >
+              <Button type="primary" className="create-dropdown-button">
+                新增 <DownOutlined />
+              </Button>
+            </Dropdown>
           </Space>
         </div>
       )}
 
       <div className="general-skill-list-page">
-        <div className="general-skill-stats">
-          <Card className="data-card general-skill-stat-card">
-            <Typography.Text type="secondary">技能总数</Typography.Text>
-            <Typography.Title level={3}>{stats.total}</Typography.Title>
-          </Card>
-          <Card className="data-card general-skill-stat-card">
-            <Typography.Text type="secondary">已启用</Typography.Text>
-            <Typography.Title level={3}>{stats.published}</Typography.Title>
-          </Card>
-          <Card className="data-card general-skill-stat-card">
-            <Typography.Text type="secondary">草稿</Typography.Text>
-            <Typography.Title level={3}>{stats.draft}</Typography.Title>
-          </Card>
-          <Card className="data-card general-skill-stat-card">
-            <Typography.Text type="secondary">已停用</Typography.Text>
-            <Typography.Title level={3}>{stats.archived}</Typography.Title>
-          </Card>
+        <div className="compact-metric-strip general-skill-stats">
+          <MetricItem label="技能总数" value={stats.total} />
+          <MetricItem label="已启用" value={stats.published} />
+          <MetricItem label="草稿" value={stats.draft} />
+          <MetricItem label="已停用" value={stats.archived} />
         </div>
 
         <Card className="data-card general-skill-list-table-card" title="技能列表">
@@ -533,6 +547,15 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
         </Space>
       </Modal>
     </>
+  );
+}
+
+function MetricItem({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div className="compact-metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
   );
 }
 
@@ -1066,7 +1089,7 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
 
   async function importClawHubSource() {
     if (!clawhubSource.trim()) {
-      message.warning('请输入开放广场平台、GitHub 或 zip 来源');
+      message.warning('请输入通用技能广场、GitHub 或 zip 来源');
       return;
     }
     setClawhubLoading(true);
@@ -1083,7 +1106,7 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
       setClawhubModalOpen(false);
       void load();
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '从开放广场平台新增失败');
+      message.error(error instanceof Error ? error.message : '从通用技能广场新增失败');
     } finally {
       setClawhubLoading(false);
     }
@@ -1361,7 +1384,7 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
     <>
       <div className="page-title">
         <div>
-          <Typography.Title level={3}>{mode === 'new' ? '新建技能' : '编辑技能'}</Typography.Title>
+          <Typography.Title level={3}>{mode === 'new' ? '新建空白技能' : '编辑技能'}</Typography.Title>
           <Typography.Text type="secondary">
             {isOverallAgent
               ? '维护通用技能广场中的技能定义、文件包和运行测试。'
@@ -1370,7 +1393,7 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
         </div>
         <Space>
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/enterprise/general-skills')}>返回列表</Button>
-          {mode === 'edit' && <Button icon={<PlusOutlined />} onClick={() => navigate('/enterprise/general-skills/new')}>新建技能</Button>}
+          {mode === 'edit' && <Button icon={<PlusOutlined />} onClick={() => navigate('/enterprise/general-skills/new')}>新建空白技能</Button>}
         </Space>
       </div>
       <div className="general-skill-workbench general-skill-editor-page">
@@ -1395,7 +1418,7 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
                     items: [
                       { key: 'file', label: '选择文件' },
                       { key: 'folder', label: '选择文件夹' },
-                      { key: 'clawhub', label: '从开放广场平台新增' },
+                      { key: 'clawhub', label: '从通用技能广场新增' },
                       { key: 'agent', label: '向其他员工学习技能' },
                     ],
                     onClick: ({ key }) => {
@@ -1656,7 +1679,7 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
         </Space>
       </div>
       <Modal
-        title="从开放广场平台新增技能"
+        title="从通用技能广场新增技能"
         open={clawhubModalOpen}
         onOk={importClawHubSource}
         confirmLoading={clawhubLoading}

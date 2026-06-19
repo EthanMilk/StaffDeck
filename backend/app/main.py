@@ -16,6 +16,7 @@ from app.api import (
     mock,
     model_configs,
     persona,
+    scheduled_tasks,
     sessions,
     skills,
     tools,
@@ -71,6 +72,9 @@ app.include_router(model_configs.router)
 app.include_router(memories.router)
 app.include_router(feedback.router)
 app.include_router(persona.router)
+app.include_router(scheduled_tasks.enterprise_router)
+app.include_router(scheduled_tasks.chat_router)
+app.include_router(scheduled_tasks.chat_draft_router)
 app.include_router(ui_config.enterprise_router)
 app.include_router(tools.router)
 app.include_router(sessions.router)

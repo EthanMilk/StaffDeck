@@ -1,5 +1,6 @@
 import {
   ApiOutlined,
+  ClockCircleOutlined,
   CommentOutlined,
   DashboardOutlined,
   DatabaseOutlined,
@@ -38,6 +39,7 @@ import KnowledgeManagePage, { KnowledgeAddPage } from './pages/KnowledgePage';
 import MemoriesPage from './pages/MemoriesPage';
 import ModelsPage from './pages/ModelsPage';
 import SkillsPage from './pages/SkillsPage';
+import ScheduledTasksPage, { ScheduledTaskEditPage, ScheduledTaskNewPage } from './pages/ScheduledTasksPage';
 import ToolsPage, { ToolEditPage, ToolNewPage, ToolTestPage } from './pages/ToolsPage';
 import { ThemeToggleButton, useThemeController, type EffectiveTheme } from './theme';
 import type { AgentProfileRead } from './types';
@@ -96,9 +98,11 @@ function Shell({
           ? '/enterprise/general-skills'
           : location.pathname.startsWith('/enterprise/tools')
             ? '/enterprise/tools'
-            : isDistillRoute
-              ? '/enterprise/skills'
-              : location.pathname;
+            : location.pathname.startsWith('/enterprise/scheduled-tasks')
+              ? '/enterprise/scheduled-tasks'
+              : isDistillRoute
+                ? '/enterprise/skills'
+                : location.pathname;
   const [lastDistillSearch, setLastDistillSearch] = useState(() => (isDistillRoute ? location.search : ''));
   const distillSearch = isDistillRoute ? location.search : lastDistillSearch;
   const distillSearchParams = useMemo(() => new URLSearchParams(distillSearch), [distillSearch]);
@@ -185,6 +189,7 @@ function Shell({
             label: '数字员工平台',
             children: [
               { key: '/enterprise/dashboard', icon: <DashboardOutlined />, label: '员工信息' },
+              { key: '/enterprise/scheduled-tasks', icon: <ClockCircleOutlined />, label: '自动任务' },
               { key: '/enterprise/memories', icon: <DatabaseOutlined />, label: '员工记忆' },
               { key: '/enterprise/feedback', icon: <CommentOutlined />, label: '对话日志' },
             ],
@@ -197,7 +202,7 @@ function Shell({
       label: isOverallScope ? '开放广场平台' : '员工能力',
       children: [
         ...(isOverallScope ? [{ key: '/enterprise/agents', icon: <TeamOutlined />, label: '数字员工广场' }] : []),
-        { key: '/enterprise/knowledge', icon: <FileSearchOutlined />, label: isOverallScope ? '业务资料广场' : '业务资料' },
+        { key: '/enterprise/knowledge', icon: <FileSearchOutlined />, label: isOverallScope ? '业务知识广场' : '业务资料' },
         { key: '/enterprise/general-skills', icon: <SolutionOutlined />, label: isOverallScope ? '通用技能广场' : '已掌握技能' },
         { key: '/enterprise/skills', icon: <ProfileOutlined />, label: isOverallScope ? 'SOP广场' : 'SOP管理' },
         { key: '/enterprise/tools', icon: <ToolOutlined />, label: isOverallScope ? '工具广场' : '工具箱' },
@@ -342,6 +347,9 @@ function Shell({
               <Route path="/enterprise/knowledge" element={<KnowledgeManagePage />} />
               <Route path="/enterprise/knowledge/new" element={<KnowledgeAddPage />} />
               <Route path="/enterprise/feedback" element={<FeedbackPage />} />
+              <Route path="/enterprise/scheduled-tasks" element={<ScheduledTasksPage />} />
+              <Route path="/enterprise/scheduled-tasks/new" element={<ScheduledTaskNewPage />} />
+              <Route path="/enterprise/scheduled-tasks/:taskId/edit" element={<ScheduledTaskEditPage />} />
               <Route path="/enterprise/skills" element={<SkillsPage />} />
               <Route path="/enterprise/general-skills" element={<GeneralSkillsPage />} />
               <Route path="/enterprise/general-skills/new" element={<GeneralSkillNewPage />} />

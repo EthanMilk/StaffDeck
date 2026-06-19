@@ -1,6 +1,7 @@
 import {
   CheckCircleOutlined,
   DeleteOutlined,
+  DownOutlined,
   EditOutlined,
   EyeOutlined,
   HistoryOutlined,
@@ -71,6 +72,7 @@ export default function SkillsPage() {
   const [branchFilter, setBranchFilter] = useState<BranchFilter>('all');
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [importOpen, setImportOpen] = useState(false);
+  const [importMode, setImportMode] = useState<'plaza' | 'employee'>('plaza');
   const [importSourceAgentId, setImportSourceAgentId] = useState('');
   const [importSourceSkills, setImportSourceSkills] = useState<SkillRead[]>([]);
   const [importSelectedSkillIds, setImportSelectedSkillIds] = useState<string[]>([]);
@@ -252,11 +254,14 @@ export default function SkillsPage() {
     navigate(`/enterprise/skills/distill?mode=create${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`);
   }
 
-  async function openImport() {
+  async function openImport(mode: 'plaza' | 'employee' = 'plaza') {
     try {
       const agentRows = agents.length ? agents : await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
       setAgents(agentRows);
-      const firstSource = agentRows.find((item) => item.id !== agentId)?.id || '';
+      setImportMode(mode);
+      const plazaSource = agentRows.find((item) => item.is_overall && item.id !== agentId)?.id || '';
+      const employeeSource = agentRows.find((item) => !item.is_overall && item.id !== agentId)?.id || '';
+      const firstSource = mode === 'plaza' ? plazaSource || employeeSource : employeeSource || plazaSource;
       setImportSourceAgentId(firstSource);
       setImportSelectedSkillIds([]);
       setImportOpen(true);
@@ -321,6 +326,20 @@ export default function SkillsPage() {
   function openEdit(row: SkillRead) {
     const suffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
     navigate(`/enterprise/skills/distill?skill_id=${encodeURIComponent(row.skill_id)}${suffix}`);
+  }
+
+  function handleCreateAction(key: string) {
+    if (key === 'blank') {
+      openCreate();
+      return;
+    }
+    if (key === 'plaza') {
+      void openImport('plaza');
+      return;
+    }
+    if (key === 'employee') {
+      void openImport('employee');
+    }
   }
 
   async function publish(row: SkillRead) {
@@ -445,14 +464,23 @@ export default function SkillsPage() {
       </div>
       <Card
         className="data-card"
-        title="员工已学习的业务 SOP"
+        title={isOverallAgent ? 'SOP 广场列表' : '员工已学习的业务 SOP'}
         extra={(
-          <Space>
-            <Button onClick={() => void openImport()}>{isOverallAgent ? '从开放广场平台新增' : '向其他员工学习 SOP'}</Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-              新建 SOP
+          <Dropdown
+            trigger={['click']}
+            menu={{
+              items: [
+                { key: 'blank', icon: <PlusOutlined />, label: '新建空白 SOP' },
+                { key: 'plaza', icon: <UploadOutlined />, label: '从 SOP 广场新增', disabled: isOverallAgent },
+                { key: 'employee', label: '向其他员工学习 SOP' },
+              ],
+              onClick: ({ key }) => handleCreateAction(key),
+            }}
+          >
+            <Button type="primary" className="create-dropdown-button">
+              新增 <DownOutlined />
             </Button>
-          </Space>
+          </Dropdown>
         )}
       >
         <div className="skill-table-toolbar">
@@ -534,7 +562,7 @@ export default function SkillsPage() {
       </Row>
       <Modal
         open={importOpen}
-        title="向其他员工学习 SOP"
+        title={importMode === 'plaza' ? '从 SOP 广场新增 SOP' : '向其他员工学习 SOP'}
         width={720}
         okText="学习"
         cancelText="取消"
@@ -545,7 +573,7 @@ export default function SkillsPage() {
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <Select
             value={importSourceAgentId || undefined}
-            placeholder="选择学习来源员工"
+            placeholder={importMode === 'plaza' ? '选择 SOP 广场' : '选择学习来源员工'}
             onChange={(value) => {
               setImportSourceAgentId(value);
               void loadImportSourceSkills(value);

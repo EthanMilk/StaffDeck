@@ -332,6 +332,51 @@ export type ToolRead = {
   updated_at: string;
 };
 
+export type ScheduledTaskRead = {
+  id: string;
+  tenant_id: string;
+  agent_id: string;
+  created_by_user_id: string;
+  title: string;
+  prompt: string;
+  description?: string;
+  schedule_type: 'once' | 'daily' | 'weekly' | 'monthly' | string;
+  schedule: Record<string, unknown>;
+  timezone: string;
+  rrule?: string;
+  status: 'active' | 'paused' | 'completed' | 'archived' | string;
+  concurrency_policy: string;
+  misfire_policy: string;
+  max_runs?: number;
+  end_at?: string;
+  next_run_at?: string;
+  last_run_at?: string;
+  last_status?: string;
+  run_count: number;
+  source_session_id?: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ScheduledTaskRunRead = {
+  id: string;
+  tenant_id: string;
+  scheduled_task_id: string;
+  agent_id: string;
+  user_id: string;
+  session_id?: string;
+  scheduled_for: string;
+  status: string;
+  started_at?: string;
+  finished_at?: string;
+  result_summary?: string;
+  error?: string;
+  trace: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+};
+
 export type ChatTurnResponse = {
   reply: string;
   session_id: string;

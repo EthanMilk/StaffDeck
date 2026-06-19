@@ -3,6 +3,7 @@ import {
   CloseOutlined,
   DatabaseOutlined,
   DeleteOutlined,
+  DownOutlined,
   EditOutlined,
   FileAddOutlined,
   HistoryOutlined,
@@ -74,6 +75,7 @@ export default function KnowledgeManagePage() {
   const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [importOpen, setImportOpen] = useState(false);
+  const [importMode, setImportMode] = useState<'plaza' | 'employee'>('plaza');
   const [importSourceAgentId, setImportSourceAgentId] = useState('');
   const [importSourceKnowledgeBases, setImportSourceKnowledgeBases] = useState<KnowledgeBaseRead[]>([]);
   const [importSelectedKnowledgeBaseIds, setImportSelectedKnowledgeBaseIds] = useState<string[]>([]);
@@ -238,11 +240,14 @@ export default function KnowledgeManagePage() {
     }
   }
 
-  async function openImportKnowledgeBases() {
+  async function openImportKnowledgeBases(mode: 'plaza' | 'employee' = 'plaza') {
     try {
       const agentRows = agents.length ? agents : await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
       setAgents(agentRows);
-      const firstSource = agentRows.find((item) => item.id !== agentId)?.id || '';
+      setImportMode(mode);
+      const plazaSource = agentRows.find((item) => item.is_overall && item.id !== agentId)?.id || '';
+      const employeeSource = agentRows.find((item) => !item.is_overall && item.id !== agentId)?.id || '';
+      const firstSource = mode === 'plaza' ? plazaSource || employeeSource : employeeSource || plazaSource;
       setImportSourceAgentId(firstSource);
       setImportSelectedKnowledgeBaseIds([]);
       setImportOpen(true);
@@ -303,6 +308,20 @@ export default function KnowledgeManagePage() {
       message.error(error instanceof Error ? error.message : '学习业务资料失败');
     } finally {
       setImportLoading(false);
+    }
+  }
+
+  function handleCreateAction(key: string) {
+    if (key === 'blank') {
+      navigate('/enterprise/knowledge/new');
+      return;
+    }
+    if (key === 'plaza') {
+      void openImportKnowledgeBases('plaza');
+      return;
+    }
+    if (key === 'employee') {
+      void openImportKnowledgeBases('employee');
     }
   }
 
@@ -500,19 +519,30 @@ export default function KnowledgeManagePage() {
     <div className="knowledge-page knowledge-manage-page">
       <div className="knowledge-hero">
         <div>
-          <Typography.Title level={3}>业务资料库</Typography.Title>
+          <Typography.Title level={3}>{isOverallAgent ? '业务知识广场' : '业务资料库'}</Typography.Title>
           <Typography.Text type="secondary">
             {isOverallAgent
               ? '管理开放给员工学习和引用的业务资料，查看文档卡片、知识结构、知识桶和证据片段。'
               : '管理员工可引用的业务资料，查看文档卡片、知识结构、知识桶和证据片段。'}
           </Typography.Text>
         </div>
-        <Space>
+        <Space className="page-actions">
           <Button icon={<ReloadOutlined />} onClick={() => refresh()} loading={loading}>刷新</Button>
-          <Button onClick={() => void openImportKnowledgeBases()}>{isOverallAgent ? '从开放广场平台新增' : '向其他员工学习资料'}</Button>
-          <Button type="primary" icon={<FileAddOutlined />} onClick={() => navigate('/enterprise/knowledge/new')}>
-            新增业务资料
-          </Button>
+          <Dropdown
+            trigger={['click']}
+            menu={{
+              items: [
+                { key: 'blank', icon: <FileAddOutlined />, label: '新建空白业务资料' },
+                { key: 'plaza', label: '从业务知识广场新增', disabled: isOverallAgent },
+                { key: 'employee', label: '向其他员工学习资料' },
+              ],
+              onClick: ({ key }) => handleCreateAction(key),
+            }}
+          >
+            <Button type="primary" className="create-dropdown-button">
+              新增 <DownOutlined />
+            </Button>
+          </Dropdown>
         </Space>
       </div>
 
@@ -646,7 +676,7 @@ export default function KnowledgeManagePage() {
 
       <Modal
         open={importOpen}
-        title="从开放广场平台新增业务资料"
+        title={importMode === 'plaza' ? '从业务知识广场新增业务资料' : '向其他员工学习业务资料'}
         width={720}
         okText="学习"
         cancelText="取消"
@@ -657,7 +687,7 @@ export default function KnowledgeManagePage() {
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <Select
             value={importSourceAgentId || undefined}
-            placeholder="选择开放广场平台或来源员工"
+            placeholder={importMode === 'plaza' ? '选择业务知识广场' : '选择来源员工'}
             onChange={(value) => {
               setImportSourceAgentId(value);
               void loadImportSourceKnowledgeBases(value);
@@ -963,8 +993,8 @@ export function KnowledgeAddPage() {
       <div className="knowledge-floating-shell">
         <div className="knowledge-floating-head">
           <div>
-            <Typography.Text className="section-kicker">业务资料库 / 悬浮新增</Typography.Text>
-            <Typography.Title level={3}>新增业务资料</Typography.Title>
+            <Typography.Text className="section-kicker">业务资料库 / 新建空白</Typography.Text>
+            <Typography.Title level={3}>新建空白业务资料</Typography.Title>
             <Typography.Text type="secondary">上传业务文档后，系统会自动解析、分桶、切片，并生成证据片段与自发现建议。</Typography.Text>
           </div>
           <Button icon={<RightOutlined />} onClick={() => navigate('/enterprise/knowledge')}>返回资料库</Button>

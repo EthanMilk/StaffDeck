@@ -1,5 +1,6 @@
 import {
   BranchesOutlined,
+  ClockCircleOutlined,
   CloudSyncOutlined,
   DeleteOutlined,
   DislikeOutlined,
@@ -23,7 +24,16 @@ import { SHOW_DEBUG, TENANT_ID, api, clearAuthSession, getAuthSession, isAuthErr
 import CodeBlock from '../components/CodeBlock';
 import { employeeDisplayName, employeeProfile, isEmployeeOwnedBy, isGalleryEmployee, visibleChatEmployees } from '../employee';
 import { ThemeToggleButton } from '../theme';
-import type { AgentProfileRead, ChatMessage, ChatSession, ChatTurnResponse, TurnTraceRead, UIConfigRead } from '../types';
+import type {
+  AgentProfileRead,
+  ChatMessage,
+  ChatSession,
+  ChatTurnResponse,
+  ScheduledTaskDraftRead,
+  ScheduledTaskRead,
+  TurnTraceRead,
+  UIConfigRead,
+} from '../types';
 
 type SessionSlot = {
   serverMessages: ChatMessage[];
@@ -589,6 +599,7 @@ export default function ChatWindowPage() {
   const [streamTick, setStreamTick] = useState(0);
   const [traceTick, setTraceTick] = useState(0);
   const [expandedTraceIds, setExpandedTraceIds] = useState<string[]>([]);
+  const [scheduledDrafts, setScheduledDrafts] = useState<Record<string, ScheduledTaskDraftRead>>({});
   const [isComposing, setIsComposing] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => (
     window.localStorage.getItem('skill_agent_sidebar_collapsed') === 'true'
@@ -740,6 +751,7 @@ export default function ChatWindowPage() {
     void streamTick;
     return sessionId ? getStreamSlot(sessionId) : createStreamSlot();
   }, [getStreamSlot, sessionId, streamTick]);
+  const currentScheduledDraft = sessionId ? scheduledDrafts[sessionId] : undefined;
 
   const loadSessions = useCallback(() => {
     api
@@ -1037,6 +1049,54 @@ export default function ChatWindowPage() {
     }
   }
 
+  async function confirmScheduledTask(draft: ScheduledTaskDraftRead) {
+    if (!sessionId) return;
+    try {
+      const saved = await api.post<ScheduledTaskRead>('/api/chat/scheduled-tasks', {
+        tenant_id: tenantId,
+        agent_id: draft.agent_id,
+        title: draft.title,
+        prompt: draft.prompt,
+        description: draft.description,
+        schedule_type: draft.schedule_type,
+        schedule: draft.schedule,
+        timezone: draft.timezone || 'Asia/Shanghai',
+        rrule: draft.rrule,
+        status: 'active',
+        concurrency_policy: 'forbid',
+        misfire_policy: 'coalesce',
+        source_session_id: draft.source_session_id || sessionId,
+        metadata: {
+          created_from: 'chat_confirmation',
+          confidence: draft.confidence,
+          reason: draft.reason,
+        },
+      });
+      setScheduledDrafts((prev) => {
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+      message.success(`自动任务「${saved.title}」已启用`);
+    } catch (error) {
+      if (isAuthError(error)) {
+        clearAuthSession();
+        navigate('/login', { replace: true });
+        return;
+      }
+      message.error(error instanceof Error ? error.message : '创建自动任务失败');
+    }
+  }
+
+  function dismissScheduledTaskDraft() {
+    if (!sessionId) return;
+    setScheduledDrafts((prev) => {
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+  }
+
   async function send() {
     if (!input.trim() || !sessionId) return;
     const currentSessionId = sessionId;
@@ -1084,6 +1144,13 @@ export default function ChatWindowPage() {
       }, (item) => {
         const eventSessionId = String(item.data.sessionId || currentSessionId);
         if (item.event === 'session_created') {
+          return;
+        }
+        if (item.event === 'scheduled_task_draft') {
+          const draft = item.data as unknown as ScheduledTaskDraftRead;
+          if (draft.should_create) {
+            setScheduledDrafts((prev) => ({ ...prev, [eventSessionId]: draft }));
+          }
           return;
         }
         if (item.event === 'skill_state') {
@@ -1564,6 +1631,20 @@ export default function ChatWindowPage() {
               );
             })}
           </div>
+          {currentScheduledDraft && (
+            <div className="scheduled-draft-card">
+              <div className="scheduled-draft-icon"><ClockCircleOutlined /></div>
+              <div className="scheduled-draft-main">
+                <div className="scheduled-draft-kicker">识别到自动任务草案</div>
+                <strong>{currentScheduledDraft.title}</strong>
+                <span>{formatDraftSchedule(currentScheduledDraft)} · {currentScheduledDraft.prompt}</span>
+              </div>
+              <div className="scheduled-draft-actions">
+                <Button size="small" type="primary" onClick={() => void confirmScheduledTask(currentScheduledDraft)}>确认创建</Button>
+                <Button size="small" type="text" onClick={dismissScheduledTaskDraft}>忽略</Button>
+              </div>
+            </div>
+          )}
           {SHOW_DEBUG && lastTurn && <pre className="debug-panel">{JSON.stringify(lastTurn.session_state, null, 2)}</pre>}
         </div>
         <div className="chat-input">
@@ -1684,4 +1765,25 @@ export default function ChatWindowPage() {
       </Modal>
     </div>
   );
+}
+
+function formatDraftSchedule(draft: ScheduledTaskDraftRead): string {
+  const schedule = draft.schedule || {};
+  if (draft.schedule_type === 'weekly') {
+    const weekdays = Array.isArray(schedule.weekdays)
+      ? schedule.weekdays.map((item) => ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][Number(item)]).filter(Boolean).join('、')
+      : '周一';
+    return `每周 ${weekdays} ${schedule.time || '09:00'}`;
+  }
+  if (draft.schedule_type === 'monthly') {
+    return `每月 ${schedule.day_of_month || 1} 号 ${schedule.time || '09:00'}`;
+  }
+  if (draft.schedule_type === 'once') {
+    const value = String(schedule.run_at || '');
+    const date = value ? new Date(value) : null;
+    return date && !Number.isNaN(date.getTime())
+      ? `一次性 ${date.toLocaleString('zh-CN', { hour12: false })}`
+      : '一次性';
+  }
+  return `每天 ${schedule.time || '09:00'}`;
 }

@@ -2,6 +2,7 @@ import {
   ApiOutlined,
   BookOutlined,
   CheckCircleOutlined,
+  ClockCircleOutlined,
   DashboardOutlined,
   DatabaseOutlined,
   FileTextOutlined,
@@ -16,7 +17,7 @@ import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, TENANT_ID } from '../api/client';
 import { isEmployeeOwnedBy, isGalleryEmployee, type EnterpriseAuthUser } from '../auth';
-import { activeResourceCount, employeeDisplayName, employeeProfile, resourceCount } from '../employee';
+import { employeeDisplayName, employeeProfile, resourceCount } from '../employee';
 import type {
   AgentProfileRead,
   EnterpriseChatSessionRead,
@@ -25,6 +26,7 @@ import type {
   GeneralSkillRead,
   KnowledgeBaseRead,
   ModelConfigRead,
+  ScheduledTaskRead,
   SkillRead,
   ToolRead,
 } from '../types';
@@ -64,6 +66,7 @@ export default function DashboardPage({
   const [tools, setTools] = useState<ToolRead[]>([]);
   const [sessions, setSessions] = useState<EnterpriseChatSessionRead[]>([]);
   const [feedbackSummary, setFeedbackSummary] = useState<FeedbackSummaryRead | null>(null);
+  const [scheduledTasks, setScheduledTasks] = useState<ScheduledTaskRead[]>([]);
   const [replyStats, setReplyStats] = useState<ReplyStats>({ total: 0, today: 0, byDay: {} });
   const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
 
@@ -85,8 +88,9 @@ export default function DashboardPage({
       api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}`),
       api.get<EnterpriseChatSessionRead[]>(`/api/enterprise/sessions?tenant_id=${TENANT_ID}`),
       api.get<FeedbackSummaryRead>(`/api/enterprise/feedback/summary?tenant_id=${TENANT_ID}`),
+      api.get<ScheduledTaskRead[]>(`/api/enterprise/scheduled-tasks?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
     ])
-      .then(([agentRows, skillRows, generalSkillRows, kbRows, modelRows, toolRows, sessionRows, feedbackRows]) => {
+      .then(([agentRows, skillRows, generalSkillRows, kbRows, modelRows, toolRows, sessionRows, feedbackRows, taskRows]) => {
         const visibleAgents = agentRows.filter((item) => (
           isAdmin || (!item.is_overall && (isEmployeeOwnedBy(item, currentUser) || isGalleryEmployee(item)))
         ));
@@ -98,6 +102,7 @@ export default function DashboardPage({
         setTools(toolRows);
         setSessions(sessionRows);
         setFeedbackSummary(feedbackRows);
+        setScheduledTasks(taskRows.filter((item) => item.status !== 'archived'));
         if (forceOverall) {
           const overallAgent = visibleAgents.find((item) => item.is_overall);
           if (overallAgent && overallAgent.id !== agentId) {
@@ -227,6 +232,8 @@ export default function DashboardPage({
   const activeGeneralSkills = generalSkills.filter((item) => item.status === 'published');
   const activeKnowledge = knowledgeBases.filter((item) => item.status === 'active');
   const activeTools = tools.filter((item) => item.enabled);
+  const employeeScheduledTasks = scheduledTasks.filter((item) => item.agent_id === selectedAgent.id && item.status !== 'archived');
+  const activeScheduledTasks = employeeScheduledTasks.filter((item) => item.status === 'active');
   const totalFeedback = positiveFeedback + negativeFeedback;
   const positiveRate = totalFeedback ? Math.round((positiveFeedback / totalFeedback) * 100) : 0;
   const negativeRate = totalFeedback ? Math.round((negativeFeedback / totalFeedback) * 100) : 0;
@@ -281,6 +288,14 @@ export default function DashboardPage({
       body: employeeSessions[0]?.summary || employeeSessions[0]?.last_agent_question || '暂无对话任务',
       icon: <MessageOutlined />,
     },
+    {
+      route: '/enterprise/scheduled-tasks',
+      title: '自动任务',
+      tone: 'tasks',
+      count: activeScheduledTasks.length,
+      body: activeScheduledTasks.slice(0, 2).map((item) => item.title).join(' / ') || '暂无启用自动任务',
+      icon: <ClockCircleOutlined />,
+    },
   ];
 
   const growthItems = growthTimeline(activeSkills, activeGeneralSkills, activeTools);
@@ -311,7 +326,7 @@ export default function DashboardPage({
           <MetricTile label="SOP" value={resourceCount(selectedAgent.resources, 'skill')} />
           <MetricTile label="技能" value={resourceCount(selectedAgent.resources, 'general_skill')} />
           <MetricTile label="资料" value={resourceCount(selectedAgent.resources, 'knowledge_base')} />
-          <MetricTile label="资源" value={activeResourceCount(selectedAgent.resources)} />
+          <MetricTile label="自动任务" value={activeScheduledTasks.length} />
         </div>
       </section>
 
@@ -329,6 +344,34 @@ export default function DashboardPage({
           <ClickableMetric label="差评率" value={negativeRate} suffix="%" onClick={goToLogs} />
         </div>
         <ConversationHeatmap byDay={replyStats.byDay} />
+      </section>
+
+      <section className="employee-task-card" id="scheduled-tasks">
+        <div className="employee-section-head">
+          <div>
+            <Typography.Title level={4}>
+              <span className="employee-memory-heading"><ClockCircleOutlined /> 自动任务</span>
+            </Typography.Title>
+            <Typography.Text type="secondary">到点后新建独立任务记录，并交给该员工按现有能力执行。</Typography.Text>
+          </div>
+          <Button type="link" onClick={() => navigate('/enterprise/scheduled-tasks')}>查看详情 <RightOutlined /></Button>
+        </div>
+        {employeeScheduledTasks.length ? (
+          <div className="employee-task-list">
+            {employeeScheduledTasks.slice(0, 4).map((item) => (
+              <button type="button" className="employee-task-item" key={item.id} onClick={() => navigate('/enterprise/scheduled-tasks')}>
+                <span className="employee-task-icon"><ClockCircleOutlined /></span>
+                <span className="employee-task-copy">
+                  <strong>{item.title}</strong>
+                  <small>{formatTaskSchedule(item)} · {item.next_run_at ? `下次 ${formatTaskTime(item.next_run_at)}` : '暂无下次执行'}</small>
+                </span>
+                <Tag color={item.status === 'active' ? 'green' : 'gold'}>{item.status === 'active' ? '启用' : '暂停'}</Tag>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="employee-memory-empty">暂无自动任务</div>
+        )}
       </section>
 
       <section className="employee-memory-card" id="memory">
@@ -559,4 +602,27 @@ function relativeTime(value?: string): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours} 小时前`;
   return `${Math.floor(hours / 24)} 天前`;
+}
+
+function formatTaskSchedule(task: ScheduledTaskRead): string {
+  const schedule = task.schedule || {};
+  if (task.schedule_type === 'weekly') {
+    const weekdays = Array.isArray(schedule.weekdays)
+      ? schedule.weekdays.map((item) => ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][Number(item)]).filter(Boolean).join('、')
+      : '周一';
+    return `每周 ${weekdays} ${schedule.time || '09:00'}`;
+  }
+  if (task.schedule_type === 'monthly') {
+    return `每月 ${schedule.day_of_month || 1} 号 ${schedule.time || '09:00'}`;
+  }
+  if (task.schedule_type === 'once') {
+    return '一次性';
+  }
+  return `每天 ${schedule.time || '09:00'}`;
+}
+
+function formatTaskTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '暂无';
+  return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
 }

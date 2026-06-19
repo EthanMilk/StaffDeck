@@ -74,3 +74,32 @@ export type UIConfigRead = {
   agent_loop_max_actions: number;
   updated_at: string;
 };
+
+export type ScheduledTaskDraftRead = {
+  should_create: boolean;
+  tenant_id: string;
+  agent_id: string;
+  title: string;
+  prompt: string;
+  description?: string;
+  schedule_type: 'once' | 'daily' | 'weekly' | 'monthly' | string;
+  schedule: Record<string, unknown>;
+  timezone: string;
+  rrule?: string;
+  confidence: number;
+  reason?: string;
+  source_session_id?: string;
+};
+
+export type ScheduledTaskRead = {
+  id: string;
+  tenant_id: string;
+  agent_id: string;
+  title: string;
+  prompt: string;
+  schedule_type: string;
+  schedule: Record<string, unknown>;
+  timezone: string;
+  status: string;
+  next_run_at?: string;
+};

@@ -433,6 +433,60 @@ class ChatSession(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class ScheduledTask(SQLModel, table=True):
+    __tablename__ = "scheduled_tasks"
+
+    id: str = Field(default_factory=lambda: new_id("sched"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    created_by_user_id: str = Field(index=True)
+    title: str
+    prompt: str
+    description: Optional[str] = None
+    schedule_type: str = Field(default="daily", index=True)
+    schedule_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    timezone: str = Field(default="Asia/Shanghai", index=True)
+    rrule: Optional[str] = None
+    status: str = Field(default="active", index=True)
+    concurrency_policy: str = Field(default="forbid", index=True)
+    misfire_policy: str = Field(default="coalesce", index=True)
+    max_runs: Optional[int] = None
+    end_at: Optional[datetime] = Field(default=None, index=True)
+    next_run_at: Optional[datetime] = Field(default=None, index=True)
+    last_run_at: Optional[datetime] = Field(default=None, index=True)
+    last_status: Optional[str] = Field(default=None, index=True)
+    run_count: int = 0
+    lease_owner: Optional[str] = Field(default=None, index=True)
+    lease_until: Optional[datetime] = Field(default=None, index=True)
+    source_session_id: Optional[str] = Field(default=None, index=True)
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class ScheduledTaskRun(SQLModel, table=True):
+    __tablename__ = "scheduled_task_runs"
+    __table_args__ = (
+        UniqueConstraint("scheduled_task_id", "scheduled_for", name="uq_scheduled_task_run_due_time"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("schedrun"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    scheduled_task_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    session_id: Optional[str] = Field(default=None, index=True)
+    scheduled_for: datetime = Field(index=True)
+    status: str = Field(default="queued", index=True)
+    started_at: Optional[datetime] = Field(default=None, index=True)
+    finished_at: Optional[datetime] = Field(default=None, index=True)
+    result_summary: Optional[str] = None
+    error: Optional[str] = None
+    trace_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class Message(SQLModel, table=True):
     __tablename__ = "messages"
 
