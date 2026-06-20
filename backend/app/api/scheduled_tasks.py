@@ -54,6 +54,34 @@ def create_enterprise_scheduled_task(
     return scheduled_task_read(row)
 
 
+@enterprise_router.get("/runs", response_model=list[ScheduledTaskRunRead])
+def list_enterprise_scheduled_task_runs_for_agent(
+    tenant_id: str = Query(...),
+    agent_id: str | None = Query(None),
+    status: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> list[ScheduledTaskRunRead]:
+    _ensure_request_tenant(tenant_id, current_user)
+    ensure_tenant(db, tenant_id)
+    conditions = [ScheduledTaskRun.tenant_id == tenant_id]
+    if agent_id:
+        conditions.append(ScheduledTaskRun.agent_id == agent_id)
+    if status:
+        conditions.append(ScheduledTaskRun.status == status)
+    if not _is_admin_user(current_user):
+        conditions.append(ScheduledTaskRun.user_id == current_user.id)
+    rows = db.exec(
+        select(ScheduledTaskRun, ScheduledTask)
+        .join(ScheduledTask, ScheduledTaskRun.scheduled_task_id == ScheduledTask.id)
+        .where(*conditions)
+        .order_by(ScheduledTaskRun.created_at.desc())
+        .limit(limit)
+    ).all()
+    return [scheduled_task_run_read(run, task) for run, task in rows]
+
+
 @enterprise_router.get("/{task_id}", response_model=ScheduledTaskRead)
 def get_enterprise_scheduled_task(
     task_id: str,
@@ -107,7 +135,7 @@ def list_enterprise_scheduled_task_runs(
         .where(ScheduledTaskRun.tenant_id == tenant_id, ScheduledTaskRun.scheduled_task_id == row.id)
         .order_by(ScheduledTaskRun.scheduled_for.desc())
     ).all()
-    return [scheduled_task_run_read(item) for item in runs]
+    return [scheduled_task_run_read(item, row) for item in runs]
 
 
 @enterprise_router.post("/{task_id}/run-now", response_model=ScheduledTaskRunRead)
@@ -119,7 +147,7 @@ def run_enterprise_scheduled_task_now(
 ) -> ScheduledTaskRunRead:
     row = _get_task(db, tenant_id, task_id, current_user)
     run = execute_scheduled_task(db, row, scheduled_for=utc_now(), manual=True)
-    return scheduled_task_run_read(run)
+    return scheduled_task_run_read(run, row)
 
 
 @chat_router.get("", response_model=list[ScheduledTaskRead])

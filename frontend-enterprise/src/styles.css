@@ -1946,6 +1946,17 @@ body.skill-distill-fixed .content {
   vertical-align: top;
 }
 
+.scheduled-task-run-summary {
+  max-width: 520px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+  line-height: 1.5;
+  color: var(--foreground);
+}
+
 .scheduled-task-editor-grid {
   align-items: start;
 }

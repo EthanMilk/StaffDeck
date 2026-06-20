@@ -108,6 +108,8 @@ class ScheduledTaskRunRead(BaseModel):
     id: str
     tenant_id: str
     scheduled_task_id: str
+    task_title: Optional[str] = None
+    task_status: Optional[str] = None
     agent_id: str
     user_id: str
     session_id: Optional[str] = None

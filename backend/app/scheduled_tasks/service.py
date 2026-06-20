@@ -9,7 +9,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import or_
+from sqlalchemy import or_, update
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from app.agents.branching import model_for_agent
@@ -101,11 +102,13 @@ def scheduled_task_read(row: ScheduledTask) -> ScheduledTaskRead:
     )
 
 
-def scheduled_task_run_read(row: ScheduledTaskRun) -> ScheduledTaskRunRead:
+def scheduled_task_run_read(row: ScheduledTaskRun, task: ScheduledTask | None = None) -> ScheduledTaskRunRead:
     return ScheduledTaskRunRead(
         id=row.id,
         tenant_id=row.tenant_id,
         scheduled_task_id=row.scheduled_task_id,
+        task_title=task.title if task else None,
+        task_status=task.status if task else None,
         agent_id=row.agent_id,
         user_id=row.user_id,
         session_id=row.session_id,
@@ -256,8 +259,8 @@ def detect_scheduled_task_draft(
 
 def due_scheduled_tasks(db: Session, now: datetime | None = None, limit: int = 10) -> list[ScheduledTask]:
     now = now or utc_now()
-    rows = db.exec(
-        select(ScheduledTask)
+    candidate_ids = db.exec(
+        select(ScheduledTask.id)
         .where(
             ScheduledTask.status == "active",
             ScheduledTask.next_run_at <= now,  # type: ignore[operator]
@@ -267,16 +270,32 @@ def due_scheduled_tasks(db: Session, now: datetime | None = None, limit: int = 1
         .limit(limit)
     ).all()
     lease_owner = f"{socket.gethostname()}:{new_id('worker')}"
-    for row in rows:
-        row.lease_owner = lease_owner
-        row.lease_until = now + timedelta(seconds=LEASE_SECONDS)
-        row.updated_at = now
-        db.add(row)
-    if rows:
+    claimed: list[ScheduledTask] = []
+    for task_id in candidate_ids:
+        result = db.exec(
+            update(ScheduledTask)
+            .where(
+                ScheduledTask.id == task_id,
+                ScheduledTask.status == "active",
+                ScheduledTask.next_run_at <= now,  # type: ignore[operator]
+                or_(ScheduledTask.lease_until == None, ScheduledTask.lease_until < now),  # noqa: E711
+            )
+            .values(
+                lease_owner=lease_owner,
+                lease_until=now + timedelta(seconds=LEASE_SECONDS),
+                updated_at=now,
+            )
+        )
+        if getattr(result, "rowcount", 0) != 1:
+            continue
+        row = db.get(ScheduledTask, task_id)
+        if row:
+            claimed.append(row)
+    if claimed:
         db.commit()
-        for row in rows:
+        for row in claimed:
             db.refresh(row)
-    return rows
+    return claimed
 
 
 def execute_scheduled_task(
@@ -313,7 +332,19 @@ def execute_scheduled_task(
             return run
 
     run = _create_run(db, task, scheduled_for, "running")
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = db.exec(
+            select(ScheduledTaskRun).where(
+                ScheduledTaskRun.scheduled_task_id == task.id,
+                ScheduledTaskRun.scheduled_for == scheduled_for,
+            )
+        ).first()
+        if existing:
+            return existing
+        raise
     db.refresh(run)
     try:
         session = ChatSession(

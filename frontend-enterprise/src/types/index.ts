@@ -385,6 +385,8 @@ export type ScheduledTaskRunRead = {
   id: string;
   tenant_id: string;
   scheduled_task_id: string;
+  task_title?: string;
+  task_status?: string;
   agent_id: string;
   user_id: string;
   session_id?: string;

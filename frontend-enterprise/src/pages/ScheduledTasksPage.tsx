@@ -9,7 +9,7 @@ import {
   ReloadOutlined,
   SaveOutlined,
 } from '@ant-design/icons';
-import { Button, Card, Checkbox, Dropdown, Empty, Form, Input, InputNumber, Modal, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
+import { Button, Card, Checkbox, Dropdown, Empty, Form, Input, InputNumber, Modal, Segmented, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -41,6 +41,9 @@ type TaskFormValues = {
   max_runs?: number;
 };
 
+type TaskListFilter = 'pending' | 'completed' | 'paused' | 'all';
+type RunListFilter = 'all' | 'pending' | 'completed' | 'failed';
+
 const INITIAL_VALUES: TaskFormValues = {
   title: '',
   prompt: '',
@@ -61,6 +64,9 @@ export default function ScheduledTasksPage() {
   const [loading, setLoading] = useState(false);
   const [runsOpen, setRunsOpen] = useState(false);
   const [runRows, setRunRows] = useState<ScheduledTaskRunRead[]>([]);
+  const [allRunRows, setAllRunRows] = useState<ScheduledTaskRunRead[]>([]);
+  const [taskFilter, setTaskFilter] = useState<TaskListFilter>('pending');
+  const [runFilter, setRunFilter] = useState<RunListFilter>('all');
   const [runLoading, setRunLoading] = useState(false);
   const navigate = useNavigate();
 
@@ -95,10 +101,16 @@ export default function ScheduledTasksPage() {
   async function load() {
     setLoading(true);
     try {
-      const result = await api.get<ScheduledTaskRead[]>(
-        `/api/enterprise/scheduled-tasks?tenant_id=${TENANT_ID}&agent_id=${encodeURIComponent(agentId)}`,
-      );
+      const [result, runResult] = await Promise.all([
+        api.get<ScheduledTaskRead[]>(
+          `/api/enterprise/scheduled-tasks?tenant_id=${TENANT_ID}&agent_id=${encodeURIComponent(agentId)}`,
+        ),
+        api.get<ScheduledTaskRunRead[]>(
+          `/api/enterprise/scheduled-tasks/runs?tenant_id=${TENANT_ID}&agent_id=${encodeURIComponent(agentId)}&limit=200`,
+        ),
+      ]);
       setRows(result.filter((item) => item.status !== 'archived'));
+      setAllRunRows(runResult);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '加载自动任务失败');
     } finally {
@@ -171,7 +183,15 @@ export default function ScheduledTasksPage() {
     }
   }
 
+  function openChatSession(sessionId?: string) {
+    if (!sessionId) return;
+    const chatOrigin = window.location.origin.replace(/:5173$/, ':5174');
+    window.open(`${chatOrigin}/chat/${sessionId}`, '_blank', 'noopener,noreferrer');
+  }
+
   const activeRows = rows.filter((item) => item.status === 'active');
+  const visibleRows = rows.filter((item) => matchesTaskFilter(item, taskFilter));
+  const visibleRunRows = allRunRows.filter((item) => matchesRunFilter(item, runFilter));
   const columns: ColumnsType<ScheduledTaskRead> = [
     {
       title: '自动任务',
@@ -202,10 +222,46 @@ export default function ScheduledTasksPage() {
         <span className="table-actions">
           <Button size="small" onClick={() => openRuns(row)}>记录</Button>
           <Button size="small" icon={<EditOutlined />} onClick={() => navigate(`/enterprise/scheduled-tasks/${row.id}/edit`)}>编辑</Button>
-          <Button size="small" icon={<PlayCircleOutlined />} onClick={() => void runNow(row)}>立即执行</Button>
+          <Button size="small" icon={<PlayCircleOutlined />} onClick={() => void runNow(row)}>现在运行</Button>
           <Button size="small" onClick={() => void toggleStatus(row)}>{row.status === 'active' ? '暂停' : '启用'}</Button>
           <Button size="small" danger icon={<DeleteOutlined />} onClick={() => remove(row)}>删除</Button>
         </span>
+      ),
+    },
+  ];
+  const runColumns: ColumnsType<ScheduledTaskRunRead> = [
+    {
+      title: '自动任务',
+      dataIndex: 'task_title',
+      width: 240,
+      render: (value, row) => (
+        <Space direction="vertical" size={2}>
+          <Typography.Text strong>{value || row.scheduled_task_id}</Typography.Text>
+          {row.task_status === 'archived' && <Tag>任务定义已删除</Tag>}
+        </Space>
+      ),
+    },
+    { title: '计划时间', dataIndex: 'scheduled_for', width: 170, render: formatTime },
+    { title: '状态', dataIndex: 'status', width: 110, render: (value) => <TaskRunStatusTag status={value} /> },
+    { title: '完成时间', dataIndex: 'finished_at', width: 170, render: formatTime },
+    {
+      title: '结果',
+      dataIndex: 'result_summary',
+      ellipsis: true,
+      render: (value, row) => (
+        <Typography.Text className="scheduled-task-run-summary">
+          {value || row.error || '暂无'}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: '操作',
+      fixed: 'right',
+      width: 120,
+      render: (_, row) => (
+        <Button size="small" disabled={!row.session_id} onClick={() => openChatSession(row.session_id)}>
+          打开会话
+        </Button>
       ),
     },
   ];
@@ -246,18 +302,60 @@ export default function ScheduledTasksPage() {
         <>
           <div className="scheduled-task-stats">
             <TaskStat title="当前员工" value={selectedAgent ? employeeDisplayName(selectedAgent) : '未选择'} />
-            <TaskStat title="启用任务" value={activeRows.length} />
-            <TaskStat title="暂停任务" value={rows.filter((item) => item.status === 'paused').length} />
-            <TaskStat title="累计执行" value={rows.reduce((sum, item) => sum + (item.run_count || 0), 0)} />
+            <TaskStat title="待完成任务" value={activeRows.length} />
+            <TaskStat title="已完成任务" value={rows.filter((item) => item.status === 'completed').length} />
+            <TaskStat title="执行记录" value={allRunRows.length} />
           </div>
-          <Card className="data-card scheduled-task-list-card" title="任务列表">
+          <Card
+            className="data-card scheduled-task-list-card"
+            title="任务列表"
+            extra={(
+              <Segmented
+                size="small"
+                value={taskFilter}
+                onChange={(value) => setTaskFilter(value as TaskListFilter)}
+                options={[
+                  { label: '待完成', value: 'pending' },
+                  { label: '已完成', value: 'completed' },
+                  { label: '已暂停', value: 'paused' },
+                  { label: '全部', value: 'all' },
+                ]}
+              />
+            )}
+          >
             <Table
               rowKey="id"
               columns={columns}
-              dataSource={rows}
+              dataSource={visibleRows}
               loading={loading}
               pagination={{ pageSize: 8, showSizeChanger: true, pageSizeOptions: [8, 16, 32] }}
               scroll={{ x: 1220 }}
+            />
+          </Card>
+          <Card
+            className="data-card scheduled-task-list-card"
+            title="执行记录"
+            extra={(
+              <Segmented
+                size="small"
+                value={runFilter}
+                onChange={(value) => setRunFilter(value as RunListFilter)}
+                options={[
+                  { label: '全部', value: 'all' },
+                  { label: '待完成', value: 'pending' },
+                  { label: '已完成', value: 'completed' },
+                  { label: '失败/跳过', value: 'failed' },
+                ]}
+              />
+            )}
+          >
+            <Table
+              rowKey="id"
+              columns={runColumns}
+              dataSource={visibleRunRows}
+              loading={loading}
+              pagination={{ pageSize: 8, showSizeChanger: true, pageSizeOptions: [8, 16, 32] }}
+              scroll={{ x: 1040 }}
             />
           </Card>
         </>
@@ -469,6 +567,22 @@ function TaskRunStatusTag({ status }: { status: string }) {
   const color = status === 'succeeded' ? 'green' : status === 'failed' ? 'red' : status === 'running' ? 'blue' : 'default';
   const text = status === 'succeeded' ? '成功' : status === 'failed' ? '失败' : status === 'running' ? '执行中' : status === 'skipped' ? '已跳过' : status || '暂无';
   return <Tag color={color}>{text}</Tag>;
+}
+
+function matchesTaskFilter(row: ScheduledTaskRead, filter: TaskListFilter): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'pending') return row.status === 'active';
+  if (filter === 'paused') return row.status === 'paused';
+  if (filter === 'completed') return row.status === 'completed';
+  return true;
+}
+
+function matchesRunFilter(row: ScheduledTaskRunRead, filter: RunListFilter): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'pending') return row.status === 'queued' || row.status === 'running';
+  if (filter === 'failed') return row.status === 'failed' || row.status === 'skipped';
+  if (filter === 'completed') return row.status === 'succeeded';
+  return true;
 }
 
 function buildSchedule(values: TaskFormValues): Record<string, unknown> {
