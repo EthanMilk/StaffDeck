@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import signal
+import threading
 from time import sleep
 
 from sqlmodel import Session
@@ -12,6 +13,7 @@ from app.scheduled_tasks.service import WORKER_SLEEP_SECONDS, due_scheduled_task
 
 
 _stopped = False
+_background_thread: threading.Thread | None = None
 
 
 def _handle_stop(_signum: int, _frame: object) -> None:
@@ -31,6 +33,25 @@ def run_worker(*, once: bool = False, poll_seconds: float = WORKER_SLEEP_SECONDS
         if once:
             return
         sleep(max(1.0, poll_seconds))
+
+
+def start_background_worker(*, poll_seconds: float = WORKER_SLEEP_SECONDS) -> None:
+    global _background_thread, _stopped
+    if _background_thread and _background_thread.is_alive():
+        return
+    _stopped = False
+    _background_thread = threading.Thread(
+        target=run_worker,
+        kwargs={"once": False, "poll_seconds": poll_seconds},
+        name="ultrarag-scheduled-task-worker",
+        daemon=True,
+    )
+    _background_thread.start()
+
+
+def stop_background_worker() -> None:
+    global _stopped
+    _stopped = True
 
 
 def main() -> None:

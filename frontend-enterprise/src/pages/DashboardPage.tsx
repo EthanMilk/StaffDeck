@@ -622,7 +622,14 @@ function formatTaskSchedule(task: ScheduledTaskRead): string {
 }
 
 function formatTaskTime(value: string): string {
-  const date = new Date(value);
+  const date = parseBackendTime(value);
   if (Number.isNaN(date.getTime())) return '暂无';
   return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function parseBackendTime(value: string): Date {
+  const text = String(value || '').trim();
+  if (!text) return new Date('');
+  if (/[zZ]|[+-]\d{2}:\d{2}$/.test(text)) return new Date(text);
+  return new Date(`${text}Z`);
 }

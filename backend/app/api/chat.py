@@ -24,7 +24,9 @@ from app.db.models import (
 from app.feedback import enqueue_feedback_analysis
 from app.security.auth import get_current_user
 from app.security.tenant import ensure_tenant
+from app.scheduled_tasks.schema import ScheduledTaskDraftRead
 from app.scheduled_tasks.service import detect_scheduled_task_draft
+from app.session.helpers import public_session
 from app.session.session_schema import (
     ChatSessionCreateRequest,
     ChatSessionRead,
@@ -36,6 +38,7 @@ from app.session.session_schema import (
 )
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+STREAM_REPLY_CHUNK_SIZE = 96
 
 
 def session_read(row: ChatSession) -> ChatSessionRead:
@@ -68,6 +71,119 @@ def message_read(row: Message, feedback_rating: str | None = None) -> MessageRea
     )
 
 
+def _maybe_handle_scheduled_task_request(
+    db: Session,
+    request: ChatTurnRequest,
+    chat_session: ChatSession,
+) -> tuple[ChatTurnResponse, ScheduledTaskDraftRead] | None:
+    if not request.agent_id:
+        return None
+    draft = detect_scheduled_task_draft(
+        db,
+        request.tenant_id,
+        request.agent_id,
+        request.user_id,
+        request.message,
+        chat_session.id,
+    )
+    if not draft or not draft.should_create:
+        return None
+
+    reply = _scheduled_task_draft_reply(draft)
+    now = utc_now()
+    chat_session.updated_at = now
+    chat_session.summary = f"最近回复：{reply[:120]}"
+    db.add(
+        Message(
+            tenant_id=request.tenant_id,
+            session_id=chat_session.id,
+            role="user",
+            content=request.message,
+            metadata_json={},
+            created_at=now,
+        )
+    )
+    db.add(
+        Message(
+            tenant_id=request.tenant_id,
+            session_id=chat_session.id,
+            role="assistant",
+            content=reply,
+            metadata_json={"scheduled_task_draft": draft.model_dump(mode="json")},
+            created_at=now,
+        )
+    )
+    db.add(
+        AgentEvent(
+            tenant_id=request.tenant_id,
+            session_id=chat_session.id,
+            event_type="scheduled_task_draft_created",
+            payload_json=draft.model_dump(mode="json"),
+            created_at=now,
+        )
+    )
+    db.add(
+        AgentEvent(
+            tenant_id=request.tenant_id,
+            session_id=chat_session.id,
+            event_type="assistant_message_created",
+            payload_json={"reply": reply, "scheduled_task_draft": draft.model_dump(mode="json")},
+            created_at=now,
+        )
+    )
+    state = public_session(chat_session)
+    db.add(
+        AgentEvent(
+            tenant_id=request.tenant_id,
+            session_id=chat_session.id,
+            event_type="session_state_changed",
+            payload_json=state.model_dump(),
+            created_at=now,
+        )
+    )
+    db.commit()
+    db.refresh(chat_session)
+    response = ChatTurnResponse(
+        reply=reply,
+        session_id=chat_session.id,
+        session_state=public_session(chat_session),
+    )
+    return response, draft
+
+
+def _scheduled_task_draft_reply(draft: ScheduledTaskDraftRead) -> str:
+    lines = [
+        "我识别到这是一个自动任务需求，已经先整理成草案。",
+        f"任务：{draft.title}",
+        f"计划：{_format_draft_schedule(draft)}",
+        f"执行内容：{draft.prompt}",
+        "确认下方卡片后才会启用；确认前不会创建自动任务。",
+    ]
+    return "\n".join(lines)
+
+
+def _format_draft_schedule(draft: ScheduledTaskDraftRead) -> str:
+    schedule = draft.schedule or {}
+    if draft.schedule_type == "once":
+        return f"一次性 {schedule.get('run_at') or '待确认时间'}"
+    if draft.schedule_type == "weekly":
+        weekdays = schedule.get("weekdays")
+        labels = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        if isinstance(weekdays, list):
+            days = "、".join(labels[int(day)] for day in weekdays if str(day).isdigit() and 0 <= int(day) <= 6)
+        else:
+            days = "周一"
+        return f"每周 {days or '周一'} {schedule.get('time') or '09:00'}"
+    if draft.schedule_type == "monthly":
+        return f"每月 {schedule.get('day_of_month') or 1} 号 {schedule.get('time') or '09:00'}"
+    return f"每天 {schedule.get('time') or '09:00'}"
+
+
+def _reply_chunks(reply: str) -> Iterator[str]:
+    for index in range(0, len(reply), STREAM_REPLY_CHUNK_SIZE):
+        yield reply[index : index + STREAM_REPLY_CHUNK_SIZE]
+
+
 @router.post("/turn", response_model=ChatTurnResponse)
 def chat_turn(
     request: ChatTurnRequest,
@@ -84,6 +200,11 @@ def chat_turn(
     ensure_tenant(db, request.tenant_id)
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty")
+    if request.session_id:
+        scheduled_response = _maybe_handle_scheduled_task_request(db, request, chat_session)
+        if scheduled_response:
+            response, _draft = scheduled_response
+            return response
     return AgentLoop(db).handle_turn(request)
 
 
@@ -107,6 +228,18 @@ def chat_stream(
     def stream_events() -> Iterator[str]:
         with Session(engine) as db:
             ensure_tenant(db, request.tenant_id)
+            if request.session_id:
+                chat_session = _ensure_chat_session_available(db, request.tenant_id, request.user_id, request.session_id)
+                scheduled_response = _maybe_handle_scheduled_task_request(db, request, chat_session)
+                if scheduled_response:
+                    response, draft = scheduled_response
+                    yield _sse("status", {"phase": "scheduled_task_draft", "text": "已识别自动任务草案"})
+                    for chunk in _reply_chunks(response.reply):
+                        yield _sse("stream_delta", {"content": chunk})
+                    yield _sse("stream_end", {})
+                    yield _sse("complete", response.model_dump(mode="json"))
+                    yield _sse("scheduled_task_draft", draft.model_dump(mode="json"))
+                    return
             for item in AgentLoop(db).handle_turn_stream(request):
                 yield _sse(item["event"], item["data"])
                 if item["event"] == "complete" and request.agent_id:

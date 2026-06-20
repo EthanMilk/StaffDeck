@@ -507,7 +507,7 @@ function normalizeScheduleType(value: string): TaskFormValues['schedule_type'] {
 
 function toDatetimeLocal(value: string): string {
   if (!value) return '';
-  const date = new Date(value);
+  const date = parseBackendTime(value);
   if (Number.isNaN(date.getTime())) return '';
   const offset = date.getTimezoneOffset();
   const local = new Date(date.getTime() - offset * 60000);
@@ -527,7 +527,14 @@ function formatSchedule(row: ScheduledTaskRead): string {
 
 function formatTime(value?: string): string {
   if (!value) return '暂无';
-  const date = new Date(value);
+  const date = parseBackendTime(value);
   if (Number.isNaN(date.getTime())) return '暂无';
   return date.toLocaleString('zh-CN', { hour12: false });
+}
+
+function parseBackendTime(value: string): Date {
+  const text = String(value || '').trim();
+  if (!text) return new Date('');
+  if (/[zZ]|[+-]\d{2}:\d{2}$/.test(text)) return new Date(text);
+  return new Date(`${text}Z`);
 }

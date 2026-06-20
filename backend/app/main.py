@@ -27,6 +27,7 @@ from app.async_jobs import shutdown_async_jobs
 from app.config import get_settings
 from app.db import engine, init_db
 from app.db.seed import seed_demo_data
+from app.scheduled_tasks.worker import start_background_worker, stop_background_worker
 
 settings = get_settings()
 
@@ -46,10 +47,12 @@ def on_startup() -> None:
     init_db()
     with Session(engine) as db:
         seed_demo_data(db)
+    start_background_worker()
 
 
 @app.on_event("shutdown")
 def on_shutdown() -> None:
+    stop_background_worker()
     shutdown_async_jobs()
 
 

@@ -493,8 +493,8 @@ def _finish_task_schedule(db: Session, task: ScheduledTask, scheduled_for: datet
     now = utc_now()
     task.last_run_at = now
     task.last_status = status
+    task.run_count += 1
     if not manual:
-        task.run_count += 1
         next_run = compute_next_run_at(task, after=scheduled_for + timedelta(seconds=1))
         if task.max_runs is not None and task.run_count >= task.max_runs:
             task.status = "completed"
