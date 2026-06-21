@@ -146,6 +146,8 @@ def run_enterprise_scheduled_task_now(
     db: Session = Depends(get_session),
 ) -> ScheduledTaskRunRead:
     row = _get_task(db, tenant_id, task_id, current_user)
+    if row.status == "archived":
+        raise HTTPException(status_code=400, detail="已删除的自动任务需要先恢复再运行")
     run = execute_scheduled_task(db, row, scheduled_for=utc_now(), manual=True)
     return scheduled_task_run_read(run, row)
 

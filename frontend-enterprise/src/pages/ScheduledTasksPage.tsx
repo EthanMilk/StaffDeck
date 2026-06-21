@@ -41,7 +41,7 @@ type TaskFormValues = {
   max_runs?: number;
 };
 
-type TaskListFilter = 'pending' | 'completed' | 'paused' | 'all';
+type TaskListFilter = 'all' | 'pending' | 'completed' | 'paused' | 'archived';
 type RunListFilter = 'all' | 'pending' | 'completed' | 'failed';
 
 const INITIAL_VALUES: TaskFormValues = {
@@ -65,7 +65,7 @@ export default function ScheduledTasksPage() {
   const [runsOpen, setRunsOpen] = useState(false);
   const [runRows, setRunRows] = useState<ScheduledTaskRunRead[]>([]);
   const [allRunRows, setAllRunRows] = useState<ScheduledTaskRunRead[]>([]);
-  const [taskFilter, setTaskFilter] = useState<TaskListFilter>('pending');
+  const [taskFilter, setTaskFilter] = useState<TaskListFilter>('all');
   const [runFilter, setRunFilter] = useState<RunListFilter>('all');
   const [runLoading, setRunLoading] = useState(false);
   const navigate = useNavigate();
@@ -109,7 +109,7 @@ export default function ScheduledTasksPage() {
           `/api/enterprise/scheduled-tasks/runs?tenant_id=${TENANT_ID}&agent_id=${encodeURIComponent(agentId)}&limit=200`,
         ),
       ]);
-      setRows(result.filter((item) => item.status !== 'archived'));
+      setRows(result);
       setAllRunRows(runResult);
     } catch (error) {
       message.error(error instanceof Error ? error.message : '加载自动任务失败');
@@ -119,6 +119,14 @@ export default function ScheduledTasksPage() {
   }
 
   async function toggleStatus(row: ScheduledTaskRead) {
+    if (row.status === 'archived') {
+      message.warning('已删除的自动任务需要先恢复');
+      return;
+    }
+    if (row.status === 'completed') {
+      message.warning('已完成的自动任务可编辑后重新启用');
+      return;
+    }
     const nextStatus = row.status === 'active' ? 'paused' : 'active';
     try {
       await api.put<ScheduledTaskRead>(`/api/enterprise/scheduled-tasks/${row.id}`, {
@@ -133,6 +141,10 @@ export default function ScheduledTasksPage() {
   }
 
   async function runNow(row: ScheduledTaskRead) {
+    if (row.status === 'archived') {
+      message.warning('已删除的自动任务需要先恢复再运行');
+      return;
+    }
     const hide = message.loading('正在拉起独立任务会话...', 0);
     try {
       const run = await api.post<ScheduledTaskRunRead>(
@@ -160,6 +172,19 @@ export default function ScheduledTasksPage() {
         await load();
       },
     });
+  }
+
+  async function restore(row: ScheduledTaskRead) {
+    try {
+      await api.put<ScheduledTaskRead>(`/api/enterprise/scheduled-tasks/${row.id}`, {
+        tenant_id: TENANT_ID,
+        status: 'active',
+      });
+      message.success('已恢复自动任务，下一次执行时间已重新计算');
+      await load();
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '恢复自动任务失败');
+    }
   }
 
   async function openRuns(row: ScheduledTaskRead) {
@@ -218,15 +243,27 @@ export default function ScheduledTasksPage() {
       title: '操作',
       fixed: 'right',
       width: 300,
-      render: (_, row) => (
-        <span className="table-actions">
-          <Button size="small" onClick={() => openRuns(row)}>记录</Button>
-          <Button size="small" icon={<EditOutlined />} onClick={() => navigate(`/enterprise/scheduled-tasks/${row.id}/edit`)}>编辑</Button>
-          <Button size="small" icon={<PlayCircleOutlined />} onClick={() => void runNow(row)}>现在运行</Button>
-          <Button size="small" onClick={() => void toggleStatus(row)}>{row.status === 'active' ? '暂停' : '启用'}</Button>
-          <Button size="small" danger icon={<DeleteOutlined />} onClick={() => remove(row)}>删除</Button>
-        </span>
-      ),
+      render: (_, row) => {
+        const isArchived = row.status === 'archived';
+        const isCompleted = row.status === 'completed';
+        return (
+          <span className="table-actions">
+            <Button size="small" onClick={() => openRuns(row)}>记录</Button>
+            {isArchived ? (
+              <Button size="small" icon={<ReloadOutlined />} onClick={() => void restore(row)}>恢复</Button>
+            ) : (
+              <>
+                <Button size="small" icon={<EditOutlined />} onClick={() => navigate(`/enterprise/scheduled-tasks/${row.id}/edit`)}>编辑</Button>
+                <Button size="small" icon={<PlayCircleOutlined />} onClick={() => void runNow(row)}>现在运行</Button>
+                {!isCompleted && (
+                  <Button size="small" onClick={() => void toggleStatus(row)}>{row.status === 'active' ? '暂停' : '启用'}</Button>
+                )}
+                <Button size="small" danger icon={<DeleteOutlined />} onClick={() => remove(row)}>删除</Button>
+              </>
+            )}
+          </span>
+        );
+      },
     },
   ];
   const runColumns: ColumnsType<ScheduledTaskRunRead> = [
@@ -315,10 +352,11 @@ export default function ScheduledTasksPage() {
                 value={taskFilter}
                 onChange={(value) => setTaskFilter(value as TaskListFilter)}
                 options={[
+                  { label: '全部', value: 'all' },
                   { label: '待完成', value: 'pending' },
                   { label: '已完成', value: 'completed' },
                   { label: '已暂停', value: 'paused' },
-                  { label: '全部', value: 'all' },
+                  { label: '已删除', value: 'archived' },
                 ]}
               />
             )}
@@ -574,6 +612,7 @@ function matchesTaskFilter(row: ScheduledTaskRead, filter: TaskListFilter): bool
   if (filter === 'pending') return row.status === 'active';
   if (filter === 'paused') return row.status === 'paused';
   if (filter === 'completed') return row.status === 'completed';
+  if (filter === 'archived') return row.status === 'archived';
   return true;
 }
 
@@ -609,7 +648,7 @@ function taskToFormValues(row: ScheduledTaskRead): TaskFormValues {
     run_at: toDatetimeLocal(String(schedule.run_at || row.next_run_at || '')),
     weekdays: Array.isArray(schedule.weekdays) ? schedule.weekdays.map((item) => Number(item)) : [0],
     day_of_month: Number(schedule.day_of_month || 1),
-    status: row.status === 'paused' ? 'paused' : 'active',
+    status: row.status === 'active' ? 'active' : 'paused',
     max_runs: row.max_runs,
   };
 }
