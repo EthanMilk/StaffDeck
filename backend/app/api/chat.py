@@ -192,6 +192,37 @@ def _format_draft_schedule(draft: ScheduledTaskDraftRead) -> str:
     return f"每天 {schedule.get('time') or '09:00'}"
 
 
+def _persist_scheduled_task_draft(
+    db: Session,
+    tenant_id: str,
+    session_id: str,
+    draft: ScheduledTaskDraftRead,
+) -> None:
+    if not session_id:
+        return
+    payload = draft.model_dump(mode="json")
+    latest_assistant = db.exec(
+        select(Message)
+        .where(Message.tenant_id == tenant_id, Message.session_id == session_id, Message.role == "assistant")
+        .order_by(Message.created_at.desc())
+    ).first()
+    if latest_assistant:
+        metadata = dict(latest_assistant.metadata_json or {})
+        metadata["scheduled_task_draft"] = payload
+        latest_assistant.metadata_json = metadata
+        db.add(latest_assistant)
+    db.add(
+        AgentEvent(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            event_type="scheduled_task_draft_created",
+            payload_json=payload,
+            created_at=utc_now(),
+        )
+    )
+    db.commit()
+
+
 def _reply_chunks(reply: str) -> Iterator[str]:
     for index in range(0, len(reply), STREAM_REPLY_CHUNK_SIZE):
         yield reply[index : index + STREAM_REPLY_CHUNK_SIZE]
@@ -218,7 +249,19 @@ def chat_turn(
         if scheduled_response:
             response, _draft = scheduled_response
             return response
-    return AgentLoop(db).handle_turn(request)
+    response = AgentLoop(db).handle_turn(request)
+    if request.session_id and request.agent_id:
+        draft = detect_scheduled_task_draft(
+            db,
+            request.tenant_id,
+            request.agent_id,
+            request.user_id,
+            request.message,
+            response.session_id,
+        )
+        if draft and draft.should_create:
+            _persist_scheduled_task_draft(db, request.tenant_id, response.session_id, draft)
+    return response
 
 
 @router.post("/stream")
@@ -266,6 +309,7 @@ def chat_stream(
                         source_session_id or None,
                     )
                     if draft and draft.should_create:
+                        _persist_scheduled_task_draft(db, request.tenant_id, source_session_id, draft)
                         yield _sse("scheduled_task_draft", draft.model_dump(mode="json"))
 
     return StreamingResponse(stream_events(), media_type="text/event-stream")

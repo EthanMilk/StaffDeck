@@ -609,6 +609,8 @@ def _looks_like_schedule_request(message: str) -> bool:
     text = message.strip()
     if len(text) < 4:
         return False
+    if re.search(r"(?:今天|今晚|明天|后天|早上|上午|中午|下午|晚上|晚间|夜里)?\s*\d{1,2}\s*(?:[:：]|点|时)", text):
+        return True
     keywords = (
         "定时",
         "自动任务",
@@ -621,8 +623,13 @@ def _looks_like_schedule_request(message: str) -> bool:
         "每月",
         "每晚",
         "每早",
+        "今天",
+        "今晚",
+        "今早",
+        "今夜",
         "明天",
         "后天",
+        "明晚",
         "到点",
         "唤醒",
         "定期",
@@ -643,12 +650,18 @@ def _compact_title(message: str) -> str:
 
 
 def _extract_time(message: str) -> str | None:
+    match = re.search(r"(\d{1,2})\s*(?:点|时)\s*半", message)
+    if match:
+        return _format_time(time(_adjust_hour_for_period(message, int(match.group(1))), 30))
+    match = re.search(r"(\d{1,2})\s*(?:点|时)\s*(\d{1,2})\s*分?", message)
+    if match:
+        return _format_time(time(_adjust_hour_for_period(message, int(match.group(1))), int(match.group(2))))
     match = re.search(r"(\d{1,2})\s*[:：]\s*(\d{1,2})", message)
     if match:
-        return _format_time(time(int(match.group(1)), int(match.group(2))))
+        return _format_time(time(_adjust_hour_for_period(message, int(match.group(1))), int(match.group(2))))
     match = re.search(r"(\d{1,2})\s*(点|时)", message)
     if match:
-        return _format_time(time(int(match.group(1)), 0))
+        return _format_time(time(_adjust_hour_for_period(message, int(match.group(1))), 0))
     if "早上" in message or "上午" in message:
         return "09:00"
     if "中午" in message:
@@ -656,6 +669,14 @@ def _extract_time(message: str) -> str | None:
     if "晚上" in message or "今晚" in message:
         return "20:00"
     return None
+
+
+def _adjust_hour_for_period(message: str, hour: int) -> int:
+    if any(key in message for key in ("下午", "晚上", "今晚", "晚间", "夜里", "今夜", "明晚")) and 1 <= hour < 12:
+        return hour + 12
+    if any(key in message for key in ("凌晨", "半夜")) and hour == 12:
+        return 0
+    return hour
 
 
 def _extract_weekdays(message: str) -> list[int]:
