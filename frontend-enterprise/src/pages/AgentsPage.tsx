@@ -3,14 +3,17 @@ import {
   GlobalOutlined,
   MoreOutlined,
   PauseCircleOutlined,
+  PictureOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
 } from '@ant-design/icons';
-import { Avatar, Button, Card, Dropdown, Modal, Space, Tag, Typography, message } from 'antd';
+import { Button, Card, Dropdown, Modal, Space, Tag, Typography, message } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, TENANT_ID } from '../api/client';
 import { isEmployeeOwnedBy, isGalleryEmployee, type EnterpriseAuthUser } from '../auth';
+import EmployeeAvatar from '../components/EmployeeAvatar';
+import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
 import { employeeDisplayName, employeeProfile, resourceCount } from '../employee';
 import type { AgentProfileRead } from '../types';
 
@@ -26,6 +29,7 @@ export default function AgentsPage({
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+  const [avatarAgent, setAvatarAgent] = useState<AgentProfileRead | null>(null);
   const navigate = useNavigate();
 
   async function load() {
@@ -139,6 +143,10 @@ export default function AgentsPage({
     });
   }
 
+  function updateAgentInList(row: AgentProfileRead) {
+    setAgents((current) => current.map((item) => (item.id === row.id ? row : item)));
+  }
+
   return (
     <div className="page agents-page">
       <div className="page-title">
@@ -183,9 +191,16 @@ export default function AgentsPage({
             onStatus={(status) => void updateStatus(employee, status)}
             onGallery={(published) => void updateGalleryState(employee, published)}
             onDelete={() => deleteEmployee(employee)}
+            onAvatar={() => setAvatarAgent(employee)}
           />
         ))}
       </div>
+      <EmployeeAvatarEditor
+        agent={avatarAgent}
+        open={Boolean(avatarAgent)}
+        onClose={() => setAvatarAgent(null)}
+        onSaved={updateAgentInList}
+      />
     </div>
   );
 }
@@ -197,6 +212,7 @@ function EmployeeCard({
   onStatus,
   onGallery,
   onDelete,
+  onAvatar,
 }: {
   employee: AgentProfileRead;
   canManage: boolean;
@@ -204,6 +220,7 @@ function EmployeeCard({
   onStatus: (status: 'active' | 'archived') => void;
   onGallery: (published: boolean) => void;
   onDelete: () => void;
+  onAvatar: () => void;
 }) {
   const profile = employeeProfile(employee);
   const sopCount = resourceCount(employee.resources, 'skill');
@@ -213,7 +230,7 @@ function EmployeeCard({
   return (
     <Card className="employee-roster-card" hoverable onClick={onOpen}>
       <div className="employee-roster-head">
-        <Avatar className={`employee-avatar tone-${profile.avatarTone}`} size={54}>{profile.avatarText}</Avatar>
+        <EmployeeAvatar agent={employee} size={54} />
         <div className="employee-roster-title">
           <strong>{employeeDisplayName(employee)}</strong>
           <span>{profile.roleName}</span>
@@ -231,6 +248,7 @@ function EmployeeCard({
                 label: galleryPublished ? '从员工广场下架' : '发布到员工广场',
                 disabled: !canManage,
               },
+              { key: 'avatar', icon: <PictureOutlined />, label: '设置头像', disabled: !canManage },
               { key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true, disabled: !canManage },
             ],
             onClick: ({ key, domEvent }) => {
@@ -238,6 +256,7 @@ function EmployeeCard({
               if (key === 'active') onStatus('active');
               if (key === 'archive') onStatus('archived');
               if (key === 'gallery') onGallery(!galleryPublished);
+              if (key === 'avatar') onAvatar();
               if (key === 'delete') onDelete();
             },
           }}

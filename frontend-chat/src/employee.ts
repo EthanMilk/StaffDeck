@@ -5,6 +5,18 @@ export type EmployeeProfile = {
   roleName: string;
   avatarText: string;
   avatarTone: string;
+  avatarKind: 'preset' | 'upload';
+  avatarPreset: string;
+  avatarImage: string;
+};
+
+const AVATAR_PRESETS: Record<string, { text: string; tone: string }> = {
+  'service-orbit': { text: '客', tone: 'teal' },
+  'after-sales-seal': { text: '售', tone: 'copper' },
+  'knowledge-node': { text: '知', tone: 'olive' },
+  'commerce-compass': { text: '导', tone: 'blue' },
+  'ops-grid': { text: '运', tone: 'ink' },
+  'quality-star': { text: '质', tone: 'gold' },
 };
 
 function stringFromMeta(metadata: Record<string, unknown> | undefined, key: string): string {
@@ -14,12 +26,26 @@ function stringFromMeta(metadata: Record<string, unknown> | undefined, key: stri
 
 export function employeeProfile(agent?: AgentProfileRead | null): EmployeeProfile {
   if (agent?.is_overall) {
-    return { roleName: '开放广场平台', avatarText: '广', avatarTone: 'overall' };
+    return {
+      roleName: '开放广场平台',
+      avatarText: '广',
+      avatarTone: 'overall',
+      avatarKind: 'preset',
+      avatarPreset: 'overall',
+      avatarImage: '',
+    };
   }
+  const presetKey = stringFromMeta(agent?.metadata, 'avatar_preset') || 'service-orbit';
+  const preset = AVATAR_PRESETS[presetKey] || AVATAR_PRESETS['service-orbit'];
+  const avatarImage = stringFromMeta(agent?.metadata, 'avatar_image');
+  const avatarKind = stringFromMeta(agent?.metadata, 'avatar_kind') === 'upload' && avatarImage ? 'upload' : 'preset';
   return {
     roleName: stringFromMeta(agent?.metadata, 'role_name') || '在线客服员工',
-    avatarText: stringFromMeta(agent?.metadata, 'avatar_text') || '员',
-    avatarTone: stringFromMeta(agent?.metadata, 'avatar_tone') || 'teal',
+    avatarText: stringFromMeta(agent?.metadata, 'avatar_text') || preset.text || '员',
+    avatarTone: stringFromMeta(agent?.metadata, 'avatar_tone') || preset.tone || 'teal',
+    avatarKind,
+    avatarPreset: presetKey,
+    avatarImage,
   };
 }
 

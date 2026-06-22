@@ -1129,25 +1129,224 @@ body.skill-distill-fixed .content {
   letter-spacing: 0;
 }
 
+.employee-avatar {
+  position: relative;
+  overflow: hidden;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.18),
+    0 10px 22px rgba(23, 30, 25, 0.1);
+  --avatar-skin: #f2c7aa;
+  --avatar-hair: #252018;
+  --avatar-shirt: #e9f6f3;
+  --avatar-shirt-edge: #0d756c;
+}
+
+.employee-avatar::after {
+  content: '';
+  position: absolute;
+  inset: 9%;
+  border-radius: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  pointer-events: none;
+}
+
+.employee-avatar.is-uploaded-avatar {
+  color: transparent;
+  background: var(--surface-subtle);
+}
+
+.employee-avatar.is-uploaded-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.employee-avatar-portrait {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
 .employee-avatar.tone-teal {
-  background: #0f766e;
+  --avatar-shirt: #d9f4ec;
+  --avatar-shirt-edge: #0f766e;
+  background:
+    radial-gradient(circle at 70% 22%, rgba(255, 255, 255, 0.28), transparent 24%),
+    linear-gradient(145deg, #11998e, #0f766e 54%, #075e59);
 }
 
 .employee-avatar.tone-copper {
-  background: #a85d32;
+  --avatar-shirt: #ffe2c8;
+  --avatar-shirt-edge: #a85d32;
+  background:
+    radial-gradient(circle at 68% 22%, rgba(255, 244, 220, 0.32), transparent 25%),
+    linear-gradient(145deg, #c77b43, #a85d32 56%, #734023);
 }
 
 .employee-avatar.tone-olive {
-  background: #65743a;
+  --avatar-shirt: #e4edc8;
+  --avatar-shirt-edge: #65743a;
+  background:
+    radial-gradient(circle at 70% 22%, rgba(255, 255, 255, 0.24), transparent 24%),
+    linear-gradient(145deg, #8a9a5b, #65743a 56%, #465125);
 }
 
 .employee-avatar.tone-ink {
-  background: #29323a;
+  --avatar-shirt: #dfe8ef;
+  --avatar-shirt-edge: #29323a;
+  background:
+    radial-gradient(circle at 70% 22%, rgba(255, 255, 255, 0.22), transparent 24%),
+    linear-gradient(145deg, #43505a, #29323a 56%, #141b22);
 }
 
 .employee-avatar.tone-gold {
   color: #191713;
-  background: #d6aa4f;
+  --avatar-shirt: #fff0bd;
+  --avatar-shirt-edge: #b78423;
+  background:
+    radial-gradient(circle at 72% 24%, rgba(255, 255, 255, 0.38), transparent 24%),
+    linear-gradient(145deg, #f0cc74, #d6aa4f 56%, #a17423);
+}
+
+.employee-avatar.tone-blue {
+  --avatar-shirt: #dfeaff;
+  --avatar-shirt-edge: #3562b8;
+  background:
+    radial-gradient(circle at 70% 22%, rgba(255, 255, 255, 0.26), transparent 24%),
+    linear-gradient(145deg, #5b8def, #3562b8 56%, #1f3f84);
+}
+
+.employee-avatar.tone-overall {
+  --avatar-shirt: #dcefeb;
+  --avatar-shirt-edge: #263238;
+  background:
+    radial-gradient(circle at 72% 24%, rgba(255, 255, 255, 0.24), transparent 24%),
+    linear-gradient(145deg, #0f766e, #263238);
+}
+
+.employee-avatar-person {
+  position: relative;
+  width: 68%;
+  height: 78%;
+  display: block;
+  transform: translateY(4%);
+}
+
+.employee-avatar-head {
+  position: absolute;
+  top: 4%;
+  left: 16%;
+  width: 68%;
+  height: 58%;
+  border-radius: 44% 44% 48% 48%;
+  background:
+    radial-gradient(circle at 68% 32%, rgba(255, 255, 255, 0.34), transparent 17%),
+    var(--avatar-skin);
+  box-shadow: 0 2px 0 rgba(48, 34, 22, 0.12);
+}
+
+.employee-avatar-hair {
+  position: absolute;
+  top: -9%;
+  left: -7%;
+  width: 114%;
+  height: 52%;
+  border-radius: 52% 52% 34% 34%;
+  background: var(--avatar-hair);
+}
+
+.employee-avatar-eye {
+  position: absolute;
+  top: 47%;
+  width: 7%;
+  height: 9%;
+  border-radius: 999px;
+  background: #29231d;
+}
+
+.employee-avatar-eye.eye-left {
+  left: 32%;
+}
+
+.employee-avatar-eye.eye-right {
+  right: 32%;
+}
+
+.employee-avatar-mouth {
+  position: absolute;
+  left: 39%;
+  bottom: 23%;
+  width: 22%;
+  height: 10%;
+  border-bottom: 2px solid rgba(61, 41, 31, 0.76);
+  border-radius: 0 0 999px 999px;
+}
+
+.employee-avatar-body {
+  position: absolute;
+  left: 10%;
+  bottom: 0;
+  width: 80%;
+  height: 36%;
+  border-radius: 42% 42% 18% 18%;
+  background:
+    linear-gradient(90deg, transparent 0 42%, rgba(255, 255, 255, 0.62) 42% 58%, transparent 58%),
+    var(--avatar-shirt);
+  border: 2px solid color-mix(in srgb, var(--avatar-shirt-edge) 48%, rgba(255, 255, 255, 0.72));
+  box-shadow: inset 0 12px 20px rgba(255, 255, 255, 0.25);
+}
+
+.employee-avatar.avatar-preset-service-orbit .employee-avatar-hair {
+  top: -11%;
+  left: -12%;
+  width: 124%;
+  height: 58%;
+  border-radius: 48% 52% 38% 32%;
+}
+
+.employee-avatar.avatar-preset-after-sales-seal .employee-avatar-hair {
+  top: -5%;
+  left: 3%;
+  width: 94%;
+  height: 38%;
+  border-radius: 58% 58% 24% 28%;
+}
+
+.employee-avatar.avatar-preset-knowledge-node .employee-avatar-hair {
+  top: -8%;
+  left: -3%;
+  width: 106%;
+  height: 62%;
+  border-radius: 50% 50% 44% 44%;
+}
+
+.employee-avatar.avatar-preset-commerce-compass .employee-avatar-hair {
+  top: -10%;
+  left: -4%;
+  width: 112%;
+  height: 46%;
+  border-radius: 56% 46% 30% 42%;
+  transform: rotate(-5deg);
+}
+
+.employee-avatar.avatar-preset-ops-grid .employee-avatar-hair {
+  top: -4%;
+  left: 7%;
+  width: 86%;
+  height: 34%;
+  border-radius: 28% 28% 22% 22%;
+}
+
+.employee-avatar.avatar-preset-quality-star .employee-avatar-hair {
+  top: -9%;
+  left: -5%;
+  width: 110%;
+  height: 48%;
+  border-radius: 42% 58% 30% 38%;
 }
 
 .employee-hero {
@@ -1380,7 +1579,7 @@ body.skill-distill-fixed .content {
 .employee-id-card .employee-avatar {
   width: 116px !important;
   height: 116px !important;
-  border-radius: 24px;
+  border-radius: 999px;
   font-size: 30px;
 }
 
@@ -1392,6 +1591,12 @@ body.skill-distill-fixed .content {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.employee-id-card .ant-btn {
+  max-width: 100%;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
 }
 
 .employee-home-main {
@@ -2285,6 +2490,108 @@ body.skill-distill-fixed .content {
 
 .employee-roster-tags {
   min-height: 24px;
+}
+
+.employee-avatar-modal .ant-modal-content {
+  border-radius: 18px;
+}
+
+.employee-avatar-editor {
+  display: grid;
+  gap: 18px;
+}
+
+.employee-avatar-preview {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 18px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 34%, transparent), transparent 58%),
+    var(--surface-subtle);
+}
+
+.employee-avatar-preview .employee-avatar {
+  width: 104px !important;
+  height: 104px !important;
+  border-radius: 24px;
+  font-size: 28px;
+}
+
+.employee-avatar-preview .ant-typography {
+  margin: 0 !important;
+}
+
+.employee-avatar-section {
+  display: grid;
+  gap: 12px;
+}
+
+.employee-avatar-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.employee-avatar-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.employee-avatar-preset-card {
+  min-width: 0;
+  min-height: 88px;
+  padding: 12px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--foreground);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.employee-avatar-preset-card:hover,
+.employee-avatar-preset-card.active {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: 0 14px 30px rgba(30, 24, 16, 0.08);
+  transform: translateY(-1px);
+}
+
+.employee-avatar-preset-card > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 760;
+  text-align: left;
+}
+
+.employee-avatar-preset-card > .anticon {
+  color: var(--accent);
+}
+
+.employee-avatar-upload {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 32%, var(--border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent-soft) 22%, transparent);
+}
+
+.employee-avatar-upload input {
+  display: none;
 }
 
 .employee-roster-styles {

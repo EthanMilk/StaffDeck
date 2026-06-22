@@ -25,6 +25,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from 'react-router-dom';
 import { SHOW_DEBUG, TENANT_ID, api, clearAuthSession, getAuthSession, isAuthError, streamChatTurn } from '../api/client';
 import CodeBlock from '../components/CodeBlock';
+import EmployeeAvatarMark from '../components/EmployeeAvatarMark';
 import { employeeDisplayName, employeeProfile, isEmployeeOwnedBy, isGalleryEmployee, visibleChatEmployees } from '../employee';
 import { ThemeToggleButton } from '../theme';
 import type {
@@ -2021,9 +2022,7 @@ export default function ChatWindowPage() {
           );
         })}
         <div className="chat-agent-dock">
-          <span className={`chat-agent-mark tone-${displayedProfile?.avatarTone || 'teal'}`}>
-            {displayedProfile?.avatarText || 'UR'}
-          </span>
+          <EmployeeAvatarMark profile={displayedProfile} fallback="UR" className="chat-agent-mark" />
           <div className="chat-agent-main">
             <span className="chat-agent-label">
               {sessionId ? '当前接单员工' : '新任务默认员工'}
@@ -2338,7 +2337,7 @@ export default function ChatWindowPage() {
                     className={`new-session-agent-card ${newSessionAgentId === agent.id ? 'selected' : ''}`}
                     onClick={() => setNewSessionAgentId(agent.id)}
                   >
-                    <span className={`new-session-agent-logo tone-${profile.avatarTone}`}>{profile.avatarText}</span>
+                    <EmployeeAvatarMark profile={profile} />
                     <span className="new-session-agent-info">
                       <span className="new-session-agent-name">{employeeDisplayName(agent)}</span>
                       <span className="new-session-agent-desc">{profile.roleName} · {agent.description || '使用该员工的技能、SOP、业务资料和岗位人设'}</span>
@@ -2357,7 +2356,7 @@ export default function ChatWindowPage() {
                     className={`new-session-agent-card ${newSessionAgentId === agent.id ? 'selected' : ''}`}
                     onClick={() => setNewSessionAgentId(agent.id)}
                   >
-                    <span className={`new-session-agent-logo tone-${profile.avatarTone}`}>{profile.avatarText}</span>
+                    <EmployeeAvatarMark profile={profile} />
                     <span className="new-session-agent-info">
                       <span className="new-session-agent-name">{employeeDisplayName(agent)}</span>
                       <span className="new-session-agent-desc">{profile.roleName} · {agent.description || '员工广场开放的数字员工'}</span>

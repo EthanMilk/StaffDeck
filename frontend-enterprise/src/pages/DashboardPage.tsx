@@ -7,16 +7,19 @@ import {
   DatabaseOutlined,
   FileTextOutlined,
   MessageOutlined,
+  PictureOutlined,
   ProfileOutlined,
   RightOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
-import { Avatar, Button, Card, Space, Tag, Typography, message } from 'antd';
+import { Button, Card, Space, Tag, Typography, message } from 'antd';
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, TENANT_ID } from '../api/client';
 import { isEmployeeOwnedBy, isGalleryEmployee, type EnterpriseAuthUser } from '../auth';
+import EmployeeAvatar from '../components/EmployeeAvatar';
+import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
 import { employeeDisplayName, employeeProfile, resourceCount } from '../employee';
 import type {
   AgentProfileRead,
@@ -69,6 +72,7 @@ export default function DashboardPage({
   const [scheduledTasks, setScheduledTasks] = useState<ScheduledTaskRead[]>([]);
   const [replyStats, setReplyStats] = useState<ReplyStats>({ total: 0, today: 0, byDay: {} });
   const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
+  const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
@@ -228,6 +232,7 @@ export default function DashboardPage({
   }
 
   const employee = employeeProfile(selectedAgent);
+  const canEditSelectedAgent = !selectedAgent.is_overall && (isAdmin || isEmployeeOwnedBy(selectedAgent, currentUser));
   const activeSkills = skills.filter((item) => item.status === 'published' && item.branch_status !== 'inactive');
   const activeGeneralSkills = generalSkills.filter((item) => item.status === 'published');
   const activeKnowledge = knowledgeBases.filter((item) => item.status === 'active');
@@ -304,8 +309,17 @@ export default function DashboardPage({
     <div className="page dashboard-page employee-dashboard-page employee-home-page">
       <section className="employee-home-hero">
         <div className="employee-id-card">
-          <Avatar className={`employee-avatar tone-${employee.avatarTone}`} size={116}>{employee.avatarText}</Avatar>
+          <EmployeeAvatar agent={selectedAgent} size={116} />
           <span>ID: {selectedAgent.id.slice(-8)}</span>
+          {canEditSelectedAgent && (
+            <Button
+              size="small"
+              icon={<PictureOutlined />}
+              onClick={() => setAvatarEditorOpen(true)}
+            >
+              更换头像
+            </Button>
+          )}
         </div>
         <div className="employee-home-main">
           <div className="employee-home-title-row">
@@ -329,6 +343,12 @@ export default function DashboardPage({
           <MetricTile label="自动任务" value={activeScheduledTasks.length} />
         </div>
       </section>
+      <EmployeeAvatarEditor
+        agent={selectedAgent}
+        open={avatarEditorOpen}
+        onClose={() => setAvatarEditorOpen(false)}
+        onSaved={(saved) => setAgents((current) => current.map((item) => (item.id === saved.id ? saved : item)))}
+      />
 
       <section className="employee-work-card">
         <div className="employee-section-head">

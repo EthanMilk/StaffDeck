@@ -5,10 +5,20 @@ export type EmployeeProfile = {
   roleName: string;
   avatarText: string;
   avatarTone: string;
+  avatarKind: 'preset' | 'upload';
+  avatarPreset: string;
+  avatarImage: string;
   onboardedAt: string;
   workStyles: string[];
   expertiseTags: string[];
   workModes: string[];
+};
+
+export type EmployeeAvatarPreset = {
+  key: string;
+  label: string;
+  text: string;
+  tone: string;
 };
 
 export type EmployeeTemplate = {
@@ -16,11 +26,21 @@ export type EmployeeTemplate = {
   roleName: string;
   avatarText: string;
   avatarTone: string;
+  avatarPreset: string;
   description: string;
   workStyles: string[];
   expertiseTags: string[];
   workModes: string[];
 };
+
+export const EMPLOYEE_AVATAR_PRESETS: EmployeeAvatarPreset[] = [
+  { key: 'service-orbit', label: '客服接待', text: '客', tone: 'teal' },
+  { key: 'after-sales-seal', label: '售后处理', text: '售', tone: 'copper' },
+  { key: 'knowledge-node', label: '知识运营', text: '知', tone: 'olive' },
+  { key: 'commerce-compass', label: '商品导购', text: '导', tone: 'blue' },
+  { key: 'ops-grid', label: '运营排查', text: '运', tone: 'ink' },
+  { key: 'quality-star', label: '质量复盘', text: '质', tone: 'gold' },
+];
 
 export const EMPLOYEE_TEMPLATES: EmployeeTemplate[] = [
   {
@@ -28,6 +48,7 @@ export const EMPLOYEE_TEMPLATES: EmployeeTemplate[] = [
     roleName: '在线客服员工',
     avatarText: '客',
     avatarTone: 'teal',
+    avatarPreset: 'service-orbit',
     description: '负责接待用户咨询、识别意图、推进购买和基础售后问题。',
     workStyles: ['事实先行', '流程推进', '及时追问'],
     expertiseTags: ['用户接待', '购买引导', '售后分诊'],
@@ -38,6 +59,7 @@ export const EMPLOYEE_TEMPLATES: EmployeeTemplate[] = [
     roleName: '售后处理员工',
     avatarText: '售',
     avatarTone: 'copper',
+    avatarPreset: 'after-sales-seal',
     description: '负责退款、换货、履约异常和会员权益补偿类处理。',
     workStyles: ['证据优先', '风险克制', '留痕复盘'],
     expertiseTags: ['退款', '换货', '权益核对'],
@@ -48,6 +70,7 @@ export const EMPLOYEE_TEMPLATES: EmployeeTemplate[] = [
     roleName: '知识运营员工',
     avatarText: '知',
     avatarTone: 'olive',
+    avatarPreset: 'knowledge-node',
     description: '负责维护业务资料、沉淀证据片段并推动 SOP 学习。',
     workStyles: ['结构化整理', '可追溯', '持续学习'],
     expertiseTags: ['资料维护', '证据片段', 'SOP 学习'],
@@ -58,6 +81,7 @@ export const EMPLOYEE_TEMPLATES: EmployeeTemplate[] = [
     roleName: '商品导购员工',
     avatarText: '导',
     avatarTone: 'blue',
+    avatarPreset: 'commerce-compass',
     description: '负责商品咨询、价格比较、购买确认和用户偏好复用。',
     workStyles: ['偏好敏感', '主动比较', '确认后执行'],
     expertiseTags: ['商品比价', '购买流程', '偏好记忆'],
@@ -81,12 +105,21 @@ function stringFromMeta(metadata: Record<string, unknown>, key: string): string 
 export function employeeProfile(agent?: AgentProfileRead | null): EmployeeProfile {
   const metadata = agent?.metadata || {};
   const template = EMPLOYEE_TEMPLATES.find((item) => item.key === metadata.role_key) || EMPLOYEE_TEMPLATES[0];
+  const preset = EMPLOYEE_AVATAR_PRESETS.find((item) => item.key === metadata.avatar_preset)
+    || EMPLOYEE_AVATAR_PRESETS.find((item) => item.key === template.avatarPreset)
+    || EMPLOYEE_AVATAR_PRESETS[0];
   const isOverall = Boolean(agent?.is_overall);
+  const avatarKind = stringFromMeta(metadata, 'avatar_kind') === 'upload' && stringFromMeta(metadata, 'avatar_image')
+    ? 'upload'
+    : 'preset';
   return {
     roleKey: stringFromMeta(metadata, 'role_key') || template.key,
     roleName: isOverall ? '开放广场平台' : stringFromMeta(metadata, 'role_name') || template.roleName,
-    avatarText: isOverall ? '广' : stringFromMeta(metadata, 'avatar_text') || template.avatarText,
-    avatarTone: isOverall ? 'overall' : stringFromMeta(metadata, 'avatar_tone') || template.avatarTone,
+    avatarText: isOverall ? '广' : stringFromMeta(metadata, 'avatar_text') || preset.text || template.avatarText,
+    avatarTone: isOverall ? 'overall' : stringFromMeta(metadata, 'avatar_tone') || preset.tone || template.avatarTone,
+    avatarKind: isOverall ? 'preset' : avatarKind,
+    avatarPreset: isOverall ? 'overall' : stringFromMeta(metadata, 'avatar_preset') || preset.key,
+    avatarImage: isOverall ? '' : stringFromMeta(metadata, 'avatar_image'),
     onboardedAt: stringFromMeta(metadata, 'onboarded_at') || agent?.created_at?.slice(0, 10) || '-',
     workStyles: asStringArray(metadata.work_styles).length ? asStringArray(metadata.work_styles) : DEFAULT_WORK_STYLES,
     expertiseTags: asStringArray(metadata.expertise_tags).length ? asStringArray(metadata.expertise_tags) : DEFAULT_EXPERTISE,
@@ -116,6 +149,8 @@ export function employeeMetadataFromTemplate(templateKey: string, currentMetadat
     role_name: template.roleName,
     avatar_text: template.avatarText,
     avatar_tone: template.avatarTone,
+    avatar_kind: 'preset',
+    avatar_preset: template.avatarPreset,
     onboarded_at: currentMetadata.onboarded_at || new Date().toISOString().slice(0, 10),
     work_styles: template.workStyles,
     expertise_tags: template.expertiseTags,

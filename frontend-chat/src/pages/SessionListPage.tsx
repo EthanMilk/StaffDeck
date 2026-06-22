@@ -12,6 +12,7 @@ import type { MouseEvent } from 'react';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, clearAuthSession, getAuthSession, isAuthError } from '../api/client';
+import EmployeeAvatarMark from '../components/EmployeeAvatarMark';
 import { employeeDisplayName, employeeProfile, isEmployeeOwnedBy, isGalleryEmployee, visibleChatEmployees } from '../employee';
 import { ThemeToggleButton } from '../theme';
 import type { AgentProfileRead, ChatSession } from '../types';
@@ -276,7 +277,7 @@ export default function SessionListPage() {
                     className={`new-session-agent-card ${newSessionAgentId === agent.id ? 'selected' : ''}`}
                     onClick={() => setNewSessionAgentId(agent.id)}
                   >
-                    <span className={`new-session-agent-logo tone-${profile.avatarTone}`}>{profile.avatarText}</span>
+                    <EmployeeAvatarMark profile={profile} />
                     <span className="new-session-agent-info">
                       <span className="new-session-agent-name">{employeeDisplayName(agent)}</span>
                       <span className="new-session-agent-desc">{profile.roleName} · {agent.description || '使用该员工的技能、SOP、业务资料和岗位人设'}</span>
@@ -295,7 +296,7 @@ export default function SessionListPage() {
                     className={`new-session-agent-card ${newSessionAgentId === agent.id ? 'selected' : ''}`}
                     onClick={() => setNewSessionAgentId(agent.id)}
                   >
-                    <span className={`new-session-agent-logo tone-${profile.avatarTone}`}>{profile.avatarText}</span>
+                    <EmployeeAvatarMark profile={profile} />
                     <span className="new-session-agent-info">
                       <span className="new-session-agent-name">{employeeDisplayName(agent)}</span>
                       <span className="new-session-agent-desc">{profile.roleName} · {agent.description || '员工广场开放的数字员工'}</span>
