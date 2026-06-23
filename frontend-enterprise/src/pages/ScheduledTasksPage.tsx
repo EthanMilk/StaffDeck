@@ -297,20 +297,23 @@ export default function ScheduledTasksPage() {
     {
       title: '自动任务',
       dataIndex: 'task_title',
-      width: 240,
+      width: '18%',
       render: (value, row) => (
         <Space direction="vertical" size={2}>
-          <Typography.Text strong>{value || row.scheduled_task_id}</Typography.Text>
+          <Typography.Text strong ellipsis className="scheduled-task-run-title">
+            {value || row.scheduled_task_id}
+          </Typography.Text>
           {row.task_status === 'archived' && <Tag>任务定义已删除</Tag>}
         </Space>
       ),
     },
-    { title: '计划时间', dataIndex: 'scheduled_for', width: 170, render: formatTime },
-    { title: '状态', dataIndex: 'status', width: 110, render: (value) => <TaskRunStatusTag status={value} /> },
-    { title: '完成时间', dataIndex: 'finished_at', width: 170, render: formatTime },
+    { title: '计划时间', dataIndex: 'scheduled_for', width: '13%', render: formatTime },
+    { title: '状态', dataIndex: 'status', width: '8%', render: (value) => <TaskRunStatusTag status={value} /> },
+    { title: '完成时间', dataIndex: 'finished_at', width: '13%', render: formatTime },
     {
       title: '结果',
       dataIndex: 'result_summary',
+      width: '40%',
       ellipsis: true,
       render: (value, row) => (
         <Typography.Text className="scheduled-task-run-summary">
@@ -320,8 +323,8 @@ export default function ScheduledTasksPage() {
     },
     {
       title: '操作',
-      fixed: 'right',
-      width: 120,
+      width: '8%',
+      align: 'right',
       render: (_, row) => (
         <Button size="small" disabled={!row.session_id} onClick={() => openChatSession(row.session_id)}>
           打开会话
@@ -463,13 +466,12 @@ export default function ScheduledTasksPage() {
               )}
             </div>
             <Table
-              className="scheduled-task-desktop-table"
+              className="scheduled-task-desktop-table scheduled-task-run-table"
               rowKey="id"
               columns={runColumns}
               dataSource={visibleRunRows}
               loading={loading}
               pagination={{ pageSize: 8, showSizeChanger: true, pageSizeOptions: [8, 16, 32] }}
-              scroll={{ x: 1040 }}
             />
           </Card>
         </>
