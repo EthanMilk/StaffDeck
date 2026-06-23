@@ -15,7 +15,7 @@ from sqlmodel import Session, select
 
 from app.agents.branching import model_for_agent
 from app.core import AgentLoop
-from app.db.models import AgentProfile, ChatSession, ScheduledTask, ScheduledTaskRun, User, new_id, utc_now
+from app.db.models import AgentEvent, AgentProfile, ChatSession, ScheduledTask, ScheduledTaskRun, User, new_id, utc_now
 from app.llm import LLMClient, LLMError
 from app.scheduled_tasks.schema import (
     ScheduledTaskCreateRequest,
@@ -24,7 +24,7 @@ from app.scheduled_tasks.schema import (
     ScheduledTaskRunRead,
     ScheduledTaskUpdateRequest,
 )
-from app.session.session_schema import ChatTurnRequest
+from app.session.session_schema import ChatTurnRequest, ChatTurnResponse
 from app.security.tenant import ensure_tenant
 
 
@@ -361,6 +361,10 @@ def execute_scheduled_task(
         db.add(session)
         db.commit()
         db.refresh(session)
+        run.session_id = session.id
+        run.updated_at = utc_now()
+        db.add(run)
+        db.commit()
         request = ChatTurnRequest(
             tenant_id=task.tenant_id,
             session_id=session.id,
@@ -369,8 +373,13 @@ def execute_scheduled_task(
             message=automatic_task_message(task),
             channel="scheduled_task",
         )
-        result = AgentLoop(db).handle_turn(request)
-        run.session_id = result.session_id
+        result: ChatTurnResponse | None = None
+        for seq, item in enumerate(AgentLoop(db).handle_turn_stream(request), start=1):
+            _record_scheduled_task_stream_event(db, run, session.id, seq, item)
+            if item.get("event") in {"complete", "done"} and isinstance(item.get("data"), dict):
+                result = ChatTurnResponse.model_validate(item["data"])
+        if result is None:
+            raise RuntimeError("自动任务执行未返回完整结果")
         run.status = "succeeded"
         run.result_summary = result.reply[:500]
         run.trace_json = {
@@ -385,6 +394,14 @@ def execute_scheduled_task(
         run.status = "failed"
         run.error = str(exc)
         run.finished_at = utc_now()
+        if run.session_id:
+            _record_scheduled_task_stream_event(
+                db,
+                run,
+                run.session_id,
+                0,
+                {"event": "error", "data": {"message": str(exc), "sessionId": run.session_id}},
+            )
         _finish_task_schedule(db, task, scheduled_for, "failed", manual)
     finally:
         task.lease_owner = None
@@ -396,6 +413,38 @@ def execute_scheduled_task(
         db.commit()
         db.refresh(run)
     return run
+
+
+def _record_scheduled_task_stream_event(
+    db: Session,
+    run: ScheduledTaskRun,
+    session_id: str,
+    seq: int,
+    item: dict[str, Any],
+) -> None:
+    event = str(item.get("event") or "")
+    data = item.get("data")
+    if not isinstance(data, dict):
+        data = {"value": data}
+    payload = dict(data)
+    payload.setdefault("sessionId", session_id)
+    db.add(
+        AgentEvent(
+            tenant_id=run.tenant_id,
+            session_id=session_id,
+            event_type="scheduled_task_stream_event",
+            payload_json={
+                "run_id": run.id,
+                "seq": seq,
+                "event": event,
+                "data": payload,
+            },
+            created_at=utc_now(),
+        )
+    )
+    run.updated_at = utc_now()
+    db.add(run)
+    db.commit()
 
 
 def automatic_task_message(task: ScheduledTask) -> str:

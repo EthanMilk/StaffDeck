@@ -24,6 +24,7 @@ import type { MouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { SHOW_DEBUG, TENANT_ID, api, clearAuthSession, getAuthSession, isAuthError, streamChatTurn } from '../api/client';
+import type { ChatStreamEvent } from '../api/client';
 import CodeBlock from '../components/CodeBlock';
 import EmployeeAvatarMark from '../components/EmployeeAvatarMark';
 import { employeeDisplayName, employeeProfile, isEmployeeOwnedBy, isGalleryEmployee, visibleChatEmployees } from '../employee';
@@ -31,6 +32,7 @@ import { ThemeToggleButton } from '../theme';
 import type {
   AgentProfileRead,
   ChatMessage,
+  ChatSessionEventRead,
   ChatSession,
   ChatTurnResponse,
   KnowledgeCitation,
@@ -94,6 +96,40 @@ type TurnTrace = {
 
 type ComposerIntent = 'normal' | 'scheduled_task';
 const MODEL_CONFIG_STORAGE_PREFIX = 'skill_agent_selected_model_config';
+const SESSION_READ_STORAGE_PREFIX = 'skill_agent_session_read_at';
+
+function sessionReadStorageKey(userId: string): string {
+  return `${SESSION_READ_STORAGE_PREFIX}:${userId || 'anonymous'}`;
+}
+
+function loadSessionReadTimes(userId: string): Record<string, string> {
+  try {
+    const raw = window.localStorage.getItem(sessionReadStorageKey(userId));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistSessionReadTimes(userId: string, values: Record<string, string>): void {
+  window.localStorage.setItem(sessionReadStorageKey(userId), JSON.stringify(values));
+}
+
+function isScheduledSession(session: ChatSession): boolean {
+  return (session.title || '').startsWith('自动任务：');
+}
+
+function sessionHasUnreadReply(session: ChatSession, readTimes: Record<string, string>, activeSessionId?: string): boolean {
+  if (session.id === activeSessionId) return false;
+  const summary = session.summary || session.last_agent_question || '';
+  if (!summary) return false;
+  if (summary.includes('正在') || summary.includes('执行中')) return false;
+  const updatedAt = Date.parse(session.updated_at || '');
+  const readAt = Date.parse(readTimes[session.id] || '');
+  return Number.isFinite(updatedAt) && (!Number.isFinite(readAt) || updatedAt > readAt + 1000);
+}
 
 function modelStorageKey(tenantId: string): string {
   return `${MODEL_CONFIG_STORAGE_PREFIX}:${tenantId}`;
@@ -995,6 +1031,7 @@ export default function ChatWindowPage() {
   const tenantId = auth?.user.tenant_id || TENANT_ID;
   const userId = auth?.user.id || '';
   const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [sessionReadTimes, setSessionReadTimes] = useState<Record<string, string>>(() => loadSessionReadTimes(userId));
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem('skill_agent_selected_agent') || '');
   const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
@@ -1033,6 +1070,11 @@ export default function ChatWindowPage() {
   const storeRef = useRef(new Map<string, SessionSlot>());
   const streamRef = useRef(new Map<string, StreamSlot>());
   const turnTraceRef = useRef(new Map<string, TurnTrace>());
+  const scheduledEventIdsRef = useRef(new Set<string>());
+  const scheduledTurnIdsRef = useRef(new Map<string, string>());
+  const knownSessionIdsRef = useRef(new Set<string>());
+  const sessionsInitializedRef = useRef(false);
+  const autoOpenedSessionIdsRef = useRef(new Set<string>());
 
   const notifyStore = useCallback(() => setStoreTick((value) => value + 1), []);
   const notifyStream = useCallback(() => setStreamTick((value) => value + 1), []);
@@ -1054,6 +1096,30 @@ export default function ChatWindowPage() {
       window.localStorage.setItem('skill_agent_sidebar_collapsed', String(next));
       return next;
     });
+  }, []);
+
+  const markSessionRead = useCallback((id: string, timestamp?: string) => {
+    if (!id) return;
+    const value = timestamp || new Date().toISOString();
+    setSessionReadTimes((current) => {
+      const currentTime = Date.parse(current[id] || '');
+      const nextTime = Date.parse(value);
+      if (Number.isFinite(currentTime) && Number.isFinite(nextTime) && currentTime >= nextTime) {
+        return current;
+      }
+      const next = { ...current, [id]: value };
+      persistSessionReadTimes(userId, next);
+      return next;
+    });
+  }, [userId]);
+
+  const scheduledTurnId = useCallback((sessionKey: string, runId?: string) => {
+    const key = `${sessionKey}:${runId || sessionKey}`;
+    const cached = scheduledTurnIdsRef.current.get(key);
+    if (cached) return cached;
+    const next = `scheduled_${(runId || sessionKey).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+    scheduledTurnIdsRef.current.set(key, next);
+    return next;
   }, []);
 
   const currentSession = sessions.find((item) => item.id === sessionId) || null;
@@ -1245,7 +1311,36 @@ export default function ChatWindowPage() {
   const loadSessions = useCallback(() => {
     api
       .get<ChatSession[]>(`/api/chat/sessions?tenant_id=${tenantId}`)
-      .then(setSessions)
+      .then((rows) => {
+        const previousIds = new Set(knownSessionIdsRef.current);
+        const initialized = sessionsInitializedRef.current;
+        if (!initialized) {
+          const initialReads = loadSessionReadTimes(userId);
+          const nextReads = { ...initialReads };
+          if (Object.keys(initialReads).length === 0) {
+            rows.forEach((row) => {
+              nextReads[row.id] = row.updated_at || new Date().toISOString();
+            });
+          }
+          setSessionReadTimes(nextReads);
+          persistSessionReadTimes(userId, nextReads);
+          sessionsInitializedRef.current = true;
+        }
+        rows.forEach((row) => knownSessionIdsRef.current.add(row.id));
+        setSessions(rows);
+        if (!initialized) return;
+        const newScheduledSession = rows.find((row) => (
+          !previousIds.has(row.id)
+          && isScheduledSession(row)
+          && !autoOpenedSessionIdsRef.current.has(row.id)
+        ));
+        if (!newScheduledSession) return;
+        autoOpenedSessionIdsRef.current.add(newScheduledSession.id);
+        if (!input.trim()) {
+          getSlot(newScheduledSession.id);
+          navigate(`/${newScheduledSession.id}`);
+        }
+      })
       .catch((error) => {
         if (isAuthError(error)) {
           clearAuthSession();
@@ -1254,7 +1349,7 @@ export default function ChatWindowPage() {
         }
         message.error(error.message);
       });
-  }, [navigate, tenantId]);
+  }, [getSlot, input, navigate, tenantId, userId]);
 
   const loadMessages = useCallback((id: string) => {
     return api
@@ -1393,6 +1488,12 @@ export default function ChatWindowPage() {
 
   useEffect(() => {
     if (!auth) return;
+    const timer = window.setInterval(loadSessions, 2500);
+    return () => window.clearInterval(timer);
+  }, [auth, loadSessions]);
+
+  useEffect(() => {
+    if (!auth) return;
     api
       .get<UIConfigRead>(`/api/chat/ui-config?tenant_id=${tenantId}`)
       .then(setUiConfig)
@@ -1404,6 +1505,14 @@ export default function ChatWindowPage() {
     loadMessages(sessionId);
     loadTraces(sessionId);
   }, [loadMessages, loadTraces, sessionId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    const session = sessions.find((item) => item.id === sessionId);
+    if (session) {
+      markSessionRead(sessionId, session.updated_at);
+    }
+  }, [markSessionRead, sessionId, sessions]);
 
   useLayoutEffect(() => {
     scrollChatToBottom();
@@ -1590,6 +1699,363 @@ export default function ChatWindowPage() {
       setDismissedDraftMessageIds((prev) => (prev.includes(messageId) ? prev : [...prev, messageId]));
     }
   }
+
+  const handleStreamEvent = useCallback((item: ChatStreamEvent, baseSessionId: string, turnId: string) => {
+    const eventSessionId = String(item.data.sessionId || baseSessionId);
+    if (item.event === 'session_created') {
+      return;
+    }
+    if (item.event === 'scheduled_task_draft') {
+      const draft = item.data as unknown as ScheduledTaskDraftRead;
+      if (draft.should_create) {
+        setScheduledDrafts((prev) => ({ ...prev, [eventSessionId]: draft }));
+      }
+      return;
+    }
+    if (item.event === 'skill_state') {
+      const skills = Array.isArray(item.data.currentSkills) ? item.data.currentSkills : [];
+      skills
+        .map((entry) => normalizeTraceSkill(entry))
+        .filter((entry): entry is TraceSkill => Boolean(entry))
+        .forEach((skill) => {
+          const label = streamSkillLabel(item.data, skill);
+          upsertTraceLine(turnId, {
+            id: `skill_${skill.skillId}_${skill.state || 'active'}`,
+            kind: 'skill',
+            text: `${label} ${skill.name || skill.skillId}`,
+            detail: skill.stepId ? `当前步骤 ${skill.stepId}` : undefined,
+            state: skill.state === 'suspended' ? 'completed' : 'running',
+          });
+      });
+      return;
+    }
+    if (item.event === 'general_skill_state') {
+      const skillName = typeof item.data.skillName === 'string' ? item.data.skillName : '';
+      const skillSlug = typeof item.data.skillSlug === 'string' ? item.data.skillSlug : '';
+      upsertTraceLine(turnId, {
+        id: `general_skill_${skillSlug || skillName || 'selected'}`,
+        kind: 'skill',
+        text: `选择技能 ${skillName || skillSlug || ''}`.trim(),
+        detail: skillSlug || undefined,
+        state: 'running',
+      });
+      return;
+    }
+    if (item.event === 'general_skill_trace') {
+      const phase = typeof item.data.phase === 'string' ? item.data.phase : 'trace';
+      const text = typeof item.data.message === 'string' ? item.data.message : '执行技能';
+      const code = typeof item.data.code === 'string' ? item.data.code : '';
+      const runtime = typeof item.data.runtime === 'string' ? item.data.runtime : '';
+      const attempt = typeof item.data.attempt === 'number' || typeof item.data.attempt === 'string'
+        ? String(item.data.attempt)
+        : '';
+      const trace = getTurnTrace(turnId);
+      const sequence = trace.lines.length;
+      const isOutputChunk = phase === 'stdout_chunk' || phase === 'stderr_chunk';
+      const id = isOutputChunk
+        ? `general_skill_trace_${phase}_${attempt || 'current'}`
+        : `general_skill_trace_${phase}_${attempt || sequence}`;
+      const rawDetail = generalSkillTraceDetail(item.data, phase);
+      const existing = trace.lines.find((line) => line.id === id);
+      const previousOutput = existing?.output || existing?.detail || '';
+      const detail = isOutputChunk && previousOutput && rawDetail
+        ? `${previousOutput}${rawDetail}`
+        : rawDetail;
+      const outputInfo = generalSkillTraceOutput(item.data, phase, detail);
+      const codePhases = new Set([
+        'plan_created',
+        'attempt_started',
+        'running_code',
+        'stdout_chunk',
+        'stderr_chunk',
+        'code_finished',
+        'code_timeout',
+      ]);
+      const runningPhases = new Set([
+        'planning',
+        'repair_planning',
+        'attempt_started',
+        'running_code',
+        'reflection_reviewing',
+        'replying',
+      ]);
+      upsertTraceLine(turnId, {
+        id,
+        kind: codePhases.has(phase) ? 'code' : 'decision',
+        text,
+        detail: outputInfo.output ? undefined : detail,
+        code: code || undefined,
+        language: code ? (runtime === 'bash' ? 'bash' : 'python') : undefined,
+        output: outputInfo.output,
+        outputLanguage: outputInfo.language,
+        outputTitle: outputInfo.title,
+        state: runningPhases.has(phase) ? 'running' : phase.includes('failed') || phase === 'code_timeout' ? 'failed' : 'completed',
+        collapsible: Boolean(code || outputInfo.output),
+      });
+      return;
+    }
+    if (item.event === 'knowledge_result') {
+      upsertTraceLine(turnId, {
+        id: 'knowledge_lookup',
+        kind: 'knowledge',
+        text: '读取业务资料',
+        detail: knowledgeResultTraceDetail(item.data),
+        state: 'completed',
+      });
+      return;
+    }
+    if (item.event === 'tool_result') {
+      const tool = normalizeTraceTool(item.data);
+      if (tool) {
+        upsertTraceLine(turnId, {
+          id: `tool_${tool.toolCallId || tool.rawToolName || tool.toolId}`,
+          kind: 'tool',
+          text: `${tool.isError ? '工具调用失败' : '调用工具'} ${tool.toolName}`,
+          detail: toolTraceDetail(tool),
+          state: tool.isError ? 'failed' : 'completed',
+        });
+      }
+      return;
+    }
+    if (item.event === 'agent_loop_continued' || item.event === 'agent_loop_completed') {
+      const iteration = typeof item.data.iteration === 'number' || typeof item.data.iteration === 'string'
+        ? String(item.data.iteration)
+        : '1';
+      const targetTool = typeof item.data.target_tool_name === 'string' ? item.data.target_tool_name : '';
+      upsertTraceLine(turnId, {
+        id: `decision_stepping_tool_continuation_${iteration}`,
+        kind: 'decision',
+        text: '重新分析执行动作',
+        detail: item.event === 'agent_loop_continued'
+          ? (targetTool ? `决定继续调用工具 ${targetTool}` : '决定继续调用工具')
+          : '判断无需继续调用工具',
+        state: 'completed',
+      });
+      if (item.event === 'agent_loop_completed') {
+        upsertTraceLine(turnId, {
+          id: 'decision_responding',
+          kind: 'decision',
+          text: '组织回复',
+          state: 'running',
+        });
+      }
+      return;
+    }
+    if (item.event === 'reflection_decision') {
+      const needsRetry = item.data.needs_retry === true;
+      const skipped = item.data.skipped === true;
+      upsertTraceLine(turnId, {
+        id: 'reflection',
+        kind: 'decision',
+        text: skipped ? '反思已关闭' : needsRetry ? '反思后继续尝试' : '反思通过',
+        detail: reflectionTraceDetail(item.data),
+        state: 'completed',
+      });
+      return;
+    }
+    if (item.event === 'status') {
+      const eventStream = getStreamSlot(eventSessionId);
+      const phase = typeof item.data.phase === 'string' ? item.data.phase : 'thinking';
+      eventStream.phase = publicStreamPhase(item.data);
+      if (phase === 'tool' && typeof item.data.tool_name === 'string') {
+        const toolCallId = typeof item.data.tool_call_id === 'string' ? item.data.tool_call_id : item.data.tool_name;
+        upsertTraceLine(turnId, {
+          id: `tool_${toolCallId}`,
+          kind: 'tool',
+          text: `正在调用工具 ${item.data.tool_name}`,
+          state: 'running',
+        });
+      } else if (phase === 'routing') {
+        upsertTraceLine(turnId, { id: 'decision_router', kind: 'decision', text: '判断意图', state: 'running' });
+      } else if (isKnowledgeTracePhase(phase)) {
+        upsertTraceLine(turnId, {
+          id: 'knowledge_lookup',
+          kind: 'knowledge',
+          text: knowledgeTraceText(item.data),
+          detail: knowledgeTraceDetail(item.data),
+          state: phase === 'evidence_pack' || phase.startsWith('no_') || phase === 'okf_only' ? 'completed' : 'running',
+        });
+      } else if (phase === 'stepping') {
+        const repairReason = typeof item.data.repair_reason === 'string' ? item.data.repair_reason : 'main';
+        const iteration = typeof item.data.iteration === 'number' || typeof item.data.iteration === 'string'
+          ? `_${item.data.iteration}`
+          : '';
+        upsertTraceLine(turnId, {
+          id: `decision_stepping_${repairReason}${iteration}`,
+          kind: 'decision',
+          text: repairReason === 'main' ? '分析执行动作' : '重新分析执行动作',
+          state: 'running',
+        });
+      } else if (phase === 'reflecting') {
+        upsertTraceLine(turnId, { id: 'reflection', kind: 'decision', text: '正在反思', state: 'running' });
+      } else if (phase === 'responding') {
+        upsertTraceLine(turnId, { id: 'decision_responding', kind: 'decision', text: '组织回复', state: 'running' });
+      } else if (phase === 'scheduled_task_draft') {
+        upsertTraceLine(turnId, {
+          id: 'scheduled_task_draft',
+          kind: 'decision',
+          text: '生成自动任务草案',
+          detail: '来自本条消息的定时项目，等待用户确认后启用',
+          state: 'completed',
+        });
+      } else if (phase !== 'received') {
+        upsertTraceLine(turnId, {
+          id: `decision_status_${phase}`,
+          kind: 'decision',
+          text: eventStream.phase,
+          state: 'running',
+        });
+      } else {
+        upsertTraceLine(turnId, { id: 'thinking', kind: 'thinking', text: '正在思考', state: 'running' });
+      }
+      notifyStream();
+      return;
+    }
+    if (item.event === 'stream_replace') {
+      const next = typeof item.data.content === 'string' ? item.data.content : '';
+      const eventStream = getStreamSlot(eventSessionId);
+      if (eventStream.timer) {
+        window.clearTimeout(eventStream.timer);
+        eventStream.timer = null;
+      }
+      eventStream.accumulated = next;
+      updateStreaming(eventSessionId, next, turnId);
+      notifyStream();
+      return;
+    }
+    if (item.event === 'stream_delta' || item.event === 'token') {
+      const piece = typeof item.data.content === 'string' ? item.data.content : '';
+      if (!piece) return;
+      const eventStream = getStreamSlot(eventSessionId);
+      eventStream.accumulated += piece;
+      if (!eventStream.timer) {
+        eventStream.timer = window.setTimeout(() => {
+          eventStream.timer = null;
+          updateStreaming(eventSessionId, eventStream.accumulated, turnId);
+        }, 100);
+      }
+      return;
+    }
+    if (item.event === 'stream_end') {
+      finishTrace(turnId);
+      upsertTraceLine(turnId, { id: 'thinking', kind: 'thinking', text: '执行记录', state: 'completed' });
+      finalizeStreaming(eventSessionId);
+      return;
+    }
+    if (item.event === 'complete' || item.event === 'done') {
+      const result = item.data as ChatTurnResponse;
+      const userIntent = typeof result.router_decision?.user_intent === 'string' ? result.router_decision.user_intent : '';
+      const decisionReason = typeof result.router_decision?.reason === 'string' ? result.router_decision.reason : '';
+      if (userIntent || decisionReason) {
+        upsertTraceLine(turnId, {
+          id: 'decision_router',
+          kind: 'decision',
+          text: userIntent ? `判断意图 ${userIntent}` : '完成技能判断',
+          detail: decisionReason || undefined,
+          state: 'completed',
+        });
+      }
+      finishTrace(turnId);
+      upsertTraceLine(turnId, { id: 'thinking', kind: 'thinking', text: '执行记录', state: 'completed' });
+      finalizeStreaming(eventSessionId);
+      setLastTurn(result);
+      const eventStream = getStreamSlot(eventSessionId);
+      eventStream.loading = false;
+      eventStream.phase = '';
+      eventStream.abortController = null;
+      notifyStream();
+      loadSessions();
+      window.setTimeout(() => {
+        loadMessages(eventSessionId);
+        loadTraces(eventSessionId);
+      }, 250);
+    }
+    if (item.event === 'error') {
+      const eventStream = getStreamSlot(eventSessionId);
+      eventStream.loading = false;
+      eventStream.phase = '';
+      eventStream.abortController = null;
+      finishTrace(turnId, true);
+      appendRealtime(eventSessionId, {
+        id: `scheduled_error_${Date.now()}`,
+        role: 'assistant',
+        content: typeof item.data.message === 'string' ? item.data.message : '自动任务执行失败。',
+        created_at: new Date().toISOString(),
+        isError: true,
+      });
+      notifyStream();
+    }
+  }, [
+    appendRealtime,
+    finalizeStreaming,
+    finishTrace,
+    getStreamSlot,
+    getTurnTrace,
+    loadMessages,
+    loadSessions,
+    loadTraces,
+    notifyStream,
+    updateStreaming,
+    upsertTraceLine,
+  ]);
+
+  const pollScheduledSessionEvents = useCallback((id: string) => {
+    return api
+      .get<ChatSessionEventRead[]>(`/api/chat/sessions/${id}/events?tenant_id=${tenantId}`)
+      .then((events) => {
+        if (!events.length) return;
+        const slot = getSlot(id);
+        const stream = getStreamSlot(id);
+        const hasCompletedAssistant = slot.serverMessages.some((item) => item.role === 'assistant');
+        const unseenEvents = events.filter((event) => !scheduledEventIdsRef.current.has(event.id));
+        if (!unseenEvents.length) return;
+        const sessionRow = sessions.find((item) => item.id === id);
+        const hasTerminalEvent = unseenEvents.some((event) => event.event === 'complete' || event.event === 'done' || event.event === 'error');
+        if (!stream.loading && (hasCompletedAssistant || (Boolean(sessionRow?.summary) && hasTerminalEvent))) {
+          unseenEvents.forEach((event) => scheduledEventIdsRef.current.add(event.id));
+          return;
+        }
+        unseenEvents.forEach((event) => {
+          scheduledEventIdsRef.current.add(event.id);
+          const turnId = scheduledTurnId(id, event.run_id);
+          if (!stream.turnId) {
+            stream.turnId = turnId;
+          }
+          if (!stream.loading && event.event !== 'complete' && event.event !== 'done' && event.event !== 'stream_end') {
+            stream.loading = true;
+            stream.phase = '执行中';
+            updateStreaming(id, stream.accumulated || '', turnId);
+            notifyStream();
+          }
+          handleStreamEvent({ event: event.event, data: event.data || {} }, id, turnId);
+        });
+      })
+      .catch((error) => {
+        if (isAuthError(error)) {
+          clearAuthSession();
+          navigate('/login', { replace: true });
+        }
+      });
+  }, [
+    getSlot,
+    getStreamSlot,
+    handleStreamEvent,
+    navigate,
+    notifyStream,
+    scheduledTurnId,
+    sessions,
+    tenantId,
+    updateStreaming,
+  ]);
+
+  useEffect(() => {
+    if (!auth || !sessionId) return;
+    void pollScheduledSessionEvents(sessionId);
+    const timer = window.setInterval(() => {
+      void pollScheduledSessionEvents(sessionId);
+    }, currentStream.loading ? 1000 : 1800);
+    return () => window.clearInterval(timer);
+  }, [auth, currentStream.loading, pollScheduledSessionEvents, sessionId]);
 
   async function send() {
     if (!input.trim() || !sessionId) return;
@@ -1985,12 +2451,13 @@ export default function ChatWindowPage() {
             const sessionSummary = itemStream.loading
               ? itemStream.phase || '正在思考'
               : session.summary || session.last_agent_question || '新任务';
+            const hasUnread = sessionHasUnreadReply(session, sessionReadTimes, sessionId);
             return (
               <div
                 key={session.id}
                 role="button"
                 tabIndex={0}
-                className={`session-card ${session.id === sessionId ? 'active' : ''}`}
+                className={`session-card ${session.id === sessionId ? 'active' : ''} ${hasUnread ? 'unread' : ''}`}
                 onClick={() => navigate(`/${session.id}`)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' || event.key === ' ') {
@@ -2009,6 +2476,7 @@ export default function ChatWindowPage() {
                       {sessionSummary}
                     </div>
                   </div>
+                  {hasUnread && <span className="session-unread-dot" aria-label="未读回复" />}
                   <div className="session-actions">
                     <Button
                       className="session-action"

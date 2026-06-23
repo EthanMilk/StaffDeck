@@ -556,6 +556,7 @@ textarea,
   width: 100%;
   min-width: 0;
   display: block;
+  position: relative;
   padding: 10px;
   text-align: left;
   color: inherit;
@@ -590,6 +591,24 @@ textarea,
   align-items: center;
   gap: 6px;
   min-width: 0;
+}
+
+.session-unread-dot {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.18);
+}
+
+.chat-layout.sidebar-collapsed .session-unread-dot {
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
 }
 
 .chat-layout.sidebar-collapsed .session-card-content,
@@ -2742,6 +2761,11 @@ textarea,
 :root[data-theme='dark'] .session-card.active {
   background: rgba(228, 185, 118, 0.11);
   border-color: rgba(228, 185, 118, 0.32);
+}
+
+:root[data-theme='dark'] .session-unread-dot {
+  background: #34d399;
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.18), 0 0 18px rgba(52, 211, 153, 0.22);
 }
 
 :root[data-theme='dark'] .composer-v2,

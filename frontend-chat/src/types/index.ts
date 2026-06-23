@@ -65,6 +65,15 @@ export type ChatTurnResponse = {
   session_state: Record<string, unknown>;
 };
 
+export type ChatSessionEventRead = {
+  id: string;
+  created_at: string;
+  run_id?: string;
+  seq?: number;
+  event: string;
+  data: Record<string, unknown>;
+};
+
 export type TraceLineRead = {
   id: string;
   kind: 'thinking' | 'decision' | 'skill' | 'tool' | 'code' | 'knowledge';

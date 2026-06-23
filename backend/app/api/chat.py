@@ -442,6 +442,35 @@ def list_chat_messages(
     return [message_read(row, feedback_by_message.get(row.id)) for row in rows]
 
 
+@router.get("/sessions/{session_id}/events")
+def list_chat_session_events(
+    session_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> list[dict]:
+    _ensure_request_tenant(tenant_id, current_user)
+    _get_user_chat_session(db, tenant_id, current_user.id, session_id)
+    rows = db.exec(
+        select(AgentEvent)
+        .where(
+            AgentEvent.tenant_id == tenant_id,
+            AgentEvent.session_id == session_id,
+            AgentEvent.event_type == "scheduled_task_stream_event",
+        )
+        .order_by(AgentEvent.created_at)
+        .limit(500)
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "created_at": row.created_at.isoformat(),
+            **(row.payload_json or {}),
+        }
+        for row in rows
+    ]
+
+
 @router.post("/messages/{message_id}/feedback")
 def upsert_message_feedback(
     message_id: str,
