@@ -1977,59 +1977,61 @@ export default function ChatWindowPage() {
             />
           </div>
         </div>
-        <div className="session-section-label">任务记录</div>
-        {sessions.map((session) => {
-          const itemStream = getStreamSlot(session.id);
-          const sessionTitle = session.title || session.id;
-          const sessionSummary = itemStream.loading
-            ? itemStream.phase || '正在思考'
-            : session.summary || session.last_agent_question || '新任务';
-          return (
-            <div
-              key={session.id}
-              role="button"
-              tabIndex={0}
-              className={`session-card ${session.id === sessionId ? 'active' : ''}`}
-              onClick={() => navigate(`/${session.id}`)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' || event.key === ' ') {
-                  event.preventDefault();
-                  navigate(`/${session.id}`);
-                }
-              }}
-            >
-              <div className="session-card-content">
-                <div className="session-meta">
-                  <div className="session-title" title={sessionTitle}>
-                    <span className="session-title-icon"><SessionChatIcon /></span>
-                    <span className="session-title-text">{sessionTitle}</span>
+        <div className="session-list-scroll">
+          <div className="session-section-label">任务记录</div>
+          {sessions.map((session) => {
+            const itemStream = getStreamSlot(session.id);
+            const sessionTitle = session.title || session.id;
+            const sessionSummary = itemStream.loading
+              ? itemStream.phase || '正在思考'
+              : session.summary || session.last_agent_question || '新任务';
+            return (
+              <div
+                key={session.id}
+                role="button"
+                tabIndex={0}
+                className={`session-card ${session.id === sessionId ? 'active' : ''}`}
+                onClick={() => navigate(`/${session.id}`)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    navigate(`/${session.id}`);
+                  }
+                }}
+              >
+                <div className="session-card-content">
+                  <div className="session-meta">
+                    <div className="session-title" title={sessionTitle}>
+                      <span className="session-title-icon"><SessionChatIcon /></span>
+                      <span className="session-title-text">{sessionTitle}</span>
+                    </div>
+                    <div className="session-summary" title={sessionSummary}>
+                      {sessionSummary}
+                    </div>
                   </div>
-                  <div className="session-summary" title={sessionSummary}>
-                    {sessionSummary}
+                  <div className="session-actions">
+                    <Button
+                      className="session-action"
+                      size="small"
+                      type="text"
+                      icon={<EditOutlined />}
+                      aria-label="重命名任务"
+                      onClick={(event) => openRename(event, session)}
+                    />
+                    <Button
+                      className="session-action danger"
+                      size="small"
+                      type="text"
+                      icon={<DeleteOutlined />}
+                      aria-label="删除任务"
+                      onClick={(event) => confirmDelete(event, session)}
+                    />
                   </div>
-                </div>
-                <div className="session-actions">
-                  <Button
-                    className="session-action"
-                    size="small"
-                    type="text"
-                    icon={<EditOutlined />}
-                    aria-label="重命名任务"
-                    onClick={(event) => openRename(event, session)}
-                  />
-                  <Button
-                    className="session-action danger"
-                    size="small"
-                    type="text"
-                    icon={<DeleteOutlined />}
-                    aria-label="删除任务"
-                    onClick={(event) => confirmDelete(event, session)}
-                  />
                 </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
         <div className="chat-agent-dock">
           <EmployeeAvatarMark profile={displayedProfile} fallback="UR" className="chat-agent-mark" />
           <div className="chat-agent-main">

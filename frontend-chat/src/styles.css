@@ -191,16 +191,34 @@ textarea,
   display: flex;
   flex-direction: column;
   gap: 8px;
-  overflow: auto;
+  overflow: hidden;
   backdrop-filter: blur(18px) saturate(1.2);
 }
 
-.session-pane .session-card:last-of-type {
+.session-list-scroll {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
+
+.session-list-scroll .session-card:last-of-type {
   margin-bottom: 8px;
 }
 
 .chat-layout.sidebar-collapsed .session-pane {
   padding: 12px 8px;
+  align-items: center;
+  overflow-x: hidden;
+}
+
+.chat-layout.sidebar-collapsed .session-list-scroll {
   align-items: center;
   overflow-x: hidden;
 }
@@ -527,6 +545,10 @@ textarea,
   font-size: 11px;
   font-weight: 760;
   padding: 10px 8px 4px;
+}
+
+.session-list-empty {
+  padding: 12px 0;
 }
 
 .session-card {
