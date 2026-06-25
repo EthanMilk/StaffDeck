@@ -929,6 +929,25 @@ class AgentLoop:
         chat_session: ChatSession | None = None
         reply = ""
         memory_model_config: ModelConfig | None = None
+        turn_finalized = False
+
+        def finalize_turn_once(
+            target_session: ChatSession,
+            final_reply: str,
+            final_step_result: StepAgentResult | None = None,
+            final_source_message: str | None = None,
+        ) -> None:
+            nonlocal turn_finalized
+            if turn_finalized:
+                return
+            self._finalize_turn(
+                target_session,
+                request.tenant_id,
+                final_reply,
+                final_step_result,
+                final_source_message,
+            )
+            turn_finalized = True
 
         try:
             chat_session = self._get_or_create_session(request)
@@ -1009,7 +1028,7 @@ class AgentLoop:
                     yield self._stream_event("stream_delta", chat_session, {"content": chunk})
                     self._pace_stream()
                 yield self._stream_event("stream_end", chat_session, {})
-                self._finalize_turn(chat_session, request.tenant_id, reply, step_result, request.message)
+                finalize_turn_once(chat_session, reply, step_result, request.message)
                 self.db.commit()
                 self.db.refresh(chat_session)
                 result = ChatTurnResponse(
@@ -1138,7 +1157,7 @@ class AgentLoop:
                             self._pace_stream()
                 yield self._stream_event("stream_end", chat_session, {})
                 memory_recent_messages = self._recent_messages(chat_session) if memory_model_config else []
-                self._finalize_turn(chat_session, request.tenant_id, reply, step_result, request.message)
+                finalize_turn_once(chat_session, reply, step_result, request.message)
                 self.db.commit()
                 self.db.refresh(chat_session)
                 if memory_model_config:
@@ -1200,7 +1219,7 @@ class AgentLoop:
                     yield self._stream_event("stream_delta", chat_session, {"content": chunk})
                     self._pace_stream()
                 yield self._stream_event("stream_end", chat_session, {})
-                self._finalize_turn(chat_session, request.tenant_id, reply, step_result, request.message)
+                finalize_turn_once(chat_session, reply, step_result, request.message)
                 self.db.commit()
                 self.db.refresh(chat_session)
                 result = ChatTurnResponse(
@@ -1364,6 +1383,15 @@ class AgentLoop:
                 )
             yield self._stream_event("stream_end", chat_session, {})
 
+        except GeneratorExit:
+            recoverable_reply = reply.strip() or (step_result.reply or "").strip()
+            if chat_session and recoverable_reply and not turn_finalized:
+                try:
+                    finalize_turn_once(chat_session, recoverable_reply, step_result, request.message)
+                    self.db.commit()
+                except Exception:
+                    self.db.rollback()
+            raise
         except AgentLoopPreconditionError as exc:
             chat_session = chat_session or self._get_or_create_session(request)
             self.events.record(
@@ -1410,7 +1438,7 @@ class AgentLoop:
         if not chat_session:
             chat_session = self._get_or_create_session(request)
         memory_recent_messages = self._recent_messages(chat_session) if memory_model_config else []
-        self._finalize_turn(chat_session, request.tenant_id, reply, step_result, request.message)
+        finalize_turn_once(chat_session, reply, step_result, request.message)
         self.db.commit()
         self.db.refresh(chat_session)
         if memory_model_config:
@@ -4688,6 +4716,10 @@ class AgentLoop:
         reply = self._normalize_reply_citation_labels(reply, metadata.get("knowledge_citations"))
         reply = self._strip_trailing_citation_summary(reply)
         metadata = self._metadata_with_reply_citations(metadata, reply)
+        if not chat_session.title and source_message:
+            fallback_title = self._fallback_session_title_from_message(source_message)
+            if fallback_title:
+                chat_session.title = fallback_title
         chat_session.summary = f"最近回复：{reply[:120]}"
         self._append_message(tenant_id, chat_session.id, "assistant", reply, metadata=metadata)
         event_payload: dict[str, Any] = {"reply": reply}
@@ -4705,6 +4737,13 @@ class AgentLoop:
             "session_state_changed",
             public_session(chat_session).model_dump(),
         )
+
+    @staticmethod
+    def _fallback_session_title_from_message(message: str) -> str:
+        title = re.sub(r"\s+", " ", message).strip().strip("。！？!?")
+        if not title:
+            return ""
+        return title[:28]
 
     def _normalize_reply_citation_labels(self, reply: str, citations: object) -> str:
         if not isinstance(citations, list) or not citations:

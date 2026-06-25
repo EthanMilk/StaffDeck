@@ -98,7 +98,7 @@ export default function DashboardPage({
       api.get<GeneralSkillRead[]>(`/api/enterprise/general-skills?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
       api.get<KnowledgeBaseRead[]>(`/api/enterprise/knowledge-bases?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
       api.get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${TENANT_ID}`),
-      api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}`),
+      api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
       api.get<EnterpriseChatSessionRead[]>(`/api/enterprise/sessions?tenant_id=${TENANT_ID}`),
       api.get<FeedbackSummaryRead>(`/api/enterprise/feedback/summary?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
       api.get<ScheduledTaskRead[]>(`/api/enterprise/scheduled-tasks?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
@@ -138,7 +138,7 @@ export default function DashboardPage({
           }
         }
       })
-      .catch((error) => message.error(error instanceof Error ? error.message : '加载员工信息失败'));
+      .catch((error) => message.error(error instanceof Error ? error.message : '加载数字员工档案失败'));
   }, [agentId, currentUser, forceOverall, isAdmin]);
 
   const selectedAgent = (forceOverall ? agents.find((item) => item.is_overall) : agents.find((item) => item.id === agentId))
@@ -191,12 +191,12 @@ export default function DashboardPage({
     return (
       <div className="page dashboard-page">
         <Card className="empty-workspace-card">
-          <Typography.Title level={3}>个人员工工作域</Typography.Title>
+          <Typography.Title level={3}>还没有数字员工</Typography.Title>
           <Typography.Paragraph type="secondary">
-            当前员工账号还没有可用员工。请联系管理员创建员工，或在员工广场开放员工后再派发任务。
+            点击左下角「新建数字员工」开始创建，或前往员工广场选择已发布的员工。
           </Typography.Paragraph>
           <Space>
-            <Button type="primary" onClick={() => navigate('/enterprise/agents')}>查看员工名册</Button>
+            <Button type="primary" onClick={() => navigate('/enterprise/agents')}>查看我的数字员工</Button>
             <Button onClick={() => navigate('/enterprise/feedback')}>查看对话日志</Button>
           </Space>
         </Card>
@@ -208,14 +208,14 @@ export default function DashboardPage({
     return (
       <div className="page dashboard-page">
         <div className="page-title">
-          <Typography.Title level={3}>开放广场平台</Typography.Title>
+          <Typography.Title level={3}>开放广场</Typography.Title>
         </div>
         <section className="employee-hero org-hero">
           <div>
-            <span className="section-kicker">开放广场平台</span>
-            <Typography.Title level={2}>开放广场平台</Typography.Title>
+            <span className="section-kicker">开放广场</span>
+            <Typography.Title level={2}>开放广场</Typography.Title>
             <Typography.Paragraph>
-              统一管理可开放复用的业务资料、已掌握技能、SOP 和工具箱，让员工账号从开放广场平台学习并形成自己的服务能力。
+              汇集所有可共享的 SOP、知识库、技能和工具，新建数字员工时可以从这里复制配置作为起点。
             </Typography.Paragraph>
           </div>
           <div className="employee-hero-metrics">
@@ -226,8 +226,8 @@ export default function DashboardPage({
         </section>
         <div className="org-dashboard-grid">
           <DashboardStat title="SOP" value={skills.length} icon={<ProfileOutlined />} />
-          <DashboardStat title="已掌握技能" value={generalSkills.length} icon={<ApiOutlined />} />
-          <DashboardStat title="业务资料" value={knowledgeBases.length} icon={<BookOutlined />} />
+          <DashboardStat title="技能" value={generalSkills.length} icon={<ApiOutlined />} />
+          <DashboardStat title="知识库" value={knowledgeBases.length} icon={<BookOutlined />} />
           <DashboardStat title="可用工具" value={tools.filter((item) => item.enabled).length} icon={<ToolOutlined />} />
           <DashboardStat title="SOP 调用" value={totalCalls} icon={<MessageOutlined />} />
           <DashboardStat title="好评" value={positiveFeedback || feedbackSummary?.up_count || 0} icon={<DashboardOutlined />} />
@@ -256,7 +256,7 @@ export default function DashboardPage({
     ? selectedAgent.metadata.system_prompt_summary
     : '';
   const systemSummary = compactSummary(
-    selectedAgent.persona_prompt || systemPromptSummary || selectedAgent.description || `${employee.roleName}，负责接收任务、调用业务资料、执行 SOP 并沉淀对话质量反馈。`,
+    selectedAgent.persona_prompt || systemPromptSummary || selectedAgent.description || `${employee.roleName}，负责接收任务、调用知识库、执行 SOP 并沉淀对话质量反馈。`,
     132,
   );
   const goToLogs = () => navigate(`/enterprise/feedback?agent_id=${encodeURIComponent(selectedAgent.id)}`);
@@ -264,7 +264,7 @@ export default function DashboardPage({
   const capabilityCards = [
     {
       route: '/enterprise/general-skills',
-      title: '已掌握技能',
+      title: '技能',
       tone: 'skill',
       count: activeGeneralSkills.length,
       body: activeGeneralSkills.slice(0, 3).map((item) => item.name).join(' / ') || '暂无启用技能',
@@ -272,7 +272,7 @@ export default function DashboardPage({
     },
     {
       route: '/enterprise/skills',
-      title: 'SOP管理',
+      title: 'SOP',
       tone: 'sop',
       count: activeSkills.length,
       body: activeSkills.slice(0, 3).map((item) => item.name).join(' / ') || '暂无启用 SOP',
@@ -280,15 +280,15 @@ export default function DashboardPage({
     },
     {
       route: '/enterprise/knowledge',
-      title: '业务资料',
+      title: '知识库',
       tone: 'knowledge',
       count: activeKnowledge.length,
-      body: activeKnowledge.slice(0, 3).map((item) => item.name).join(' / ') || '暂无业务资料',
+      body: activeKnowledge.slice(0, 3).map((item) => item.name).join(' / ') || '暂无知识库',
       icon: <FileTextOutlined />,
     },
     {
       route: '/enterprise/tools',
-      title: '工具箱',
+      title: '工具',
       tone: 'tools',
       count: activeTools.length,
       body: activeTools.slice(0, 3).map((item) => item.display_name || item.name).join(' / ') || '暂无启用工具',
@@ -304,10 +304,10 @@ export default function DashboardPage({
     },
     {
       route: '/enterprise/scheduled-tasks',
-      title: '自动任务',
+      title: '定时任务',
       tone: 'tasks',
       count: activeScheduledTasks.length,
-      body: activeScheduledTasks.slice(0, 2).map((item) => item.title).join(' / ') || '暂无启用自动任务',
+      body: activeScheduledTasks.slice(0, 2).map((item) => item.title).join(' / ') || '暂无启用定时任务',
       icon: <ClockCircleOutlined />,
     },
   ];
@@ -356,9 +356,9 @@ export default function DashboardPage({
         </div>
         <div className="employee-home-side">
           <MetricTile label="SOP" value={activeSkills.length} />
-          <MetricTile label="已掌握技能" value={activeGeneralSkills.length} />
+          <MetricTile label="技能" value={activeGeneralSkills.length} />
           <MetricTile label="资料" value={activeKnowledge.length} />
-          <MetricTile label="自动任务" value={activeScheduledTasks.length} />
+          <MetricTile label="定时任务" value={activeScheduledTasks.length} />
         </div>
       </section>
       <EmployeeAvatarEditor
@@ -385,7 +385,7 @@ export default function DashboardPage({
         <div className="employee-work-metrics">
           <ClickableMetric label="今日对话" value={todayRounds} suffix="轮" onClick={goToLogs} />
           <ClickableMetric label="累计对话" value={replyStats.total} onClick={goToLogs} />
-          <ClickableMetric label="收获好评率" value={positiveRate} suffix="%" onClick={goToLogs} />
+          <ClickableMetric label="好评率" value={positiveRate} suffix="%" onClick={goToLogs} />
           <ClickableMetric label="差评率" value={negativeRate} suffix="%" onClick={goToLogs} />
         </div>
         <ConversationHeatmap byDay={replyStats.byDay} />
@@ -395,11 +395,10 @@ export default function DashboardPage({
         <div className="employee-section-head">
           <div>
             <Typography.Title level={4}>
-              <span className="employee-memory-heading"><ClockCircleOutlined /> 自动任务</span>
+              <span className="employee-memory-heading"><ClockCircleOutlined /> 定时任务</span>
             </Typography.Title>
-            <Typography.Text type="secondary">到点后新建独立任务记录，并交给该员工按现有能力执行。</Typography.Text>
           </div>
-          <Button type="link" onClick={() => navigate('/enterprise/scheduled-tasks')}>查看详情 <RightOutlined /></Button>
+          <Button type="link" onClick={() => navigate('/enterprise/scheduled-tasks')}>全部任务 <RightOutlined /></Button>
         </div>
         {employeeScheduledTasks.length ? (
           <div className="employee-task-list">
@@ -415,7 +414,7 @@ export default function DashboardPage({
             ))}
           </div>
         ) : (
-          <div className="employee-memory-empty">暂无自动任务</div>
+          <div className="employee-memory-empty">暂无定时任务</div>
         )}
       </section>
 
@@ -423,9 +422,8 @@ export default function DashboardPage({
         <div className="employee-section-head">
           <div>
             <Typography.Title level={4}>
-              <span className="employee-memory-heading"><DatabaseOutlined /> 成长轨迹</span>
+              <span className="employee-memory-heading"><DatabaseOutlined /> 成长记录</span>
             </Typography.Title>
-            <Typography.Text type="secondary">员工学习 SOP、掌握技能、升级流程和学会工具的时间线。</Typography.Text>
           </div>
         </div>
         {growthItems.length ? (
@@ -446,7 +444,7 @@ export default function DashboardPage({
             ))}
           </div>
         ) : (
-          <div className="employee-memory-empty">暂无学习记录</div>
+          <div className="employee-memory-empty">暂无成长记录</div>
         )}
       </section>
 
@@ -454,7 +452,7 @@ export default function DashboardPage({
         <div className="employee-section-head">
           <div>
             <Typography.Title level={4}>能力与工具</Typography.Title>
-            <Typography.Text type="secondary">员工当前能用什么、会走哪些流程、能引用哪些业务资料。</Typography.Text>
+            <Typography.Text type="secondary">员工当前能用什么、会走哪些流程、能引用哪些知识库。</Typography.Text>
           </div>
         </div>
         <div className="employee-capability-grid">
@@ -595,11 +593,11 @@ function growthTimeline(
     const evolved = Boolean(item.branch_head_version && item.branch_head_version !== item.branch_base_version);
     events.push({
       id: `sop-${item.id}`,
-      kind: evolved ? 'SOP 进化' : '学习 SOP',
+      kind: evolved ? 'SOP 进化' : '新增 SOP',
       title: item.name,
       description: evolved
-        ? `员工版本从 ${item.branch_base_version || item.version} 进化到 ${item.branch_head_version || item.version}`
-        : `学习 ${item.version} 版业务流程`,
+        ? `本地版本从 ${item.branch_base_version || item.version} 进化到 ${item.branch_head_version || item.version}`
+        : `新增 ${item.version} 版业务流程`,
       timestamp: stableGrowthTimestamp(item),
       icon: <ProfileOutlined />,
       tone: 'mint',
@@ -610,9 +608,9 @@ function growthTimeline(
     const upgraded = isMeaningfullyUpdated(item.created_at, item.updated_at);
     events.push({
       id: `general-${item.id}`,
-      kind: upgraded ? '技能升级' : '学会技能',
+      kind: upgraded ? '技能升级' : '新增技能',
       title: item.name,
-      description: upgraded ? '技能说明、权限或运行配置有更新' : `掌握 ${item.slug} 通用能力`,
+      description: upgraded ? '技能说明、权限或运行配置有更新' : `新增 ${item.slug} 通用能力`,
       timestamp: stableGrowthTimestamp(item),
       icon: <CheckCircleOutlined />,
       tone: 'teal',
@@ -622,9 +620,9 @@ function growthTimeline(
   tools.slice(0, 3).forEach((item) => {
     events.push({
       id: `tool-${item.id}`,
-      kind: '学会工具',
+      kind: '新增工具',
       title: item.display_name || item.name,
-      description: `${item.bucket || '工具箱'} · ${item.tool_type.toUpperCase()} 调用能力`,
+      description: `${item.bucket || '工具'} · ${item.tool_type.toUpperCase()} 调用能力`,
       timestamp: stableGrowthTimestamp(item),
       icon: <ToolOutlined />,
       tone: 'green',

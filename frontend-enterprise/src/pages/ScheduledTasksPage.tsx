@@ -115,7 +115,7 @@ export default function ScheduledTasksPage() {
       setRows(result);
       setAllRunRows(runResult);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载自动任务失败');
+      message.error(error instanceof Error ? error.message : '加载定时任务失败');
     } finally {
       setLoading(false);
     }
@@ -123,11 +123,11 @@ export default function ScheduledTasksPage() {
 
   async function toggleStatus(row: ScheduledTaskRead) {
     if (row.status === 'archived') {
-      message.warning('已删除的自动任务不能重新启用');
+      message.warning('已删除的定时任务不能重新启用');
       return;
     }
     if (row.status === 'completed') {
-      message.warning('已完成的自动任务可编辑后重新启用');
+      message.warning('已完成的定时任务可编辑后重新启用');
       return;
     }
     const nextStatus = row.status === 'active' ? 'paused' : 'active';
@@ -136,16 +136,16 @@ export default function ScheduledTasksPage() {
         tenant_id: TENANT_ID,
         status: nextStatus,
       });
-      message.success(nextStatus === 'active' ? '自动任务已启用' : '自动任务已暂停');
+      message.success(nextStatus === 'active' ? '定时任务已启用' : '定时任务已暂停');
       await load();
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '更新自动任务失败');
+      message.error(error instanceof Error ? error.message : '更新定时任务失败');
     }
   }
 
   async function runNow(row: ScheduledTaskRead) {
     if (row.status === 'archived') {
-      message.warning('已删除的自动任务不能运行');
+      message.warning('已删除的定时任务不能运行');
       return;
     }
     const hide = message.loading('正在创建执行记录...', 0);
@@ -164,7 +164,7 @@ export default function ScheduledTasksPage() {
 
   function remove(row: ScheduledTaskRead) {
     Modal.confirm({
-      title: `删除自动任务「${row.title}」？`,
+      title: `删除定时任务「${row.title}」？`,
       content: '删除后不再唤醒该员工，历史执行记录会继续保留。',
       okText: '删除',
       okButtonProps: { danger: true },
@@ -200,8 +200,7 @@ export default function ScheduledTasksPage() {
 
   function openChatSession(sessionId?: string) {
     if (!sessionId) return;
-    const chatOrigin = window.location.origin.replace(/:5173$/, ':5174');
-    window.open(`${chatOrigin}/chat/${sessionId}`, '_blank', 'noopener,noreferrer');
+    window.open(`/chat/${sessionId}`, '_blank', 'noopener,noreferrer');
   }
 
   const activeRows = rows.filter((item) => item.status === 'active');
@@ -226,7 +225,7 @@ export default function ScheduledTasksPage() {
         {
           key: 'run',
           icon: <PlayCircleOutlined />,
-          label: '现在运行',
+          label: '立即执行',
         },
         ...(!isCompleted ? [
           {
@@ -266,7 +265,7 @@ export default function ScheduledTasksPage() {
   };
   const columns: ColumnsType<ScheduledTaskRead> = [
     {
-      title: '自动任务',
+      title: '定时任务',
       dataIndex: 'title',
       width: 220,
       render: (value, row) => (
@@ -296,7 +295,7 @@ export default function ScheduledTasksPage() {
   ];
   const runColumns: ColumnsType<ScheduledTaskRunRead> = [
     {
-      title: '自动任务',
+      title: '定时任务',
       dataIndex: 'task_title',
       width: '18%',
       render: (value, row) => (
@@ -304,7 +303,7 @@ export default function ScheduledTasksPage() {
           <Typography.Text strong ellipsis className="scheduled-task-run-title">
             {value || row.scheduled_task_id}
           </Typography.Text>
-          {row.task_status === 'archived' && <Tag>任务定义已删除</Tag>}
+          {row.task_status === 'archived' && <Tag>任务已删除</Tag>}
         </Space>
       ),
     },
@@ -338,7 +337,7 @@ export default function ScheduledTasksPage() {
     <div className="page scheduled-task-page">
       <div className="page-title">
         <div>
-          <Typography.Title level={3}>自动任务</Typography.Title>
+          <Typography.Title level={3}>定时任务</Typography.Title>
           <Typography.Paragraph type="secondary">
             为当前员工设置周期或一次性任务，到点后会新建独立执行记录，并按员工已有 SOP、技能、资料和工具执行。
           </Typography.Paragraph>
@@ -364,14 +363,14 @@ export default function ScheduledTasksPage() {
 
       {selectedAgent?.is_overall ? (
         <Card className="empty-workspace-card">
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="开放广场平台不设置自动任务，请切换到具体数字员工。" />
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="请先选择一个数字员工再配置定时任务。" />
         </Card>
       ) : (
         <>
           <div className="scheduled-task-stats">
             <TaskStat title="当前员工" value={selectedAgent ? employeeDisplayName(selectedAgent) : '未选择'} />
-            <TaskStat title="待完成任务" value={activeRows.length} />
-            <TaskStat title="已完成任务" value={taskRows.filter((item) => item.status === 'completed').length} />
+            <TaskStat title="待完成" value={activeRows.length} />
+            <TaskStat title="已完成" value={taskRows.filter((item) => item.status === 'completed').length} />
             <TaskStat title="执行记录" value={allRunRows.length} />
           </div>
           <Card
@@ -410,7 +409,7 @@ export default function ScheduledTasksPage() {
                   <div className="scheduled-task-mobile-actions">{renderTaskActions(row)}</div>
                 </article>
               )) : (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无自动任务" />
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无定时任务" />
               )}
             </div>
             <Table
@@ -447,7 +446,7 @@ export default function ScheduledTasksPage() {
                     <Typography.Text strong>{row.task_title || row.scheduled_task_id}</Typography.Text>
                     <TaskRunStatusTag status={row.status} />
                   </div>
-                  {row.task_status === 'archived' && <Tag className="scheduled-task-mobile-tag">任务定义已删除</Tag>}
+                  {row.task_status === 'archived' && <Tag className="scheduled-task-mobile-tag">任务已删除</Tag>}
                   <div className="scheduled-task-mobile-meta">
                     <span><b>计划时间</b>{formatTime(row.scheduled_for)}</span>
                     <span><b>完成时间</b>{formatTime(row.finished_at)}</span>
@@ -543,7 +542,7 @@ function ScheduledTaskEditorPage({ mode }: { mode: 'new' | 'edit' }) {
         setAgentId(row.agent_id);
         form.setFieldsValue(taskToFormValues(row));
       })
-      .catch((error) => message.error(error instanceof Error ? error.message : '加载自动任务失败'))
+      .catch((error) => message.error(error instanceof Error ? error.message : '加载定时任务失败'))
       .finally(() => setLoading(false));
   }, [form, isEdit, taskId]);
 
@@ -577,7 +576,7 @@ function ScheduledTaskEditorPage({ mode }: { mode: 'new' | 'edit' }) {
       const saved = isEdit && taskId
         ? await api.put<ScheduledTaskRead>(`/api/enterprise/scheduled-tasks/${taskId}`, payload)
         : await api.post<ScheduledTaskRead>('/api/enterprise/scheduled-tasks', payload);
-      message.success('自动任务已保存');
+      message.success('定时任务已保存');
       if (!isEdit) {
         navigate(`/enterprise/scheduled-tasks/${saved.id}/edit`, { replace: true });
       } else {
@@ -585,7 +584,7 @@ function ScheduledTaskEditorPage({ mode }: { mode: 'new' | 'edit' }) {
         form.setFieldsValue(taskToFormValues(saved));
       }
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '保存自动任务失败');
+      message.error(error instanceof Error ? error.message : '保存定时任务失败');
     } finally {
       setLoading(false);
     }
@@ -595,13 +594,13 @@ function ScheduledTaskEditorPage({ mode }: { mode: 'new' | 'edit' }) {
     <div className="page scheduled-task-editor-page">
       <div className="page-title">
         <div>
-          <Typography.Title level={3}>{isEdit ? '编辑自动任务' : '新建空白自动任务'}</Typography.Title>
+          <Typography.Title level={3}>{isEdit ? '编辑定时任务' : '新建空白定时任务'}</Typography.Title>
           <Typography.Text type="secondary">
             保存后到点会拉起一个新的执行记录，并交给当前员工按 SOP、技能、资料和工具执行。
           </Typography.Text>
         </div>
         <Space>
-          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/enterprise/scheduled-tasks')}>返回自动任务</Button>
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/enterprise/scheduled-tasks')}>返回定时任务</Button>
           <Button type="primary" icon={<SaveOutlined />} loading={loading} onClick={() => void save()}>保存</Button>
         </Space>
       </div>
@@ -612,10 +611,10 @@ function ScheduledTaskEditorPage({ mode }: { mode: 'new' | 'edit' }) {
               <Input prefix={<ClockCircleOutlined />} maxLength={80} placeholder="例如：每日售后质量复盘" />
             </Form.Item>
             <Form.Item name="prompt" label="每次执行时交给员工的任务" rules={[{ required: true, message: '请填写任务描述' }]}>
-              <Input.TextArea rows={7} maxLength={10000} showCount placeholder="描述员工每次被唤醒后要完成什么，可以包含拆解要求、输出格式和注意事项。" />
+              <Input.TextArea rows={7} maxLength={10000} showCount placeholder="描述员工每次执行时需要做什么，可以包含拆解要求、输出格式和注意事项。" />
             </Form.Item>
             <Form.Item name="description" label="内部备注">
-              <Input.TextArea rows={3} placeholder="可选，用于说明这个自动任务的来源和目的" />
+              <Input.TextArea rows={3} placeholder="可选，用于说明这个定时任务的来源和目的" />
             </Form.Item>
           </Card>
           <Card className="editor-card" title="唤醒计划">

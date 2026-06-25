@@ -11,7 +11,9 @@ export const API_BASE = resolveApiBase();
 export const TENANT_ID = import.meta.env.VITE_TENANT_ID || 'tenant_demo';
 export const USER_ID = import.meta.env.VITE_USER_ID || 'user_demo';
 export const SHOW_DEBUG = import.meta.env.VITE_SHOW_DEBUG === 'true';
-const AUTH_STORAGE_KEY = 'skill_agent_auth';
+const AUTH_STORAGE_KEY = 'ultrarag_auth';
+const LEGACY_CHAT_AUTH_STORAGE_KEY = 'skill_agent_auth';
+const LEGACY_ENTERPRISE_AUTH_STORAGE_KEY = 'ultrarag_enterprise_auth';
 
 export type AuthUser = {
   id: string;
@@ -72,7 +74,33 @@ export const api = {
 };
 
 export function getAuthSession(): AuthSession | null {
-  const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+  const current = readStoredSession(AUTH_STORAGE_KEY);
+  if (current) return current;
+
+  const legacyEnterprise = readStoredSession(LEGACY_ENTERPRISE_AUTH_STORAGE_KEY);
+  const legacyChat = readStoredSession(LEGACY_CHAT_AUTH_STORAGE_KEY);
+  const migrated = legacyEnterprise || legacyChat;
+  if (migrated) {
+    setAuthSession(migrated);
+    return migrated;
+  }
+  return null;
+}
+
+export function setAuthSession(session: AuthSession): void {
+  window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
+  window.localStorage.removeItem(LEGACY_CHAT_AUTH_STORAGE_KEY);
+  window.localStorage.removeItem(LEGACY_ENTERPRISE_AUTH_STORAGE_KEY);
+}
+
+export function clearAuthSession(): void {
+  window.localStorage.removeItem(AUTH_STORAGE_KEY);
+  window.localStorage.removeItem(LEGACY_CHAT_AUTH_STORAGE_KEY);
+  window.localStorage.removeItem(LEGACY_ENTERPRISE_AUTH_STORAGE_KEY);
+}
+
+function readStoredSession(key: string): AuthSession | null {
+  const raw = window.localStorage.getItem(key);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as AuthSession;
@@ -81,14 +109,6 @@ export function getAuthSession(): AuthSession | null {
   } catch {
     return null;
   }
-}
-
-export function setAuthSession(session: AuthSession): void {
-  window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(session));
-}
-
-export function clearAuthSession(): void {
-  window.localStorage.removeItem(AUTH_STORAGE_KEY);
 }
 
 function authHeader(): Record<string, string> {

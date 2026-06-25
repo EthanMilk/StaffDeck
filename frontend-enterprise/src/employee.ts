@@ -45,7 +45,7 @@ export const EMPLOYEE_AVATAR_PRESETS: EmployeeAvatarPreset[] = [
 export const EMPLOYEE_TEMPLATES: EmployeeTemplate[] = [
   {
     key: 'service-specialist',
-    roleName: '在线客服员工',
+    roleName: '在线客服',
     avatarText: '客',
     avatarTone: 'teal',
     avatarPreset: 'service-orbit',
@@ -56,7 +56,7 @@ export const EMPLOYEE_TEMPLATES: EmployeeTemplate[] = [
   },
   {
     key: 'after-sales',
-    roleName: '售后处理员工',
+    roleName: '售后处理',
     avatarText: '售',
     avatarTone: 'copper',
     avatarPreset: 'after-sales-seal',
@@ -67,18 +67,18 @@ export const EMPLOYEE_TEMPLATES: EmployeeTemplate[] = [
   },
   {
     key: 'knowledge-operator',
-    roleName: '知识运营员工',
+    roleName: '知识运营',
     avatarText: '知',
     avatarTone: 'olive',
     avatarPreset: 'knowledge-node',
-    description: '负责维护业务资料、沉淀证据片段并推动 SOP 学习。',
+    description: '负责维护知识库、沉淀引用来源并推动 SOP。',
     workStyles: ['结构化整理', '可追溯', '持续学习'],
-    expertiseTags: ['资料维护', '证据片段', 'SOP 学习'],
+    expertiseTags: ['资料维护', '引用来源', 'SOP'],
     workModes: ['解析文档', '组织结构', '发现缺口'],
   },
   {
     key: 'commerce-guide',
-    roleName: '商品导购员工',
+    roleName: '商品导购',
     avatarText: '导',
     avatarTone: 'blue',
     avatarPreset: 'commerce-compass',
@@ -117,7 +117,7 @@ export function employeeProfile(agent?: AgentProfileRead | null): EmployeeProfil
     : 'preset';
   return {
     roleKey: stringFromMeta(metadata, 'role_key') || template?.key || '',
-    roleName: isOverall ? '开放广场平台' : stringFromMeta(metadata, 'role_name') || template?.roleName || '待补充岗位',
+    roleName: isOverall ? '开放广场' : stringFromMeta(metadata, 'role_name') || template?.roleName || '待补充岗位',
     avatarText: isOverall ? '广' : stringFromMeta(metadata, 'avatar_text') || preset.text || template?.avatarText || '员',
     avatarTone: isOverall ? 'overall' : stringFromMeta(metadata, 'avatar_tone') || preset.tone || template?.avatarTone || 'teal',
     avatarKind: isOverall ? 'preset' : avatarKind,
@@ -132,7 +132,7 @@ export function employeeProfile(agent?: AgentProfileRead | null): EmployeeProfil
 
 export function employeeDisplayName(agent?: AgentProfileRead | null): string {
   if (!agent) return '数字员工';
-  if (agent.is_overall) return '开放广场平台';
+  if (agent.is_overall) return '开放广场';
   return (agent.name || '数字员工').replace(/智能体/g, '员工');
 }
 
@@ -165,15 +165,15 @@ export function employeeBlankMetadata(currentMetadata: Record<string, unknown> =
   return {
     ...currentMetadata,
     blank_onboarding: true,
-    role_key: '',
-    role_name: '待补充岗位',
-    avatar_text: '员',
-    avatar_tone: 'teal',
-    avatar_kind: 'preset',
-    avatar_preset: EMPLOYEE_AVATAR_PRESETS[0].key,
+    role_key: stringFromMeta(currentMetadata, 'role_key'),
+    role_name: stringFromMeta(currentMetadata, 'role_name') || '待补充职位',
+    avatar_text: stringFromMeta(currentMetadata, 'avatar_text') || '员',
+    avatar_tone: stringFromMeta(currentMetadata, 'avatar_tone') || 'teal',
+    avatar_kind: stringFromMeta(currentMetadata, 'avatar_kind') || 'preset',
+    avatar_preset: stringFromMeta(currentMetadata, 'avatar_preset') || EMPLOYEE_AVATAR_PRESETS[0].key,
     onboarded_at: currentMetadata.onboarded_at || new Date().toISOString().slice(0, 10),
-    work_styles: [],
-    expertise_tags: [],
-    work_modes: [],
+    work_styles: asStringArray(currentMetadata.work_styles),
+    expertise_tags: asStringArray(currentMetadata.expertise_tags),
+    work_modes: asStringArray(currentMetadata.work_modes),
   };
 }

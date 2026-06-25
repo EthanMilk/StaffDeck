@@ -36,6 +36,18 @@ class GeneralSkillClawHubImportRequest(BaseModel):
     status: str = "published"
 
 
+class GeneralSkillPackageUploadRequest(BaseModel):
+    tenant_id: str
+    agent_id: Optional[str] = None
+    filename: str
+    content_base64: str
+    name: Optional[str] = None
+    slug: Optional[str] = None
+    description: Optional[str] = None
+    homepage: Optional[str] = None
+    status: str = "published"
+
+
 class GeneralSkillRead(BaseModel):
     id: str
     tenant_id: str

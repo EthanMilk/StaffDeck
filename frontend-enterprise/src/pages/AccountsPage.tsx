@@ -40,7 +40,7 @@ export default function AccountsPage() {
       const result = await api.get<EmployeeAccount[]>(`/api/auth/users?tenant_id=${TENANT_ID}`);
       setRows(result);
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '加载员工账号失败');
+      message.error(error instanceof Error ? error.message : '加载账号失败');
     } finally {
       setLoading(false);
     }
@@ -75,11 +75,11 @@ export default function AccountsPage() {
         password,
         display_name: createDraft.displayName.trim() || username,
       });
-      message.success('员工账号已创建');
+      message.success('账号已创建');
       setCreateOpen(false);
       await load();
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '创建员工账号失败');
+      message.error(error instanceof Error ? error.message : '创建账号失败');
     } finally {
       setCreating(false);
     }
@@ -94,11 +94,11 @@ export default function AccountsPage() {
         display_name: draft.displayName.trim() || editing.username,
         password: draft.password.trim() || undefined,
       });
-      message.success('员工账号已更新');
+      message.success('账号已更新');
       setEditing(null);
       await load();
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '保存员工账号失败');
+      message.error(error instanceof Error ? error.message : '保存账号失败');
     } finally {
       setSaving(false);
     }
@@ -106,18 +106,18 @@ export default function AccountsPage() {
 
   function remove(row: EmployeeAccount) {
     Modal.confirm({
-      title: `删除员工账号「${row.username}」？`,
-      content: '删除账号后，该账号将无法登录；已发布到员工广场的员工不会自动删除。',
+      title: `删除账号「${row.username}」？`,
+      content: '删除后该账号无法登录，但其创建的数字员工仍然保留。',
       okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
         try {
           await api.delete(`/api/auth/users/${row.id}?tenant_id=${TENANT_ID}`);
-          message.success('员工账号已删除');
+          message.success('账号已删除');
           await load();
         } catch (error) {
-          message.error(error instanceof Error ? error.message : '删除员工账号失败');
+          message.error(error instanceof Error ? error.message : '删除账号失败');
         }
       },
     });
@@ -125,7 +125,7 @@ export default function AccountsPage() {
 
   const columns: ColumnsType<EmployeeAccount> = [
     {
-      title: '员工账号',
+      title: '用户名',
       dataIndex: 'username',
       width: 180,
       ellipsis: true,
@@ -136,7 +136,7 @@ export default function AccountsPage() {
         </span>
       ),
     },
-    { title: '显示名称', dataIndex: 'display_name', width: 200, ellipsis: true, render: (value, row) => value || row.username },
+    { title: '显示名', dataIndex: 'display_name', width: 200, ellipsis: true, render: (value, row) => value || row.username },
     { title: '创建时间', dataIndex: 'created_at', width: 180, render: formatTime },
     { title: '最近更新', dataIndex: 'updated_at', width: 180, render: formatTime },
     {
@@ -158,17 +158,14 @@ export default function AccountsPage() {
     <div className="page accounts-page">
       <div className="page-title">
         <div>
-          <Typography.Title level={3}>员工平台</Typography.Title>
-          <Typography.Paragraph type="secondary">
-            管理可登录数字员工运营台的员工账号，支持修改展示名、重置密码和删除账号。
-          </Typography.Paragraph>
+          <Typography.Title level={3}>账号管理</Typography.Title>
         </div>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>
       </div>
       <Card
         className="data-card"
-        title="员工账号"
-        extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新增员工账号</Button>}
+        title="账号列表"
+        extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建账号</Button>}
       >
         <Table
           rowKey="id"
@@ -180,7 +177,7 @@ export default function AccountsPage() {
         />
       </Card>
       <Modal
-        title="新增员工账号"
+        title="新建账号"
         open={createOpen}
         onCancel={() => setCreateOpen(false)}
         onOk={() => void saveCreate()}
@@ -191,19 +188,19 @@ export default function AccountsPage() {
       >
         <div className="agent-editor-form">
           <label>
-            登录账号
+            用户名
             <Input
               value={createDraft.username}
               onChange={(event) => setCreateDraft((prev) => ({ ...prev, username: event.target.value }))}
-              placeholder="例如 service_a"
+              placeholder="例如 zhang_san"
             />
           </label>
           <label>
-            显示名称
+            显示名
             <Input
               value={createDraft.displayName}
               onChange={(event) => setCreateDraft((prev) => ({ ...prev, displayName: event.target.value }))}
-              placeholder="例如 华东客服主管"
+              placeholder="例如 张三"
             />
           </label>
           <label>
@@ -216,7 +213,7 @@ export default function AccountsPage() {
         </div>
       </Modal>
       <Modal
-        title={editing ? `编辑员工账号：${editing.username}` : '编辑员工账号'}
+        title={editing ? `编辑账号：${editing.username}` : '编辑账号'}
         open={Boolean(editing)}
         onCancel={() => setEditing(null)}
         onOk={() => void saveEdit()}
@@ -227,7 +224,7 @@ export default function AccountsPage() {
       >
         <div className="agent-editor-form">
           <label>
-            显示名称
+            显示名
             <Input
               value={draft.displayName}
               onChange={(event) => setDraft((prev) => ({ ...prev, displayName: event.target.value }))}
@@ -237,7 +234,7 @@ export default function AccountsPage() {
             新密码
             <Input.Password
               value={draft.password}
-              placeholder="留空表示不修改密码"
+              placeholder="不修改请留空"
               onChange={(event) => setDraft((prev) => ({ ...prev, password: event.target.value }))}
             />
           </label>

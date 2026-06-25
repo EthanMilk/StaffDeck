@@ -17,14 +17,14 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env
-uvicorn app.main:app --reload
+.venv/bin/uvicorn single_port_app:app --host 127.0.0.1 --port 5173
 ```
 
-Swagger UI: `http://localhost:8000/docs`
+Swagger UI: `http://localhost:5173/docs`
 
 `CORS_ORIGINS` controls the allowed frontend origins. The root `scripts/dev_up.sh`
-sets local origins by default and can add public tunnel origins with
-`PUBLIC_ENTERPRISE_ORIGIN` and `PUBLIC_CHAT_ORIGIN`.
+sets the local single-port origin by default and can add a public tunnel origin with
+`PUBLIC_APP_ORIGIN`.
 
 ## General Skill Code Runtime
 

@@ -29,7 +29,7 @@ import {
   type EnterpriseAuthSession,
 } from './auth';
 import EmployeeAvatar from './components/EmployeeAvatar';
-import { EMPLOYEE_TEMPLATES, employeeBlankMetadata, employeeDisplayName, employeeMetadataFromTemplate, employeeProfile } from './employee';
+import { employeeBlankMetadata, employeeDisplayName, employeeProfile } from './employee';
 import AccountsPage from './pages/AccountsPage';
 import AgentsPage from './pages/AgentsPage';
 import DashboardPage from './pages/DashboardPage';
@@ -54,7 +54,7 @@ type AgentCreateMode = 'copy' | 'blank';
 type AgentCreateFormState = {
   name: string;
   description: string;
-  roleKey: string;
+  roleName: string;
   sourceMode: AgentCreateMode;
   copyFromAgentId: string;
 };
@@ -67,7 +67,7 @@ type LoginFormState = {
 const EMPTY_AGENT_FORM: AgentCreateFormState = {
   name: '',
   description: '',
-  roleKey: EMPLOYEE_TEMPLATES[0].key,
+  roleName: '',
   sourceMode: 'copy',
   copyFromAgentId: '',
 };
@@ -88,7 +88,7 @@ function Shell({
   const [agentCreateOpen, setAgentCreateOpen] = useState(false);
   const [agentForm, setAgentForm] = useState<AgentCreateFormState>(EMPTY_AGENT_FORM);
   const isAdmin = isEnterpriseAdmin(auth.user);
-  const accountRoleLabel = isAdmin ? '管理员' : '员工账号';
+  const accountRoleLabel = isAdmin ? '管理员' : '';
   const isDistillRoute = location.pathname === '/enterprise/skills/distill';
   const selected = location.pathname === '/enterprise'
     ? '/enterprise/dashboard'
@@ -181,19 +181,23 @@ function Shell({
   const scopeAgents = agents.filter(canUseAgentScope);
   const sourceAgents = isAdmin ? scopeAgents : scopeAgents.filter((item) => !item.is_overall);
   const isOverallScope = Boolean(selectedAgent?.is_overall);
+  const selectedAgentName = employeeDisplayName(selectedAgent);
+  const selectedAgentCaption = selectedAgent?.is_overall
+    ? '开放广场'
+    : employeeProfile(selectedAgent).roleName;
   const navItems = [
-    { key: '/enterprise/platform', icon: <GlobalOutlined />, label: '开放广场平台' },
-    ...(!isOverallScope ? [{ key: '/enterprise/agents', icon: <TeamOutlined />, label: '员工名册' }] : []),
+    { key: '/enterprise/platform', icon: <GlobalOutlined />, label: '开放广场' },
+    ...(!isOverallScope ? [{ key: '/enterprise/agents', icon: <TeamOutlined />, label: '我的数字员工' }] : []),
     ...(!isOverallScope
       ? [
           {
             key: 'employees',
             type: 'group' as const,
-            label: '数字员工平台',
+            label: '当前数字员工',
             children: [
-              { key: '/enterprise/dashboard', icon: <DashboardOutlined />, label: '员工信息' },
-              { key: '/enterprise/scheduled-tasks', icon: <ClockCircleOutlined />, label: '自动任务' },
-              { key: '/enterprise/memories', icon: <DatabaseOutlined />, label: '成长轨迹' },
+              { key: '/enterprise/dashboard', icon: <DashboardOutlined />, label: '数字员工档案' },
+              { key: '/enterprise/scheduled-tasks', icon: <ClockCircleOutlined />, label: '定时任务' },
+              { key: '/enterprise/memories', icon: <DatabaseOutlined />, label: '记忆' },
               { key: '/enterprise/feedback', icon: <CommentOutlined />, label: '对话日志' },
             ],
           },
@@ -202,13 +206,13 @@ function Shell({
     {
       key: 'employee-capabilities',
       type: 'group' as const,
-      label: isOverallScope ? '开放广场平台' : '员工能力',
+      label: isOverallScope ? '开放广场' : '数字员工能力',
       children: [
         ...(isOverallScope ? [{ key: '/enterprise/agents', icon: <TeamOutlined />, label: '数字员工广场' }] : []),
-        { key: '/enterprise/knowledge', icon: <FileSearchOutlined />, label: isOverallScope ? '业务知识广场' : '业务资料' },
-        { key: '/enterprise/general-skills', icon: <SolutionOutlined />, label: isOverallScope ? '通用技能广场' : '已掌握技能' },
-        { key: '/enterprise/skills', icon: <ProfileOutlined />, label: isOverallScope ? 'SOP广场' : 'SOP管理' },
-        { key: '/enterprise/tools', icon: <ToolOutlined />, label: isOverallScope ? '工具广场' : '工具箱' },
+        { key: '/enterprise/knowledge', icon: <FileSearchOutlined />, label: isOverallScope ? '知识库广场' : '知识库' },
+        { key: '/enterprise/general-skills', icon: <SolutionOutlined />, label: isOverallScope ? '技能广场' : '技能' },
+        { key: '/enterprise/skills', icon: <ProfileOutlined />, label: isOverallScope ? 'SOP 广场' : 'SOP' },
+        { key: '/enterprise/tools', icon: <ToolOutlined />, label: isOverallScope ? '工具广场' : '工具' },
       ],
     },
     ...(isAdmin
@@ -216,10 +220,10 @@ function Shell({
           {
             key: 'employee-accounts',
             type: 'group' as const,
-            label: '员工平台',
+            label: '系统',
             children: [
-              { key: '/enterprise/accounts', icon: <IdcardOutlined />, label: '员工账号' },
-              { key: '/enterprise/models', icon: <ApiOutlined />, label: '模型配置' },
+              { key: '/enterprise/accounts', icon: <IdcardOutlined />, label: '账号管理' },
+              { key: '/enterprise/models', icon: <ApiOutlined />, label: '模型' },
             ],
           },
         ]
@@ -241,17 +245,31 @@ function Shell({
   async function saveAgentCreateModal() {
     const name = agentForm.name.trim();
     if (!name) {
-      message.error('请填写员工姓名');
+      message.error('请填写数字员工姓名');
       return;
     }
-    const template = EMPLOYEE_TEMPLATES.find((item) => item.key === agentForm.roleKey) || EMPLOYEE_TEMPLATES[0];
     const isBlankOnboarding = agentForm.sourceMode === 'blank';
-    const description = isBlankOnboarding ? agentForm.description.trim() : agentForm.description.trim() || template.description;
+    const sourceAgent = agentForm.copyFromAgentId
+      ? sourceAgents.find((item) => item.id === agentForm.copyFromAgentId)
+      : undefined;
+    const sourceMetadata = !isBlankOnboarding && sourceAgent?.metadata ? sourceAgent.metadata : {};
+    const sourceRoleName = sourceAgent && !sourceAgent.is_overall ? employeeProfile(sourceAgent).roleName : '';
+    const roleName = agentForm.roleName.trim()
+      || (!isBlankOnboarding ? sourceRoleName : '')
+      || '待补充职位';
+    const description = agentForm.description.trim()
+      || (!isBlankOnboarding ? sourceAgent?.description || String(sourceMetadata.system_prompt_summary || '') : '')
+      || '';
     const baseMetadata = {
+      ...sourceMetadata,
       system_prompt_summary: description,
       owner_user_id: auth.user.id,
       owner_username: auth.user.username,
       owner_display_name: auth.user.display_name || auth.user.username,
+      role_key: '',
+      role_name: roleName,
+      onboarded_at: new Date().toISOString().slice(0, 10),
+      blank_onboarding: isBlankOnboarding,
     };
     const created = await api.post<AgentProfileRead>('/api/enterprise/agents', {
       tenant_id: TENANT_ID,
@@ -259,9 +277,7 @@ function Shell({
       description,
       source_mode: agentForm.sourceMode,
       copy_from_agent_id: agentForm.sourceMode === 'copy' ? agentForm.copyFromAgentId || undefined : undefined,
-      metadata: isBlankOnboarding
-        ? employeeBlankMetadata(baseMetadata)
-        : employeeMetadataFromTemplate(agentForm.roleKey, baseMetadata),
+      metadata: isBlankOnboarding ? employeeBlankMetadata(baseMetadata) : baseMetadata,
     });
     await loadAgents();
     changeAgentScope(created.id);
@@ -275,7 +291,7 @@ function Shell({
           <span className="brand-mark">UR</span>
           <div>
             <div className="brand-title">UltraRAG4</div>
-            <div className="brand-subtitle">数字员工运营台</div>
+            <div className="brand-subtitle">数字员工管理台</div>
           </div>
         </div>
         <Menu
@@ -289,22 +305,22 @@ function Shell({
           <button
             type="button"
             className="agent-dock-mark"
-            title="新员工入职"
-            aria-label="新员工入职"
+            title="新建数字员工"
+            aria-label="新建数字员工"
             onClick={openCreateAgentModal}
           >
             <EmployeeAvatar agent={selectedAgent} size={36} />
           </button>
           <div className="agent-dock-main">
-            <div className="agent-dock-label">当前员工</div>
+            <div className="agent-dock-label">当前数字员工</div>
             <Select
               className="agent-dock-select"
               value={selectedAgentId || undefined}
-              placeholder="选择员工"
+              placeholder="选择数字员工"
               popupMatchSelectWidth={260}
               options={scopeAgents.map((agent) => ({
                 value: agent.id,
-                label: agent.is_overall ? '开放广场平台' : `${employeeDisplayName(agent)} · ${employeeProfile(agent).roleName}`,
+                label: agent.is_overall ? '开放广场' : `${employeeDisplayName(agent)} · ${employeeProfile(agent).roleName}`,
               }))}
               onChange={changeAgentScope}
               popupRender={(menu) => (
@@ -312,7 +328,7 @@ function Shell({
                   {menu}
                   <div className="agent-dock-dropdown-footer" onMouseDown={(event) => event.preventDefault()}>
                     <Button type="text" block icon={<PlusOutlined />} onClick={openCreateAgentModal}>
-                      新员工入职
+                      新建数字员工
                     </Button>
                   </div>
                 </>
@@ -324,13 +340,18 @@ function Shell({
       <Layout>
         <Header className="topbar">
           <div className="topbar-scope">
-            <Typography.Text strong>{employeeDisplayName(selectedAgent)}</Typography.Text>
-            <div className="topbar-subtitle">
-              {selectedAgent?.is_overall ? '开放广场平台' : `${employeeProfile(selectedAgent).roleName} · ${selectedAgent?.description || '员工工作域'}`}
+            <Typography.Text className="topbar-agent-name" strong title={selectedAgentName}>
+              {selectedAgentName}
+            </Typography.Text>
+            <div className="topbar-subtitle" title={selectedAgentCaption}>
+              {selectedAgentCaption}
             </div>
           </div>
           <div className="topbar-actions">
-            <span className="account-chip">{accountRoleLabel}</span>
+            <Button icon={<CommentOutlined />} onClick={() => { window.location.href = '/chat/'; }}>
+              聊天端
+            </Button>
+            {accountRoleLabel && <span className="account-chip">{accountRoleLabel}</span>}
             <ThemeToggleButton />
             <Button icon={<LogoutOutlined />} onClick={onLogout} aria-label="退出登录" />
           </div>
@@ -370,16 +391,16 @@ function Shell({
         </Content>
       </Layout>
       <Modal
-        title="新员工入职"
+        title="新建数字员工"
         open={agentCreateOpen}
         onCancel={() => setAgentCreateOpen(false)}
         onOk={saveAgentCreateModal}
-        okText="保存"
+        okText="创建"
         cancelText="取消"
       >
         <div className="agent-editor-form">
           <label>
-            入职方式
+            创建方式
             <Radio.Group
               className="agent-create-mode"
               value={agentForm.sourceMode}
@@ -388,68 +409,62 @@ function Shell({
                 setAgentForm((prev) => ({
                   ...prev,
                   sourceMode,
-                  roleKey: sourceMode === 'blank' ? '' : prev.roleKey || EMPLOYEE_TEMPLATES[0]?.key || '',
                   copyFromAgentId: sourceMode === 'blank' ? '' : prev.copyFromAgentId,
                 }));
               }}
               optionType="button"
               buttonStyle="solid"
               options={[
-                { label: isAdmin ? '继承开放广场平台' : '从员工广场学习', value: 'copy' },
-                { label: '空白入职', value: 'blank' },
+                { label: '从广场复制', value: 'copy' },
+                { label: '从空白开始', value: 'blank' },
               ]}
+            />
+          </label>
+          <label>
+            职位
+            <Input
+              value={agentForm.roleName}
+              onChange={(event) => setAgentForm((prev) => ({ ...prev, roleName: event.target.value }))}
+              placeholder="例如 在线客服员工、知识运营员工"
             />
           </label>
           {agentForm.sourceMode === 'copy' && (
             <label>
-              岗位模板
+              复制来源
               <Select
-                value={agentForm.roleKey}
-                options={EMPLOYEE_TEMPLATES.map((template) => ({
-                  value: template.key,
-                  label: `${template.avatarText} · ${template.roleName}`,
+                value={agentForm.copyFromAgentId || undefined}
+                placeholder="选择复制来源"
+                options={sourceAgents.map((agent) => ({
+                  value: agent.id,
+                  label: agent.is_overall
+                    ? '开放广场'
+                    : `${employeeDisplayName(agent)} · ${employeeProfile(agent).roleName}${isGalleryEmployee(agent) ? ' · 广场' : ''}`,
                 }))}
                 onChange={(value) => setAgentForm((prev) => {
-                  const template = EMPLOYEE_TEMPLATES.find((item) => item.key === value);
+                  const nextSource = sourceAgents.find((item) => item.id === value);
                   return {
                     ...prev,
-                    roleKey: value,
-                    description: prev.description || template?.description || '',
+                    copyFromAgentId: value,
+                    roleName: prev.roleName || (nextSource && !nextSource.is_overall ? employeeProfile(nextSource).roleName : ''),
                   };
                 })}
               />
             </label>
           )}
-          {agentForm.sourceMode === 'copy' && (
-            <label>
-              学习来源
-              <Select
-                value={agentForm.copyFromAgentId || undefined}
-                placeholder={isAdmin ? '选择开放广场平台或已有员工' : '选择个人员工或员工广场员工'}
-                options={sourceAgents.map((agent) => ({
-                  value: agent.id,
-                  label: agent.is_overall
-                    ? '开放广场平台'
-                    : `${employeeDisplayName(agent)} · ${employeeProfile(agent).roleName}${isGalleryEmployee(agent) ? ' · 员工广场' : ''}`,
-                }))}
-                onChange={(value) => setAgentForm((prev) => ({ ...prev, copyFromAgentId: value }))}
-              />
-            </label>
-          )}
           {agentForm.sourceMode === 'blank' && (
-            <div className="agent-definition-note">空白入职不会继承业务资料、SOP、技能、岗位人设或模型绑定。</div>
+            <div className="agent-definition-note">从空白开始创建，不继承任何已有配置。</div>
           )}
           <label>
-            员工姓名
+            数字员工姓名
             <Input value={agentForm.name} onChange={(event) => setAgentForm((prev) => ({ ...prev, name: event.target.value }))} />
           </label>
           <label>
-            岗位人设摘要
+            岗位描述
             <Input.TextArea
               rows={3}
               value={agentForm.description}
               onChange={(event) => setAgentForm((prev) => ({ ...prev, description: event.target.value }))}
-              placeholder="概括这个员工的岗位边界、服务风格和执行重点"
+              placeholder="概括这个数字员工的岗位边界、服务风格和执行重点"
             />
           </label>
         </div>
@@ -495,9 +510,6 @@ function EnterpriseLogin({
         <span className="brand-mark">UR</span>
         <div>
           <Typography.Title level={2}>UltraRAG4 数字员工运营台</Typography.Title>
-          <Typography.Paragraph type="secondary">
-            登录后进入对应的数字员工工作域。
-          </Typography.Paragraph>
         </div>
         <div className="enterprise-login-form">
           <label>

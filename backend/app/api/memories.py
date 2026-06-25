@@ -4,8 +4,8 @@ from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.db.models import MemoryRecord
-from app.memory.service import memory_matches_agent, memory_read, memory_rows_for_read
+from app.db.models import ChatSession, MemoryRecord
+from app.memory.service import memory_agent_id, memory_matches_agent, memory_read, memory_rows_for_read
 from app.security.tenant import ensure_tenant
 
 
@@ -33,10 +33,40 @@ def list_memories(
         statement = statement.where(MemoryRecord.username == username)
     fetch_limit = limit * 5 if agent_id else limit
     rows = list(db.exec(statement.order_by(MemoryRecord.updated_at.desc()).limit(fetch_limit)).all())
+    session_agents = _session_agent_map(db, rows) if agent_id else {}
     if agent_id:
-        rows = [row for row in rows if memory_matches_agent(row, agent_id)]
+        rows = [row for row in rows if _memory_matches_agent(row, agent_id, session_agents)]
     rows = memory_rows_for_read(rows[:limit])
     if q:
         needle = q.strip().lower()
         rows = [row for row in rows if needle in row.content.lower() or needle in (row.username or "").lower()]
-    return [memory_read(row) for row in rows]
+    return [_memory_read_with_inferred_agent(row, session_agents) for row in rows]
+
+
+def _session_agent_map(db: Session, rows: list[MemoryRecord]) -> dict[str, str | None]:
+    session_ids = sorted({row.session_id for row in rows if row.session_id and not memory_agent_id(row)})
+    if not session_ids:
+        return {}
+    sessions = db.exec(select(ChatSession).where(ChatSession.id.in_(session_ids))).all()
+    return {session.id: session.agent_id for session in sessions}
+
+
+def _memory_matches_agent(row: MemoryRecord, agent_id: str, session_agents: dict[str, str | None]) -> bool:
+    if memory_matches_agent(row, agent_id):
+        return True
+    if memory_agent_id(row):
+        return False
+    return bool(row.session_id) and session_agents.get(row.session_id) == agent_id
+
+
+def _memory_read_with_inferred_agent(row: MemoryRecord, session_agents: dict[str, str | None]) -> dict:
+    payload = memory_read(row)
+    if memory_agent_id(row) or not row.session_id:
+        return payload
+    inferred_agent_id = session_agents.get(row.session_id)
+    if inferred_agent_id:
+        metadata = dict(payload.get("metadata") or {})
+        metadata["agent_id"] = inferred_agent_id
+        metadata["agent_id_source"] = "session"
+        payload["metadata"] = metadata
+    return payload

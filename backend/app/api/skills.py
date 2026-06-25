@@ -16,7 +16,10 @@ from sqlmodel import Session, select
 from app.agents.branching import (
     branch_versions,
     ensure_agent_skill_branch,
+    ensure_open_gallery_binding,
+    ensure_private_resource_binding,
     get_agent,
+    mark_resource_open_gallery,
     project_skill_with_branch,
     require_overall_agent,
     rollback_branch,
@@ -196,22 +199,30 @@ def create_skill(
         status=request.status,
     )
     db.add(row)
+    db.flush()
+    agent = get_agent(db, request.tenant_id, agent_id)
+    if agent and not agent.is_overall:
+        ensure_private_resource_binding(
+            db,
+            request.tenant_id,
+            agent.id,
+            "skill",
+            row.id,
+            "active" if request.status == "published" else "inactive",
+        )
+        ensure_agent_skill_branch(db, request.tenant_id, agent.id, row)
+    else:
+        mark_resource_open_gallery(row)
+        ensure_open_gallery_binding(
+            db,
+            request.tenant_id,
+            "skill",
+            row.id,
+            "active" if request.status == "published" else "inactive",
+        )
     db.commit()
     db.refresh(row)
     _upsert_skill_version(db, row)
-    agent = get_agent(db, request.tenant_id, agent_id)
-    if agent and not agent.is_overall:
-        db.add(
-            AgentResourceBinding(
-                tenant_id=request.tenant_id,
-                agent_id=agent.id,
-                resource_type="skill",
-                resource_id=row.id,
-                status="active",
-            )
-        )
-        ensure_agent_skill_branch(db, request.tenant_id, agent.id, row)
-        db.commit()
     stats = _skill_stats(db, request.tenant_id)
     return skill_read(row, stats, _recent_skill_stats(db, request.tenant_id, stats))
 
@@ -305,8 +316,11 @@ def publish_skill(
         stats = _skill_stats(db, tenant_id)
         return skill_read(projected, stats, _recent_skill_stats(db, tenant_id, stats))
     row.status = "published"
+    mark_resource_open_gallery(row)
     row.updated_at = utc_now()
     db.add(row)
+    db.flush()
+    ensure_open_gallery_binding(db, tenant_id, "skill", row.id, "active")
     db.commit()
     db.refresh(row)
     _upsert_skill_version(db, row)

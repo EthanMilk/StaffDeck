@@ -27,6 +27,7 @@ export default function EmployeeAvatarMark({
   className?: string;
 }) {
   const classes = [
+    'employee-avatar-mark',
     className,
     `tone-${profile?.avatarTone || 'teal'}`,
     `avatar-preset-${profile?.avatarPreset || 'service-orbit'}`,
@@ -41,10 +42,38 @@ export default function EmployeeAvatarMark({
     );
   }
 
+  if (profile?.avatarPreset === 'overall') {
+    return (
+      <span className={classes} aria-label="开放广场头像">
+        <PlazaAvatar />
+      </span>
+    );
+  }
+
   return (
     <span className={classes} aria-label={`${profile?.avatarText || fallback}员工头像`}>
       <PresetPersonAvatar preset={profile?.avatarPreset || 'service-orbit'} />
     </span>
+  );
+}
+
+function PlazaAvatar() {
+  return (
+    <svg className="employee-avatar-portrait plaza-avatar-portrait" viewBox="0 0 96 96" aria-hidden="true" focusable="false">
+      <circle cx="48" cy="48" r="47" fill="#edf9f6" />
+      <circle cx="48" cy="48" r="38" fill="#0f766e" />
+      <circle cx="63" cy="28" r="10" fill="#fff" opacity="0.2" />
+      <g fill="none" stroke="#dff8f1" strokeWidth="4.5" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M28 35h40v31H28z" />
+        <path d="M35 35v-7h26v7" />
+        <path d="M40 49h16" />
+        <path d="M40 59h10" />
+      </g>
+      <g fill="#dff8f1">
+        <circle cx="66" cy="61" r="3" />
+        <circle cx="66" cy="50" r="3" />
+      </g>
+    </svg>
   );
 }
 

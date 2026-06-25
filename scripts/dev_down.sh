@@ -6,7 +6,7 @@ RUN_DIR="$ROOT_DIR/.dev"
 
 remove_legacy_launchctl_labels() {
   for prefix in com.ultrarag4.dev com.skill-agent-loop; do
-    for name in backend enterprise chat; do
+    for name in app backend enterprise chat; do
       launchctl remove "$prefix.$name" >/dev/null 2>&1 || true
     done
   done
@@ -49,6 +49,6 @@ stop_pid_file() {
 
 remove_legacy_launchctl_labels
 
-for name in supervisor backend enterprise chat; do
+for name in supervisor app backend enterprise chat; do
   stop_pid_file "$name"
 done

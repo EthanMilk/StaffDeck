@@ -38,6 +38,10 @@ const DEFAULT_GENERAL_META = {
 };
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 const GENERAL_SKILL_RUN_TIMEOUT_MS = 120_000;
+const FOLDER_INPUT_PROPS = {
+  webkitdirectory: '',
+  directory: '',
+} as Record<string, string>;
 
 type GeneralSkillFile = {
   path: string;
@@ -117,6 +121,24 @@ function codeLanguage(value: string, fallback = 'text'): string {
   }
 }
 
+function isSkillPackageArchive(file: File): boolean {
+  const name = file.name.toLowerCase();
+  const type = file.type.toLowerCase();
+  return name.endsWith('.zip') || type === 'application/zip' || type === 'application/x-zip-compressed';
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const value = String(reader.result || '');
+      resolve(value.includes(',') ? value.split(',', 2)[1] : value);
+    };
+    reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
 function RunCodePanel({
   title,
   code,
@@ -155,6 +177,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
   const [clawhubModalOpen, setClawhubModalOpen] = useState(false);
   const [clawhubSource, setClawhubSource] = useState('');
   const [clawhubLoading, setClawhubLoading] = useState(false);
+  const clawhubAbortRef = useRef<AbortController | null>(null);
   const [agentImportOpen, setAgentImportOpen] = useState(false);
   const [agentImportMode, setAgentImportMode] = useState<GeneralSkillImportMode>('plaza');
   const [agentImportLoading, setAgentImportLoading] = useState(false);
@@ -164,7 +187,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
   const [agentImportSelectedSkillIds, setAgentImportSelectedSkillIds] = useState<string[]>([]);
   const [agentScopeLoaded, setAgentScopeLoaded] = useState(false);
 
-  const pageTitle = isOverallAgent ? '通用技能广场' : '已掌握技能';
+  const pageTitle = isOverallAgent ? '技能广场' : '技能';
 
   const load = () => {
     const agentSuffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
@@ -196,7 +219,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
     if (!agentScopeLoaded) return;
     const resourceId = searchParams.get('resourceId') || undefined;
     if (isOverallAgent) {
-      message.warning('请先切换到具体数字员工，再从通用技能广场新增技能');
+      message.warning('请先选择一个数字员工，再从广场复制技能');
     } else {
       void requestAgentImport('plaza', resourceId);
     }
@@ -247,10 +270,10 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
   function confirmDeleteSkill(row: GeneralSkillRead) {
     const branchMode = !isOverallAgent;
     Modal.confirm({
-      title: branchMode ? `从当前员工移除技能：${row.name}` : `删除技能：${row.name}`,
+      title: branchMode ? `移除技能：${row.name}` : `删除技能：${row.name}`,
       content: branchMode
-        ? '这只会在当前员工中隐藏该技能；开放广场平台和其他员工仍然保留。'
-        : '删除后该技能不会再出现在通用技能广场中，此操作不可撤销。',
+        ? '这只会在当前数字员工中隐藏该技能；开放广场和其他数字员工仍然保留。'
+        : '删除后该技能不会再出现在技能广场中，此操作不可撤销。',
       okText: branchMode ? '移除' : '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -259,7 +282,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
           const agentSuffix = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
           await api.delete(`/api/enterprise/general-skills/${row.slug}?tenant_id=${TENANT_ID}${agentSuffix}`);
           setRows((current) => current.filter((item) => item.id !== row.id));
-          message.success(branchMode ? '已从当前员工移除技能' : '已删除技能');
+          message.success(branchMode ? '已移除技能' : '已删除技能');
         } catch (error) {
           message.error(error instanceof Error ? error.message : '删除失败');
         }
@@ -268,8 +291,18 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
   }
 
   function requestClawHubImport() {
+    clawhubAbortRef.current?.abort();
+    clawhubAbortRef.current = null;
+    setClawhubLoading(false);
     setClawhubSource('');
     setClawhubModalOpen(true);
+  }
+
+  function cancelClawHubImport() {
+    clawhubAbortRef.current?.abort();
+    clawhubAbortRef.current = null;
+    setClawhubLoading(false);
+    setClawhubModalOpen(false);
   }
 
   function handleCreateAction(key: string) {
@@ -335,15 +368,15 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
 
   async function submitAgentImportSkills() {
     if (!agentId) {
-      message.warning('请先选择目标员工');
+      message.warning('请先选择一个数字员工');
       return;
     }
     if (!agentImportSourceAgentId) {
-      message.warning(agentImportMode === 'plaza' ? '请选择通用技能广场' : '请选择来源员工');
+      message.warning(agentImportMode === 'plaza' ? '请选择技能广场' : '请选择复制来源');
       return;
     }
     if (!agentImportSelectedSkillIds.length) {
-      message.warning('请选择要学习的技能');
+      message.warning('请选择要复制的技能');
       return;
     }
     setAgentImportLoading(true);
@@ -354,11 +387,11 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
         resource_type: 'general_skill',
         resource_ids: agentImportSelectedSkillIds,
       });
-      message.success(`已学习 ${agentImportSelectedSkillIds.length} 个技能`);
+      message.success(`已复制 ${agentImportSelectedSkillIds.length} 个技能`);
       setAgentImportOpen(false);
       await load();
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '学习技能失败');
+      message.error(error instanceof Error ? error.message : '复制技能失败');
     } finally {
       setAgentImportLoading(false);
     }
@@ -366,25 +399,36 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
 
   async function importClawHubSource() {
     if (!clawhubSource.trim()) {
-      message.warning('请输入 GitHub、zip 或 SKILL.md 来源');
+      message.warning('请输入开源平台地址、GitHub 仓库或 SKILL.md 链接');
       return;
     }
+    const controller = new AbortController();
+    clawhubAbortRef.current?.abort();
+    clawhubAbortRef.current = controller;
     setClawhubLoading(true);
     try {
-      const row = await api.post<GeneralSkillRead>('/api/enterprise/general-skills/import-clawhub', {
+      const row = await api.postWithSignal<GeneralSkillRead>('/api/enterprise/general-skills/import-skillhub', {
         tenant_id: TENANT_ID,
         agent_id: !isOverallAgent && agentId ? agentId : undefined,
         source: clawhubSource.trim(),
         status: 'published',
-      });
+      }, controller.signal);
+      if (controller.signal.aborted) return;
       message.success(`已新增 ${row.name}`);
       setRows((current) => [row, ...current.filter((item) => item.id !== row.id && item.slug !== row.slug)]);
       setClawhubModalOpen(false);
       navigate(`/enterprise/general-skills/${encodeURIComponent(row.slug)}/edit`);
     } catch (error) {
+      if (isAbortError(error)) {
+        message.info('已取消导入');
+        return;
+      }
       message.error(error instanceof Error ? error.message : '从开源平台导入失败');
     } finally {
-      setClawhubLoading(false);
+      if (clawhubAbortRef.current === controller) {
+        clawhubAbortRef.current = null;
+        setClawhubLoading(false);
+      }
     }
   }
 
@@ -440,7 +484,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
             trigger={['click']}
             menu={{
               items: [
-                { key: 'delete', icon: <DeleteOutlined />, label: isOverallAgent ? '删除' : '从当前员工移除', danger: true },
+                { key: 'delete', icon: <DeleteOutlined />, label: isOverallAgent ? '删除' : '移除', danger: true },
               ],
               onClick: ({ key }) => {
                 if (key === 'delete') confirmDeleteSkill(row);
@@ -460,11 +504,6 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
         <div className="page-title">
           <div>
             <Typography.Title level={3}>{pageTitle}</Typography.Title>
-            <Typography.Text type="secondary">
-              {isOverallAgent
-                ? '管理可开放给员工学习的通用技能，点击编辑进入完整技能定义和运行测试。'
-                : '查看员工已掌握的通用技能，点击编辑进入完整技能定义和运行测试。'}
-            </Typography.Text>
           </div>
           <Space wrap className="page-actions">
             <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
@@ -472,10 +511,10 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
               trigger={['click']}
               menu={{
                 items: [
-                  { key: 'blank', icon: <PlusOutlined />, label: '新建空白技能' },
-                  ...(!isOverallAgent ? [{ key: 'plaza', icon: <UploadOutlined />, label: '从通用技能广场新增' }] : []),
+                  { key: 'blank', icon: <PlusOutlined />, label: '新建技能' },
+                  ...(!isOverallAgent ? [{ key: 'plaza', icon: <UploadOutlined />, label: '从广场复制' }] : []),
                   { key: 'opensource', icon: <GithubOutlined />, label: '从开源平台导入' },
-                  ...(!isOverallAgent ? [{ key: 'employee', icon: <TeamOutlined />, label: '向其他员工学习技能' }] : []),
+                  ...(!isOverallAgent ? [{ key: 'employee', icon: <TeamOutlined />, label: '从数字员工复制技能' }] : []),
                 ],
                 onClick: ({ key }) => handleCreateAction(key),
               }}
@@ -508,7 +547,7 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
               value={statusFilter}
               onChange={setStatusFilter}
               options={[
-                { label: '全部状态', value: 'all' },
+                { label: '全部', value: 'all' },
                 { label: '已启用', value: 'published' },
                 { label: '草稿', value: 'draft' },
                 { label: '已停用', value: 'archived' },
@@ -531,26 +570,26 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
         open={clawhubModalOpen}
         onOk={importClawHubSource}
         confirmLoading={clawhubLoading}
-        onCancel={() => setClawhubModalOpen(false)}
+        onCancel={cancelClawHubImport}
         okText="新增"
         cancelText="取消"
       >
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
           <Typography.Text type="secondary">
-            支持 GitHub repo/tree/raw SKILL.md、zip 包地址，或 owner/repo 形式。开放广场平台会直接新增到通用技能广场；员工页导入后会同步到当前员工的已掌握技能。
+            支持开源平台地址、GitHub repo/tree/raw SKILL.md 或 owner/repo 形式。本地 zip 或 Markdown 文件请在编辑页使用“导入 &gt; 选择文件”。
           </Typography.Text>
           <Input
             value={clawhubSource}
             onChange={(event) => setClawhubSource(event.target.value)}
-            placeholder="例如 OpenBMB/PilotDeck/path/to/skill 或 https://github.com/owner/repo/tree/main/skill"
+            placeholder="例如 alchaincyf/nuwa-skill 或 https://github.com/owner/repo/tree/main/skill"
           />
         </Space>
       </Modal>
 
       <Modal
-        title={agentImportMode === 'plaza' ? '从通用技能广场新增技能' : '向其他员工学习技能'}
+        title={agentImportMode === 'plaza' ? '从广场复制技能' : '从数字员工复制技能'}
         open={agentImportOpen}
-        okText="学习"
+        okText="复制"
         cancelText="取消"
         confirmLoading={agentImportLoading}
         onOk={() => void submitAgentImportSkills()}
@@ -559,19 +598,19 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
         <Space direction="vertical" size={14} style={{ width: '100%' }}>
           <Typography.Text type="secondary">
             {agentImportMode === 'plaza'
-              ? '仅可从通用技能广场新增已启用技能。'
-              : '仅可向其他员工学习已启用技能。'}
+              ? '从广场复制可用技能。'
+              : '从数字员工复制可用技能。'}
           </Typography.Text>
           <Select
             value={agentImportSourceAgentId || undefined}
-            placeholder={agentImportMode === 'plaza' ? '选择通用技能广场' : '选择来源员工'}
+            placeholder={agentImportMode === 'plaza' ? '选择技能广场' : '选择复制来源'}
             onChange={(value) => {
               setAgentImportSourceAgentId(value);
               void loadAgentImportSourceSkills(value);
             }}
             options={agentImportAgents.map((item) => ({
               value: item.id,
-              label: item.is_overall ? '通用技能广场' : item.name,
+              label: item.is_overall ? '技能广场' : item.name,
             }))}
             style={{ width: '100%' }}
           />
@@ -582,10 +621,10 @@ export default function GeneralSkillsPage({ embedded = false }: { embedded?: boo
             onChange={setAgentImportSelectedSkillIds}
             options={agentImportSourceSkills.map((item) => ({
               value: item.id,
-              label: `${item.name} · ${item.slug} · ${statusLabel(item.status)}`,
+              label: `${item.name} · ${item.slug}`,
             }))}
             optionFilterProp="label"
-            notFoundContent={agentImportSourceAgentId ? '没有可学习的已启用技能' : '请先选择来源'}
+            notFoundContent={agentImportSourceAgentId ? '没有可复制的技能' : '请先选择复制来源'}
             style={{ width: '100%' }}
           />
         </Space>
@@ -624,6 +663,11 @@ function resultSucceeded(result: Partial<GeneralSkillRunResponse> | null): boole
   if (!result) return false;
   const success = result.structured_result?.success;
   return success !== false && !result.stderr;
+}
+
+function isAbortError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === 'AbortError') return true;
+  return error instanceof Error && (error.name === 'AbortError' || error.message.toLowerCase().includes('abort'));
 }
 
 function statusLabel(status: GeneralSkillRead['status']): string {
@@ -794,6 +838,7 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
   const [isOverallAgent, setIsOverallAgent] = useState(true);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
+  const clawhubAbortRef = useRef<AbortController | null>(null);
 
   const selectedSkill = useMemo(
     () => rows.find((row) => row.slug === selectedSlug),
@@ -989,9 +1034,9 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
   function confirmDeleteSkill(row: GeneralSkillRead) {
     const branchMode = !isOverallAgent;
     Modal.confirm({
-      title: branchMode ? `从当前员工移除技能：${row.name}` : `删除技能：${row.name}`,
+      title: branchMode ? `移除技能：${row.name}` : `删除技能：${row.name}`,
       content: branchMode
-        ? '这只会在当前员工中隐藏该技能；开放广场平台和其他员工仍然保留。'
+        ? '这只会在当前数字员工中隐藏该技能；开放广场和其他数字员工仍然保留。'
         : '删除后该技能不会再出现在组织技能库中，此操作不可撤销。',
       okText: branchMode ? '移除' : '删除',
       okButtonProps: { danger: true },
@@ -1012,7 +1057,7 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
               newSkill();
             }
           }
-          message.success(branchMode ? '已从当前员工移除技能' : '已删除技能');
+          message.success(branchMode ? '已移除技能' : '已删除技能');
         } catch (error) {
           message.error(error instanceof Error ? error.message : '删除失败');
         }
@@ -1051,7 +1096,6 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
   function requestImport(kind: 'file' | 'folder') {
     void withImportPreparation(() => {
       if (kind === 'folder') {
-        setSkillFiles([]);
         folderInputRef.current?.click();
         return;
       }
@@ -1061,9 +1105,19 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
 
   function requestClawHubImport() {
     void withImportPreparation(() => {
+      clawhubAbortRef.current?.abort();
+      clawhubAbortRef.current = null;
+      setClawhubLoading(false);
       setClawhubSource('');
       setClawhubModalOpen(true);
     });
+  }
+
+  function cancelClawHubImport() {
+    clawhubAbortRef.current?.abort();
+    clawhubAbortRef.current = null;
+    setClawhubLoading(false);
+    setClawhubModalOpen(false);
   }
 
   function requestAgentImport(mode: GeneralSkillImportMode) {
@@ -1107,15 +1161,15 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
 
   async function submitAgentImportSkills() {
     if (!agentId) {
-      message.warning('请先选择目标员工');
+      message.warning('请先选择一个数字员工');
       return;
     }
     if (!agentImportSourceAgentId) {
-      message.warning(agentImportMode === 'plaza' ? '请选择通用技能广场' : '请选择来源员工');
+      message.warning(agentImportMode === 'plaza' ? '请选择技能广场' : '请选择复制来源');
       return;
     }
     if (!agentImportSelectedSkillIds.length) {
-      message.warning('请选择要学习的技能');
+      message.warning('请选择要复制的技能');
       return;
     }
     setAgentImportLoading(true);
@@ -1126,11 +1180,11 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
         resource_type: 'general_skill',
         resource_ids: agentImportSelectedSkillIds,
       });
-      message.success(`已学习 ${agentImportSelectedSkillIds.length} 个技能`);
+      message.success(`已复制 ${agentImportSelectedSkillIds.length} 个技能`);
       setAgentImportOpen(false);
       await load();
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '学习技能失败');
+      message.error(error instanceof Error ? error.message : '复制技能失败');
     } finally {
       setAgentImportLoading(false);
     }
@@ -1138,17 +1192,21 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
 
   async function importClawHubSource() {
     if (!clawhubSource.trim()) {
-      message.warning('请输入 GitHub、zip 或 SKILL.md 来源');
+      message.warning('请输入开源平台地址、GitHub 仓库或 SKILL.md 链接');
       return;
     }
+    const controller = new AbortController();
+    clawhubAbortRef.current?.abort();
+    clawhubAbortRef.current = controller;
     setClawhubLoading(true);
     try {
-      const row = await api.post<GeneralSkillRead>('/api/enterprise/general-skills/import-clawhub', {
+      const row = await api.postWithSignal<GeneralSkillRead>('/api/enterprise/general-skills/import-skillhub', {
         tenant_id: TENANT_ID,
         agent_id: !isOverallAgent && agentId ? agentId : undefined,
         source: clawhubSource.trim(),
         status: 'published',
-      });
+      }, controller.signal);
+      if (controller.signal.aborted) return;
       message.success(`已新增 ${row.name}`);
       setRows((current) => [row, ...current.filter((item) => item.id !== row.id && item.slug !== row.slug)]);
       setSelectedSlug(row.slug);
@@ -1156,9 +1214,52 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
       setClawhubModalOpen(false);
       void load();
     } catch (error) {
+      if (isAbortError(error)) {
+        message.info('已取消导入');
+        return;
+      }
       message.error(error instanceof Error ? error.message : '从开源平台导入失败');
     } finally {
-      setClawhubLoading(false);
+      if (clawhubAbortRef.current === controller) {
+        clawhubAbortRef.current = null;
+        setClawhubLoading(false);
+      }
+    }
+  }
+
+  async function importSkillPackageFile(file: File) {
+    const controller = new AbortController();
+    clawhubAbortRef.current?.abort();
+    clawhubAbortRef.current = controller;
+    setClawhubLoading(true);
+    try {
+      const contentBase64 = await fileToBase64(file);
+      if (controller.signal.aborted) return;
+      const row = await api.postWithSignal<GeneralSkillRead>('/api/enterprise/general-skills/import-package', {
+        tenant_id: TENANT_ID,
+        agent_id: !isOverallAgent && agentId ? agentId : undefined,
+        filename: file.name,
+        content_base64: contentBase64,
+        status: 'published',
+      }, controller.signal);
+      if (controller.signal.aborted) return;
+      message.success(`已上传 ${row.name}`);
+      setRows((current) => [row, ...current.filter((item) => item.id !== row.id && item.slug !== row.slug)]);
+      setSelectedSlug(row.slug);
+      editSkill(row);
+      setClawhubModalOpen(false);
+      void load();
+    } catch (error) {
+      if (isAbortError(error)) {
+        message.info('已取消导入');
+        return;
+      }
+      message.error(error instanceof Error ? error.message : '上传技能包失败');
+    } finally {
+      if (clawhubAbortRef.current === controller) {
+        clawhubAbortRef.current = null;
+        setClawhubLoading(false);
+      }
     }
   }
 
@@ -1338,7 +1439,7 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
       }
     } catch (error) {
       const text = timedOut
-        ? '技能运行超时，请检查模型配置或稍后重试。'
+        ? '技能运行超时，请检查模型或稍后重试。'
         : error instanceof Error ? error.message : '运行失败';
       setLiveResult((current) => ({
         ...(current || { skill_slug: slug, execution_trace: [] }),
@@ -1366,17 +1467,25 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
 
   async function importSkillPackage(targets: DroppedSkillFile[]) {
     if (!targets.length) return;
-    const nextFiles = await Promise.all(
-      targets.map(async ({ file, path }) => {
+    const nextFiles: GeneralSkillFile[] = [];
+    let failedCount = 0;
+    for (const { file, path } of targets) {
+      try {
         const text = await file.text();
-        return {
+        nextFiles.push({
           path,
           content: text,
           size: file.size,
           mime_type: file.type || undefined,
-        };
-      }),
-    );
+        });
+      } catch {
+        failedCount += 1;
+      }
+    }
+    if (!nextFiles.length) {
+      message.error('没有读取到可导入的技能文件');
+      return;
+    }
     nextFiles.sort((a, b) => a.path.localeCompare(b.path));
     startImportedDraft();
     setSkillFiles(nextFiles);
@@ -1385,7 +1494,7 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
       setMarkdown(skillFile.content);
       setSelectedFilePath(skillFile.path);
       applyMetadata(skillFile.content, { setSkillName, setSkillSlug, setSkillDescription, setSkillHomepage });
-      message.success(`已读取 ${nextFiles.length} 个文件`);
+      message.success(`已读取 ${nextFiles.length} 个文件${failedCount ? `，跳过 ${failedCount} 个无法读取文件` : ''}`);
     } else {
       setSelectedFilePath(nextFiles[0]?.path || 'SKILL.md');
       message.warning('文件夹中没有找到 SKILL.md');
@@ -1398,7 +1507,13 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
 
   async function handleFileInputChange(event: ChangeEvent<HTMLInputElement>) {
     const target = event.target.files?.[0];
-    if (target) await importSingleFile(target);
+    if (target) {
+      if (isSkillPackageArchive(target)) {
+        await importSkillPackageFile(target);
+      } else {
+        await importSingleFile(target);
+      }
+    }
     event.target.value = '';
   }
 
@@ -1438,7 +1553,11 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
     if (!dropped.length) return;
     await withImportPreparation(async () => {
       if (dropped.length === 1 && !dropped[0].path.includes('/')) {
-        await importSingleFile(dropped[0].file);
+        if (isSkillPackageArchive(dropped[0].file)) {
+          await importSkillPackageFile(dropped[0].file);
+        } else {
+          await importSingleFile(dropped[0].file);
+        }
         return;
       }
       await importSkillPackage(dropped);
@@ -1452,16 +1571,16 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
     <>
       <div className="page-title">
         <div>
-          <Typography.Title level={3}>{mode === 'new' ? '新建空白技能' : '编辑技能'}</Typography.Title>
+          <Typography.Title level={3}>{mode === 'new' ? '新建技能' : '编辑技能'}</Typography.Title>
           <Typography.Text type="secondary">
             {isOverallAgent
-              ? '维护通用技能广场中的技能定义、文件包和运行测试。'
-              : '维护当前员工已掌握技能的技能定义、文件包和运行测试。'}
+              ? '维护技能广场中的技能定义、文件包和运行测试。'
+              : '维护当前数字员工技能的技能定义、文件包和运行测试。'}
           </Typography.Text>
         </div>
         <Space>
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/enterprise/general-skills')}>返回列表</Button>
-          {mode === 'edit' && <Button icon={<PlusOutlined />} onClick={() => navigate('/enterprise/general-skills/new')}>新建空白技能</Button>}
+          {mode === 'edit' && <Button icon={<PlusOutlined />} onClick={() => navigate('/enterprise/general-skills/new')}>新建技能</Button>}
         </Space>
       </div>
       <div className="general-skill-workbench general-skill-editor-page">
@@ -1486,9 +1605,9 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
                     items: [
                       { key: 'file', label: '选择文件' },
                       { key: 'folder', label: '选择文件夹' },
-                      ...(!isOverallAgent ? [{ key: 'plaza', icon: <UploadOutlined />, label: '从通用技能广场新增' }] : []),
+                      ...(!isOverallAgent ? [{ key: 'plaza', icon: <UploadOutlined />, label: '从广场复制' }] : []),
                       { key: 'opensource', icon: <GithubOutlined />, label: '从开源平台导入' },
-                      ...(!isOverallAgent ? [{ key: 'agent', icon: <TeamOutlined />, label: '向其他员工学习技能' }] : []),
+                      ...(!isOverallAgent ? [{ key: 'agent', icon: <TeamOutlined />, label: '从数字员工复制技能' }] : []),
                     ],
                     onClick: ({ key }) => {
                       if (key === 'opensource') {
@@ -1519,7 +1638,7 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
               ref={fileInputRef}
               className="visually-hidden-file-input"
               type="file"
-              accept=".md,.txt"
+              accept=".zip,.md,.markdown,.txt"
               onChange={handleFileInputChange}
               hidden
               aria-hidden="true"
@@ -1530,6 +1649,7 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
               className="visually-hidden-file-input"
               type="file"
               multiple
+              {...FOLDER_INPUT_PROPS}
               onChange={handleFolderInputChange}
               hidden
               aria-hidden="true"
@@ -1538,7 +1658,7 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
             {dragActive && (
               <div className="general-skill-drop-hint">
                 <UploadOutlined />
-                <span>释放以导入 SKILL.md 或完整技能文件夹</span>
+                <span>释放以导入 SKILL.md、zip 技能包或完整技能文件夹</span>
               </div>
             )}
             <div className="general-skill-meta-form">
@@ -1756,25 +1876,25 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
         open={clawhubModalOpen}
         onOk={importClawHubSource}
         confirmLoading={clawhubLoading}
-        onCancel={() => setClawhubModalOpen(false)}
+        onCancel={cancelClawHubImport}
         okText="新增"
         cancelText="取消"
       >
         <Space direction="vertical" size={10} style={{ width: '100%' }}>
           <Typography.Text type="secondary">
-            支持 GitHub repo/tree/raw SKILL.md、zip 包地址，或 owner/repo 形式。开放广场平台会直接新增到通用技能广场；员工页导入后会同步到当前员工的已掌握技能。
+            支持开源平台地址、GitHub repo/tree/raw SKILL.md 或 owner/repo 形式。本地 zip 或 Markdown 文件请使用“导入 &gt; 选择文件”。
           </Typography.Text>
           <Input
             value={clawhubSource}
             onChange={(event) => setClawhubSource(event.target.value)}
-            placeholder="例如 OpenBMB/PilotDeck/path/to/skill 或 https://github.com/owner/repo/tree/main/skill"
+            placeholder="例如 alchaincyf/nuwa-skill 或 https://github.com/owner/repo/tree/main/skill"
           />
         </Space>
       </Modal>
       <Modal
-        title={agentImportMode === 'plaza' ? '从通用技能广场新增技能' : '向其他员工学习技能'}
+        title={agentImportMode === 'plaza' ? '从广场复制技能' : '从数字员工复制技能'}
         open={agentImportOpen}
-        okText="学习"
+        okText="复制"
         cancelText="取消"
         confirmLoading={agentImportLoading}
         onOk={() => void submitAgentImportSkills()}
@@ -1783,19 +1903,19 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
         <Space direction="vertical" size={14} style={{ width: '100%' }}>
           <Typography.Text type="secondary">
             {agentImportMode === 'plaza'
-              ? '仅可从通用技能广场新增已启用技能；不会覆盖当前编辑区内容。'
-              : '仅可向其他员工学习已启用技能；不会覆盖当前编辑区内容。'}
+              ? '从广场复制可用技能；不会覆盖当前编辑区内容。'
+              : '从数字员工复制可用技能；不会覆盖当前编辑区内容。'}
           </Typography.Text>
           <Select
             value={agentImportSourceAgentId || undefined}
-            placeholder={agentImportMode === 'plaza' ? '选择通用技能广场' : '选择来源员工'}
+            placeholder={agentImportMode === 'plaza' ? '选择技能广场' : '选择复制来源'}
             onChange={(value) => {
               setAgentImportSourceAgentId(value);
               void loadAgentImportSourceSkills(value);
             }}
             options={agentImportAgents.map((item) => ({
               value: item.id,
-              label: item.is_overall ? '通用技能广场' : item.name,
+              label: item.is_overall ? '技能广场' : item.name,
             }))}
             style={{ width: '100%' }}
           />
@@ -1806,10 +1926,10 @@ function GeneralSkillEditorPage({ mode }: { mode: 'new' | 'edit' }) {
             onChange={setAgentImportSelectedSkillIds}
             options={agentImportSourceSkills.map((item) => ({
               value: item.id,
-              label: `${item.name} · ${item.slug} · ${statusLabel(item.status)}`,
+              label: `${item.name} · ${item.slug}`,
             }))}
             optionFilterProp="label"
-            notFoundContent={agentImportSourceAgentId ? '没有可学习的已启用技能' : '请先选择来源'}
+            notFoundContent={agentImportSourceAgentId ? '没有可复制的技能' : '请先选择复制来源'}
             style={{ width: '100%' }}
           />
         </Space>

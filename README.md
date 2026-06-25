@@ -11,9 +11,10 @@ End-to-end MVP for an enterprise Skill Agent Loop service.
 
 ## Quick Start
 
-Use the root dev scripts to run all three services. `scripts/dev_up.sh` starts a
-foreground supervisor, writes real process IDs under `.dev/`, and writes logs
-under `.dev/logs/`.
+Use the root dev scripts to run the app on one local port. `scripts/dev_up.sh`
+builds both frontends, serves `/chat`, `/enterprise`, and `/api` from one
+FastAPI process, writes real process IDs under `.dev/`, and writes logs under
+`.dev/logs/`.
 
 ```bash
 scripts/dev_up.sh
@@ -35,43 +36,48 @@ scripts/dev_down.sh
 
 Default URLs:
 
-- backend: `http://127.0.0.1:8000/docs`
+- chat: `http://127.0.0.1:5173/chat/`
 - enterprise: `http://127.0.0.1:5173/enterprise/dashboard`
-- chat: `http://127.0.0.1:5174/chat`
+- API docs: `http://127.0.0.1:5173/docs`
 
-For public tunnel testing, pass the public backend URL to the frontends and the
-public frontend origins to the backend:
+For public tunnel testing, keep the single-port app and pass the public origin
+to the backend:
 
 ```bash
-VITE_API_BASE_URL="http://<public-host>:<backend-port>" \
-PUBLIC_ENTERPRISE_ORIGIN="http://<public-host>:<enterprise-port>" \
-PUBLIC_CHAT_ORIGIN="http://<public-host>:<chat-port>" \
+PUBLIC_APP_ORIGIN="http://<public-host>:<app-port>" \
 scripts/dev_up.sh
 ```
 
-For one-port tunnel testing, build both frontends and let the backend serve
-the static bundles and API on the same origin:
+To use the legacy three-port development layout for frontend debugging:
 
 ```bash
-npm run build --prefix frontend-enterprise
-npm run build --prefix frontend-chat
-cd backend
-uvicorn single_port_app:app --host 0.0.0.0 --port 8888
+SINGLE_PORT=0 scripts/dev_up.sh
 ```
 
-Then open `/enterprise/dashboard` or `/chat` on that single public origin. This
-avoids browsers rewriting frontend requests to `127.0.0.1` on external clients.
+The single-port layout avoids browsers rewriting frontend requests to
+`127.0.0.1` on external clients.
 
 Set `DEMO_MODEL_API_KEY` in `backend/.env` before first startup if you want to seed the demo OpenAI-compatible model config. The key is encrypted before it is stored in the database and is never committed.
 
 ## Manual Starts
 
-Manual starts are still supported for single-service debugging:
+Manual starts are still supported for focused debugging. The default manual
+entry is still one port:
 
 ```bash
 cd backend
-uvicorn app.main:app --reload
+.venv/bin/uvicorn single_port_app:app --host 127.0.0.1 --port 5173
+```
 
+For low-level frontend debugging, use the legacy split mode explicitly:
+
+```bash
+SINGLE_PORT=0 scripts/dev_up.sh
+```
+
+Or start each piece yourself:
+
+```bash
 cd frontend-enterprise
 VITE_API_BASE_URL=http://127.0.0.1:8000 npm run dev
 

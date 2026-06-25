@@ -68,7 +68,7 @@ def test_probe_tool_success_infers_output_schema(monkeypatch: pytest.MonkeyPatch
 
         def request(self, method, url, headers=None, json=None, params=None):
             assert method == "POST"
-            assert url == "http://localhost:8000/api/mock/member/benefit-reconcile"
+            assert url == "http://localhost:5173/api/mock/member/benefit-reconcile"
             assert json == {"user_id": "user_demo", "order_id": "A12345"}
             return httpx.Response(
                 200,

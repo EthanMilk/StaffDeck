@@ -20,7 +20,7 @@ app.mount("/chat/assets", StaticFiles(directory=CHAT_DIST / "assets", check_dir=
 
 @app.get("/", include_in_schema=False)
 def root_redirect() -> RedirectResponse:
-    return RedirectResponse(url="/enterprise/")
+    return RedirectResponse(url="/chat/")
 
 
 @app.get("/enterprise", include_in_schema=False)

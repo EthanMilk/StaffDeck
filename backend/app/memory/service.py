@@ -186,7 +186,7 @@ class MemoryService:
             ).all()
         )
         if agent_id:
-            rows = [row for row in rows if memory_matches_agent(row, agent_id)]
+            rows = [row for row in rows if self._memory_matches_agent(row, agent_id)]
         rows = rows[:limit]
         return memory_rows_for_read(rows) if normalize else rows
 
@@ -265,7 +265,7 @@ class MemoryService:
             ).all()
         )
         if agent_id:
-            rows = [row for row in rows if memory_matches_agent(row, agent_id)]
+            rows = [row for row in rows if self._memory_matches_agent(row, agent_id)]
         candidates = [row for row in rows if _memory_matches_key(row, key)]
         if not candidates:
             return None, []
@@ -293,7 +293,7 @@ class MemoryService:
             ).all()
         )
         if agent_id:
-            existing = next((row for row in summary_rows if memory_matches_agent(row, agent_id)), None)
+            existing = next((row for row in summary_rows if self._memory_matches_agent(row, agent_id)), None)
         else:
             existing = summary_rows[0] if summary_rows else None
         now = utc_now()
@@ -323,6 +323,14 @@ class MemoryService:
         )
         self.db.add(record)
         return record
+
+    def _memory_matches_agent(self, record: MemoryRecord, agent_id: str | None) -> bool:
+        if memory_matches_agent(record, agent_id):
+            return True
+        if not agent_id or memory_agent_id(record) or not record.session_id:
+            return False
+        session = self.db.get(ChatSession, record.session_id)
+        return bool(session and session.agent_id == agent_id)
 
 
 def memory_read(record: MemoryRecord) -> dict[str, Any]:

@@ -6,6 +6,8 @@ import re
 import threading
 import time
 import zipfile
+import base64
+import binascii
 from collections.abc import Iterator
 from html import unescape
 from io import BytesIO
@@ -18,12 +20,21 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
-from app.agents.branching import get_agent, require_overall_agent
+from app.agents.branching import (
+    ensure_open_gallery_binding,
+    ensure_private_resource_binding,
+    get_agent,
+    is_open_gallery_resource,
+    mark_resource_open_gallery,
+    mark_resource_private_for_agent,
+    require_overall_agent,
+)
 from app.db import get_session
 from app.db.models import AgentResourceBinding, GeneralSkill, ModelConfig, utc_now
 from app.general_skills import (
     GeneralSkillClawHubImportRequest,
     GeneralSkillImportRequest,
+    GeneralSkillPackageUploadRequest,
     GeneralSkillRead,
     GeneralSkillRunRequest,
     GeneralSkillRunResponse,
@@ -34,13 +45,16 @@ from app.security.tenant import ensure_tenant
 
 router = APIRouter(prefix="/api/enterprise/general-skills", tags=["enterprise:general-skills"])
 
-MAX_CLAWHUB_PACKAGE_BYTES = 24 * 1024 * 1024
+MAX_CLAWHUB_PACKAGE_BYTES = 96 * 1024 * 1024
 MAX_CLAWHUB_FILE_BYTES = 2 * 1024 * 1024
 MAX_CLAWHUB_FILES = 240
+REMOTE_SKILL_DOWNLOAD_TIMEOUT_SECONDS = 120
 GENERAL_SKILL_STREAM_IDLE_TIMEOUT_SECONDS = 120
 GITHUB_HOSTS = {"github.com", "www.github.com"}
 RAW_GITHUB_HOST = "raw.githubusercontent.com"
 CLAWHUB_HOSTS = {"clawhub.ai", "www.clawhub.ai"}
+SKILLHUB_HOSTS = {"skillhub.ai", "www.skillhub.ai"}
+REMOTE_SKILLHUB_HOSTS = CLAWHUB_HOSTS | SKILLHUB_HOSTS
 CLAWHUB_DOWNLOAD_ENDPOINT = "https://wry-manatee-359.convex.site/api/v1/download"
 
 
@@ -102,6 +116,8 @@ def import_general_skill(
         if conflict:
             raise HTTPException(status_code=409, detail="General skill slug already exists")
     now = utc_now()
+    agent_id = _agent_id_or_none(request.agent_id)
+    agent = get_agent(db, request.tenant_id, agent_id)
     if row:
         if slug != row.slug:
             conflict = db.exec(
@@ -137,17 +153,54 @@ def import_general_skill(
             created_at=now,
             updated_at=now,
         )
-    db.add(row)
-    agent_id = _agent_id_or_none(request.agent_id)
-    agent = get_agent(db, request.tenant_id, agent_id)
     if agent and not agent.is_overall:
-        binding = _ensure_general_skill_binding(db, request.tenant_id, agent.id, row.id)
-        binding.status = "active" if request.status == "published" else "inactive"
-        binding.updated_at = now
-        db.add(binding)
+        mark_resource_private_for_agent(row, agent.id)
+    else:
+        mark_resource_open_gallery(row)
+    db.add(row)
+    db.flush()
+    if agent and not agent.is_overall:
+        ensure_private_resource_binding(
+            db,
+            request.tenant_id,
+            agent.id,
+            "general_skill",
+            row.id,
+            "active" if request.status == "published" else "inactive",
+        )
+    else:
+        ensure_open_gallery_binding(
+            db,
+            request.tenant_id,
+            "general_skill",
+            row.id,
+            "active" if request.status == "published" else "inactive",
+        )
     db.commit()
     db.refresh(row)
     return general_skill_read(row)
+
+
+@router.post("/import-skillhub", response_model=GeneralSkillRead)
+def import_skillhub_skill(
+    request: GeneralSkillClawHubImportRequest,
+    db: Session = Depends(get_session),
+) -> GeneralSkillRead:
+    ensure_tenant(db, request.tenant_id)
+    raw_files = _load_clawhub_source(request.source)
+    files = _normalize_skill_files(raw_files, None)
+    return _create_imported_general_skill(
+        db,
+        tenant_id=request.tenant_id,
+        files=files,
+        import_source=request.source,
+        agent_id=request.agent_id,
+        status=request.status,
+        name=request.name,
+        slug=request.slug,
+        description=request.description,
+        homepage=request.homepage,
+    )
 
 
 @router.post("/import-clawhub", response_model=GeneralSkillRead)
@@ -155,42 +208,109 @@ def import_clawhub_skill(
     request: GeneralSkillClawHubImportRequest,
     db: Session = Depends(get_session),
 ) -> GeneralSkillRead:
+    return import_skillhub_skill(request, db)
+
+
+@router.post("/import-package", response_model=GeneralSkillRead)
+def import_general_skill_package(
+    request: GeneralSkillPackageUploadRequest,
+    db: Session = Depends(get_session),
+) -> GeneralSkillRead:
     ensure_tenant(db, request.tenant_id)
-    raw_files = _load_clawhub_source(request.source)
+    filename = _clean_source_filename(request.filename)
+    data = _decode_base64_payload(request.content_base64)
+    if filename.lower().endswith(".zip"):
+        raw_files = _files_from_zip(data)
+    elif filename.lower().endswith((".md", ".markdown", ".txt")):
+        text = _decode_text(data)
+        raw_files = [
+            GeneralSkillFile(
+                path="SKILL.md",
+                content=text,
+                size=len(data),
+                mime_type=_guess_mime_type(filename),
+            )
+        ]
+    else:
+        raise HTTPException(status_code=400, detail="Uploaded skill package must be a .zip or Markdown file")
     files = _normalize_skill_files(raw_files, None)
+    return _create_imported_general_skill(
+        db,
+        tenant_id=request.tenant_id,
+        files=files,
+        import_source=f"upload:{filename}",
+        agent_id=request.agent_id,
+        status=request.status,
+        name=request.name,
+        slug=request.slug,
+        description=request.description,
+        homepage=request.homepage,
+    )
+
+
+def _create_imported_general_skill(
+    db: Session,
+    *,
+    tenant_id: str,
+    files: list[GeneralSkillFile],
+    import_source: str,
+    agent_id: str | None,
+    status: str,
+    name: str | None = None,
+    slug: str | None = None,
+    description: str | None = None,
+    homepage: str | None = None,
+) -> GeneralSkillRead:
     markdown = _skill_markdown_from_files(files)
     metadata = _parse_skill_metadata(markdown)
-    name = _optional_text(request.name) or _metadata_text(metadata, "name", "title") or _source_name(request.source)
-    source_slug = _clawhub_slug_from_source(request.source)
-    slug_base = _optional_text(request.slug) or _metadata_text(metadata, "slug", "id") or source_slug or _slugify(name)
-    slug = _unique_slug(db, request.tenant_id, slug_base)
-    description = _optional_text(request.description) or _metadata_text(metadata, "description", "summary")
-    homepage = _optional_text(request.homepage) or _metadata_text(metadata, "homepage", "url", "source") or _clawhub_homepage_from_source(request.source)
-    _validate_slug(slug)
+    resolved_name = _optional_text(name) or _metadata_text(metadata, "name", "title") or _source_name(import_source)
+    source_slug = _clawhub_slug_from_source(import_source)
+    slug_base = _optional_text(slug) or _metadata_text(metadata, "slug", "id") or source_slug or _slugify(resolved_name)
+    resolved_slug = _unique_slug(db, tenant_id, slug_base)
+    resolved_description = _optional_text(description) or _metadata_text(metadata, "description", "summary")
+    resolved_homepage = _optional_text(homepage) or _metadata_text(metadata, "homepage", "url", "source") or _clawhub_homepage_from_source(import_source)
+    _validate_slug(resolved_slug)
     now = utc_now()
     row = GeneralSkill(
-        tenant_id=request.tenant_id,
-        slug=slug,
-        name=name,
-        description=description,
-        homepage=homepage,
+        tenant_id=tenant_id,
+        slug=resolved_slug,
+        name=resolved_name,
+        description=resolved_description,
+        homepage=resolved_homepage,
         skill_markdown=markdown,
         skill_files_json=[file.model_dump(mode="json") for file in files],
-        metadata_json={**metadata, "import_source": request.source},
-        status=request.status,
+        metadata_json={**metadata, "import_source": import_source},
+        status=status,
         permissions_json={"network": True, "python": True},
         runtime_config_json={"runtime": "python", "timeout_seconds": 12},
         created_at=now,
         updated_at=now,
     )
-    db.add(row)
-    agent_id = _agent_id_or_none(request.agent_id)
-    agent = get_agent(db, request.tenant_id, agent_id)
+    resolved_agent_id = _agent_id_or_none(agent_id)
+    agent = get_agent(db, tenant_id, resolved_agent_id)
     if agent and not agent.is_overall:
-        binding = _ensure_general_skill_binding(db, request.tenant_id, agent.id, row.id)
-        binding.status = "active" if request.status == "published" else "inactive"
-        binding.updated_at = now
-        db.add(binding)
+        mark_resource_private_for_agent(row, agent.id)
+    else:
+        mark_resource_open_gallery(row)
+    db.add(row)
+    db.flush()
+    if agent and not agent.is_overall:
+        ensure_private_resource_binding(
+            db,
+            tenant_id,
+            agent.id,
+            "general_skill",
+            row.id,
+            "active" if status == "published" else "inactive",
+        )
+    else:
+        ensure_open_gallery_binding(
+            db,
+            tenant_id,
+            "general_skill",
+            row.id,
+            "active" if status == "published" else "inactive",
+        )
     db.commit()
     db.refresh(row)
     return general_skill_read(row)
@@ -237,6 +357,7 @@ def list_general_skills(
     rows = db.exec(
         select(GeneralSkill).where(GeneralSkill.tenant_id == tenant_id).order_by(GeneralSkill.updated_at.desc())
     ).all()
+    rows = [row for row in rows if is_open_gallery_resource(db, tenant_id, "general_skill", row)]
     return [general_skill_read(row) for row in rows]
 
 
@@ -267,8 +388,11 @@ def publish_general_skill(
         db.commit()
         return general_skill_read(row, status_override="published")
     row.status = "published"
+    mark_resource_open_gallery(row)
     row.updated_at = utc_now()
     db.add(row)
+    db.flush()
+    ensure_open_gallery_binding(db, tenant_id, "general_skill", row.id, "active")
     db.commit()
     db.refresh(row)
     return general_skill_read(row)
@@ -423,6 +547,13 @@ def _ensure_general_skill_binding(
         )
     ).first()
     if row:
+        row.metadata_json = {
+            **(row.metadata_json or {}),
+            "scope": "agent_private",
+            "visibility": "agent_private",
+            "owner_agent_id": agent_id,
+            "created_from_agent": True,
+        }
         return row
     row = AgentResourceBinding(
         tenant_id=tenant_id,
@@ -430,7 +561,12 @@ def _ensure_general_skill_binding(
         resource_type="general_skill",
         resource_id=general_skill_id,
         status="active",
-        metadata_json={},
+        metadata_json={
+            "scope": "agent_private",
+            "visibility": "agent_private",
+            "owner_agent_id": agent_id,
+            "created_from_agent": True,
+        },
     )
     db.add(row)
     db.flush()
@@ -605,7 +741,33 @@ def _source_name(source: str) -> str:
     parsed = urlparse(source)
     path = parsed.path if parsed.scheme else source
     cleaned = path.rstrip("/").rsplit("/", 1)[-1].removesuffix(".zip").removesuffix(".md")
-    return cleaned or "ClawHub 通用技能"
+    if cleaned.startswith("upload:"):
+        cleaned = cleaned.removeprefix("upload:")
+    return cleaned or "开源平台通用技能"
+
+
+def _clean_source_filename(filename: str) -> str:
+    cleaned = str(filename or "").replace("\\", "/").strip().rsplit("/", 1)[-1]
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Uploaded skill package filename is required")
+    return cleaned
+
+
+def _decode_base64_payload(value: str) -> bytes:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Uploaded skill package content is required")
+    if "," in cleaned and cleaned[:80].lower().startswith("data:"):
+        cleaned = cleaned.split(",", 1)[1]
+    try:
+        data = base64.b64decode(cleaned, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Uploaded skill package content is not valid base64") from exc
+    if not data:
+        raise HTTPException(status_code=400, detail="Uploaded skill package is empty")
+    if len(data) > MAX_CLAWHUB_PACKAGE_BYTES:
+        raise HTTPException(status_code=400, detail="Uploaded skill package is too large")
+    return data
 
 
 def _load_clawhub_source(source: str) -> list[GeneralSkillFile]:
@@ -620,7 +782,7 @@ def _load_clawhub_source(source: str) -> list[GeneralSkillFile]:
         return _load_remote_skill_source(f"https://github.com/{cleaned}")
     raise HTTPException(
         status_code=400,
-        detail="ClawHub source must be a GitHub URL, raw SKILL.md URL, zip URL, or owner/repo path",
+        detail="开源平台来源必须是开源平台 slug、GitHub URL、raw SKILL.md URL、zip URL 或 owner/repo 路径",
     )
 
 
@@ -630,7 +792,7 @@ def _clawhub_slug_from_source(source: str) -> str | None:
         return None
     if cleaned.startswith(("http://", "https://")):
         parsed = urlparse(cleaned)
-        if parsed.netloc not in CLAWHUB_HOSTS:
+        if parsed.netloc not in REMOTE_SKILLHUB_HOSTS:
             return None
         parts = [part for part in parsed.path.strip("/").split("/") if part]
         if len(parts) >= 2:
@@ -655,11 +817,11 @@ def _valid_clawhub_slug(value: str) -> str | None:
 def _clawhub_homepage_from_source(source: str) -> str | None:
     cleaned = source.strip()
     parsed = urlparse(cleaned)
-    if parsed.scheme and parsed.netloc in CLAWHUB_HOSTS:
+    if parsed.scheme and parsed.netloc in REMOTE_SKILLHUB_HOSTS:
         return cleaned
     slug = _clawhub_slug_from_source(cleaned)
     if slug:
-        return f"https://clawhub.ai/{slug}"
+        return f"https://skillhub.ai/{slug}"
     return None
 
 
@@ -709,8 +871,8 @@ def _load_remote_skill_source(url: str, visited: set[str] | None = None) -> list
         raise HTTPException(
             status_code=400,
             detail=(
-                "ClawHub page did not expose a downloadable skill package or GitHub directory. "
-                "HTML pages are not imported as SKILL.md."
+                "开源平台页面没有暴露可下载的技能包或 GitHub 目录。"
+                "HTML 页面不会被当作 SKILL.md 导入。"
             ),
         )
     if _looks_like_markdown_source(parsed.path, lower_content_type):
@@ -923,7 +1085,7 @@ def _is_clawhub_download_url(parsed) -> bool:
 def _download_url(url: str) -> tuple[bytes, str]:
     try:
         request = Request(url, headers={"User-Agent": "UltraRAG4-GeneralSkillImporter/1.0"})
-        with urlopen(request, timeout=20) as response:  # noqa: S310 - user-confirmed import source
+        with urlopen(request, timeout=REMOTE_SKILL_DOWNLOAD_TIMEOUT_SECONDS) as response:  # noqa: S310 - user-confirmed import source
             content_type = response.headers.get("content-type", "")
             data = response.read(MAX_CLAWHUB_PACKAGE_BYTES + 1)
     except HTTPError as exc:

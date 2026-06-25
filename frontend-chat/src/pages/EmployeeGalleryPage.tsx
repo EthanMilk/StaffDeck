@@ -6,8 +6,8 @@ import {
   RightOutlined,
 } from '@ant-design/icons';
 import { Button, Empty, Select, Typography, message } from 'antd';
-import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { api, clearAuthSession, getAuthSession, isAuthError } from '../api/client';
 import EmployeeAvatarMark from '../components/EmployeeAvatarMark';
 import {
@@ -39,8 +39,13 @@ export default function EmployeeGalleryPage() {
     window.localStorage.getItem('skill_agent_sidebar_collapsed') === 'true'
   ));
   const [auth] = useState(() => getAuthSession());
+  const autoCreateRef = useRef('');
   const navigate = useNavigate();
+  const location = useLocation();
   const tenantId = auth?.user.tenant_id || 'tenant_demo';
+  const launchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const launchAgentId = launchParams.get('agent_id') || '';
+  const shouldAutoCreate = launchParams.get('create') === '1';
   const availableAgents = visibleChatEmployees(agents, auth?.user);
   const personalAgents = availableAgents.filter((agent) => !isGalleryEmployee(agent) || isEmployeeOwnedBy(agent, auth?.user));
   const personalAgentIds = new Set(personalAgents.map((agent) => agent.id));
@@ -110,6 +115,16 @@ export default function EmployeeGalleryPage() {
     }
   }, [sessionAgentFilter, sessionFilterOptions]);
 
+  useEffect(() => {
+    if (!launchAgentId) return;
+    if (!availableAgents.some((agent) => agent.id === launchAgentId)) return;
+    setSelectedAgentId(launchAgentId);
+    window.localStorage.setItem('skill_agent_selected_agent', launchAgentId);
+    if (!shouldAutoCreate || autoCreateRef.current === launchAgentId) return;
+    autoCreateRef.current = launchAgentId;
+    void createSessionForAgent(launchAgentId);
+  }, [availableAgents, launchAgentId, shouldAutoCreate]);
+
   function toggleSidebar() {
     setSidebarCollapsed((current) => {
       const next = !current;
@@ -120,7 +135,7 @@ export default function EmployeeGalleryPage() {
 
   async function createSessionForAgent(agentId: string) {
     if (!agentId) {
-      message.warning('请先选择接单员工');
+      message.warning('请先选择数字员工');
       return;
     }
     const session = await api.post<ChatSession>('/api/chat/sessions', { tenant_id: tenantId, agent_id: agentId });
@@ -141,7 +156,7 @@ export default function EmployeeGalleryPage() {
       const updatedAt = agent.updated_at ? new Date(agent.updated_at) : null;
       const updatedLabel = updatedAt && !Number.isNaN(updatedAt.getTime())
         ? `${updatedAt.getMonth() + 1}/${updatedAt.getDate()} 更新`
-        : '可派发';
+        : isGalleryEmployee(agent) ? '广场' : '我的';
       return (
         <button
           key={agent.id}
@@ -161,7 +176,7 @@ export default function EmployeeGalleryPage() {
                 <RightOutlined />
               </span>
             </span>
-            <span className="employee-gallery-page-desc">{agent.description || '可直接派发任务，使用该员工的技能、SOP 和业务资料。'}</span>
+            <span className="employee-gallery-page-desc">{agent.description || '暂无描述'}</span>
             <span className="employee-gallery-page-stats">
               <span><strong>{sopCount}</strong><em>SOP</em></span>
               <span><strong>{skillCount}</strong><em>技能</em></span>
@@ -169,7 +184,7 @@ export default function EmployeeGalleryPage() {
             </span>
             <span className="employee-gallery-page-tags">
               <span>在线</span>
-              <span>{isGalleryEmployee(agent) ? '员工广场' : '个人员工'}</span>
+              <span>{isGalleryEmployee(agent) ? '广场' : '我的'}</span>
               <span>{updatedLabel}</span>
             </span>
           </span>
@@ -207,17 +222,15 @@ export default function EmployeeGalleryPage() {
           </div>
         </div>
         {!sidebarCollapsed && (
-          <button type="button" className="sidebar-gallery-entry active" onClick={() => navigate('/employees')}>
-            <span className="sidebar-gallery-entry-icon"><GlobalOutlined /></span>
-            <span className="sidebar-gallery-entry-copy">
-              <strong>员工广场</strong>
-              <span>个人员工与开放员工</span>
-            </span>
-            <RightOutlined />
-          </button>
-        )}
-        <div className="session-list-scroll">
-          {!sidebarCollapsed && (
+          <div className="sidebar-workspace-panel">
+            <button type="button" className="sidebar-gallery-entry active" onClick={() => navigate('/employees')}>
+              <span className="sidebar-gallery-entry-icon"><GlobalOutlined /></span>
+              <span className="sidebar-gallery-entry-copy">
+                <strong>数字员工广场</strong>
+                <span>选择数字员工</span>
+              </span>
+              <RightOutlined />
+            </button>
             <div className="session-filter-bar">
               <span className="session-filter-label">员工会话</span>
               <Select
@@ -228,11 +241,13 @@ export default function EmployeeGalleryPage() {
                 onChange={setSessionAgentFilter}
               />
             </div>
-          )}
-          <div className="session-section-label">任务记录</div>
+          </div>
+        )}
+        <div className="session-list-scroll">
+          <div className="session-section-label">历史任务</div>
           {visibleSessions.length === 0 ? (
             <div className="session-list-empty">
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前员工暂无任务记录" />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前员工暂无历史任务" />
             </div>
           ) : (
             visibleSessions.map((session) => {
@@ -285,10 +300,12 @@ export default function EmployeeGalleryPage() {
       <main className="chat-main employee-gallery-page-main">
         <div className="chat-header">
           <div>
-            <Typography.Text strong>员工广场</Typography.Text>
-            <div className="header-subtitle">选择个人员工或开放员工，直接发起任务对话</div>
+            <Typography.Text strong>数字员工广场</Typography.Text>
           </div>
           <div className="chat-header-actions">
+            <Button icon={<GlobalOutlined />} onClick={() => { window.location.href = '/enterprise/dashboard'; }}>
+              数字账号管理
+            </Button>
             <ThemeToggleButton />
           </div>
         </div>
@@ -296,36 +313,31 @@ export default function EmployeeGalleryPage() {
           <section className="employee-gallery-page-hero">
             <span className="employee-gallery-page-hero-icon"><GlobalOutlined /></span>
             <div>
-              <Typography.Title level={2}>选择接单员工</Typography.Title>
-              <Typography.Paragraph>
-                员工广场是任务派发入口。个人员工来自当前账号，开放员工来自员工广场，点击卡片即可创建新会话。
-              </Typography.Paragraph>
+              <Typography.Title level={2}>选择数字员工</Typography.Title>
             </div>
           </section>
 
           <section className="employee-gallery-page-section">
             <div className="employee-gallery-page-section-head">
               <div>
-                <Typography.Title level={3}>个人员工</Typography.Title>
-                <Typography.Text type="secondary">当前账号可直接派发的员工。</Typography.Text>
+                <Typography.Title level={3}>我的数字员工</Typography.Title>
               </div>
               <span>{personalAgents.length}</span>
             </div>
             <div className="employee-gallery-page-grid">
-              {renderEmployeeCards(personalAgents, '暂无个人员工')}
+              {renderEmployeeCards(personalAgents, '暂无我的数字员工')}
             </div>
           </section>
 
           <section className="employee-gallery-page-section">
             <div className="employee-gallery-page-section-head">
               <div>
-                <Typography.Title level={3}>员工广场</Typography.Title>
-                <Typography.Text type="secondary">已开放给任务派发台选择的数字员工。</Typography.Text>
+                <Typography.Title level={3}>数字员工广场</Typography.Title>
               </div>
               <span>{galleryAgents.length}</span>
             </div>
             <div className="employee-gallery-page-grid">
-              {renderEmployeeCards(galleryAgents, '员工广场暂无开放员工')}
+              {renderEmployeeCards(galleryAgents, '广场暂无数字员工')}
             </div>
           </section>
         </div>

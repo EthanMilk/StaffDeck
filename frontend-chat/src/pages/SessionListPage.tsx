@@ -127,7 +127,7 @@ export default function SessionListPage() {
   function confirmDelete(event: MouseEvent<HTMLElement>, target: ChatSession) {
     event.stopPropagation();
     Modal.confirm({
-      title: '删除任务记录',
+      title: '删除历史任务',
       content: `确定删除「${target.title || target.id}」吗？此操作会同时删除该任务的消息记录。`,
       okText: '删除',
       okButtonProps: { danger: true },
@@ -169,17 +169,15 @@ export default function SessionListPage() {
           </div>
         </div>
         {!sidebarCollapsed && (
-          <button type="button" className="sidebar-gallery-entry" onClick={() => navigate('/employees')}>
-            <span className="sidebar-gallery-entry-icon"><GlobalOutlined /></span>
-            <span className="sidebar-gallery-entry-copy">
-              <strong>员工广场</strong>
-              <span>选择接单员工</span>
-            </span>
-            <RightOutlined />
-          </button>
-        )}
-        <div className="session-list-scroll">
-          {!sidebarCollapsed && (
+          <div className="sidebar-workspace-panel">
+            <button type="button" className="sidebar-gallery-entry" onClick={() => navigate('/employees')}>
+              <span className="sidebar-gallery-entry-icon"><GlobalOutlined /></span>
+              <span className="sidebar-gallery-entry-copy">
+                <strong>数字员工广场</strong>
+                <span>选择数字员工</span>
+              </span>
+              <RightOutlined />
+            </button>
             <div className="session-filter-bar">
               <span className="session-filter-label">员工会话</span>
               <Select
@@ -190,11 +188,13 @@ export default function SessionListPage() {
                 onChange={setSessionAgentFilter}
               />
             </div>
-          )}
-          <div className="session-section-label">任务记录</div>
+          </div>
+        )}
+        <div className="session-list-scroll">
+          <div className="session-section-label">历史任务</div>
           {visibleSessions.length === 0 ? (
             <div className="session-list-empty">
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前员工暂无任务记录" />
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前员工暂无历史任务" />
             </div>
           ) : (
             visibleSessions.map((session) => {
@@ -243,7 +243,7 @@ export default function SessionListPage() {
                         size="small"
                         type="text"
                         icon={<EditOutlined />}
-                        aria-label="重命名任务"
+                        aria-label="重命名"
                         onClick={(event) => openRename(event, session)}
                       />
                       <Button
@@ -265,8 +265,7 @@ export default function SessionListPage() {
       <main className="chat-main">
         <div className="chat-header">
           <div>
-            <Typography.Text strong>任务派发台</Typography.Text>
-            <div className="header-subtitle">选择历史任务或派发新任务</div>
+            <Typography.Text strong>历史任务</Typography.Text>
           </div>
           <div className="chat-header-actions">
             <ThemeToggleButton />
@@ -275,15 +274,15 @@ export default function SessionListPage() {
         <div className="chat-messages">
           <div className="chat-empty-state">
             <span className="chat-empty-mark"><GlobalOutlined /></span>
-            <Typography.Title level={3}>从员工广场派发任务</Typography.Title>
+            <Typography.Title level={3}>选择一位数字员工开始对话</Typography.Title>
             <Typography.Paragraph>
-              进入员工广场选择接单员工，即可创建任务会话。
+              前往数字员工广场选择一位员工，开始对话。
             </Typography.Paragraph>
           </div>
         </div>
       </main>
       <Modal
-        title="重命名任务"
+        title="重命名"
         open={Boolean(renameSession)}
         okText="保存"
         cancelText="取消"

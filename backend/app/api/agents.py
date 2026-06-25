@@ -21,6 +21,7 @@ from app.agents.branching import (
     ensure_agent_skill_branch,
     ensure_knowledge_base_version,
     get_overall_agent,
+    is_open_gallery_resource,
     promote_branch_to_overall,
     promote_knowledge_branch_to_overall,
     rollback_branch,
@@ -38,6 +39,7 @@ from app.db.models import (
     GeneralSkill,
     KnowledgeBase,
     Skill,
+    Tool,
     utc_now,
     User,
 )
@@ -546,16 +548,19 @@ def _source_resource_binding(
     ).first()
 
 
+AgentResource = Skill | GeneralSkill | KnowledgeBase | Tool
+
+
 def _blocked_learning_reason(
     db: Session,
     tenant_id: str,
     source_agent: AgentProfile,
     resource_type: str,
-    resolved: Skill | GeneralSkill | KnowledgeBase,
+    resolved: AgentResource,
     source_binding: AgentResourceBinding | None,
 ) -> str | None:
     if source_agent.is_overall:
-        return None if _open_gallery_resource_enabled(resource_type, resolved) else "disabled_in_open_gallery"
+        return None if _open_gallery_resource_enabled(db, tenant_id, resource_type, resolved) else "disabled_in_open_gallery"
     if not source_binding or source_binding.status != "active":
         return "inactive_in_source_agent"
     if resource_type == "skill" and isinstance(resolved, Skill):
@@ -581,13 +586,22 @@ def _blocked_learning_reason(
     return None
 
 
-def _open_gallery_resource_enabled(resource_type: str, resolved: Skill | GeneralSkill | KnowledgeBase) -> bool:
+def _open_gallery_resource_enabled(
+    db: Session,
+    tenant_id: str,
+    resource_type: str,
+    resolved: AgentResource,
+) -> bool:
+    if not is_open_gallery_resource(db, tenant_id, resource_type, resolved):
+        return False
     if resource_type == "skill" and isinstance(resolved, Skill):
         return resolved.status == "published"
     if resource_type == "general_skill" and isinstance(resolved, GeneralSkill):
         return resolved.status == "published"
     if resource_type == "knowledge_base" and isinstance(resolved, KnowledgeBase):
         return resolved.status == "active"
+    if resource_type == "tool" and isinstance(resolved, Tool):
+        return resolved.enabled
     return False
 
 
@@ -596,7 +610,7 @@ def _import_resource_to_overall(
     tenant_id: str,
     source_agent: AgentProfile,
     resource_type: str,
-    resolved: Skill | GeneralSkill | KnowledgeBase,
+    resolved: AgentResource,
 ) -> None:
     if source_agent.is_overall:
         return
@@ -621,7 +635,7 @@ def _upsert_imported_resource_binding(
     source_agent: AgentProfile,
     target_agent: AgentProfile,
     resource_type: str,
-    resolved: Skill | GeneralSkill | KnowledgeBase,
+    resolved: AgentResource,
     source_binding: AgentResourceBinding | None,
 ) -> None:
     status = source_binding.status if source_binding else "active"
@@ -775,11 +789,13 @@ def _copy_or_update_knowledge_branch(
     db.add(target_branch)
 
 
-def _resource_display_id(resource_type: str, resolved: Skill | GeneralSkill | KnowledgeBase) -> str:
+def _resource_display_id(resource_type: str, resolved: AgentResource) -> str:
     if resource_type == "skill" and isinstance(resolved, Skill):
         return resolved.skill_id
     if resource_type == "general_skill" and isinstance(resolved, GeneralSkill):
         return resolved.slug
+    if resource_type == "tool" and isinstance(resolved, Tool):
+        return resolved.name
     return resolved.id
 
 
@@ -866,7 +882,7 @@ def _copy_knowledge_branch(db: Session, tenant_id: str, source_agent_id: str, ta
     )
 
 
-def _resolve_resource(db: Session, tenant_id: str, resource_type: str, identifier: str) -> Skill | GeneralSkill | KnowledgeBase | None:
+def _resolve_resource(db: Session, tenant_id: str, resource_type: str, identifier: str) -> AgentResource | None:
     if resource_type == "skill":
         return db.get(Skill, identifier) or db.exec(select(Skill).where(Skill.tenant_id == tenant_id, Skill.skill_id == identifier)).first()
     if resource_type == "general_skill":
@@ -877,6 +893,8 @@ def _resolve_resource(db: Session, tenant_id: str, resource_type: str, identifie
         return db.get(KnowledgeBase, identifier) or db.exec(
             select(KnowledgeBase).where(KnowledgeBase.tenant_id == tenant_id, KnowledgeBase.name == identifier)
         ).first()
+    if resource_type == "tool":
+        return db.get(Tool, identifier) or db.exec(select(Tool).where(Tool.tenant_id == tenant_id, Tool.name == identifier)).first()
     return None
 
 
@@ -905,6 +923,7 @@ def _ensure_resource_exists(db: Session, tenant_id: str, item: AgentResourceBind
         "skill": Skill,
         "general_skill": GeneralSkill,
         "knowledge_base": KnowledgeBase,
+        "tool": Tool,
     }[item.resource_type]
     row = db.get(model, item.resource_id)
     if not row or row.tenant_id != tenant_id:

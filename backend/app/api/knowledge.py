@@ -8,15 +8,17 @@ from sqlalchemy import func
 from sqlmodel import Session, select
 
 from app.agents.branching import (
+    ensure_agent_private_knowledge_branch,
+    ensure_open_gallery_binding,
     get_agent,
     knowledge_version_for_upload,
-    sync_knowledge_branch_from_overall,
+    mark_resource_open_gallery,
+    mark_resource_private_for_agent,
     visible_knowledge_base_version_ids,
 )
 from app.async_jobs import enqueue_async_job
 from app.db import get_session
 from app.db.models import (
-    AgentResourceBinding,
     KnowledgeBucket,
     KnowledgeChunk,
     KnowledgeDiscoverySuggestion,
@@ -197,26 +199,11 @@ def _resolve_upload_knowledge_base(
 
     agent = get_agent(db, request.tenant_id, agent_id)
     if agent and not agent.is_overall:
-        existing_binding = db.exec(
-            select(AgentResourceBinding).where(
-                AgentResourceBinding.tenant_id == request.tenant_id,
-                AgentResourceBinding.agent_id == agent.id,
-                AgentResourceBinding.resource_type == "knowledge_base",
-                AgentResourceBinding.resource_id == knowledge_base.id,
-            )
-        ).first()
-        if not existing_binding:
-            db.add(
-                AgentResourceBinding(
-                    tenant_id=request.tenant_id,
-                    agent_id=agent.id,
-                    resource_type="knowledge_base",
-                    resource_id=knowledge_base.id,
-                    status="active",
-                    metadata_json={"created_from_agent": True, "created_from_upload": True},
-                )
-            )
-        sync_knowledge_branch_from_overall(db, request.tenant_id, agent.id, knowledge_base.id)
+        mark_resource_private_for_agent(knowledge_base, agent.id)
+        ensure_agent_private_knowledge_branch(db, request.tenant_id, agent.id, knowledge_base)
+    else:
+        mark_resource_open_gallery(knowledge_base)
+        ensure_open_gallery_binding(db, request.tenant_id, "knowledge_base", knowledge_base.id, "active")
     return knowledge_base
 
 

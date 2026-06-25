@@ -422,10 +422,10 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
 
   useEffect(() => {
     api
-      .get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}`)
+      .get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${agentQuery}`)
       .then(setTools)
       .catch(() => setTools([]));
-  }, []);
+  }, [agentQuery]);
 
   useEffect(() => {
     if (!chatMessagesRef.current) return;
@@ -1169,7 +1169,7 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
         let createdTool: ToolRead;
         let createdNewTool = false;
         try {
-          createdTool = await api.post<ToolRead>('/api/enterprise/tools', payload);
+          createdTool = await api.post<ToolRead>(`/api/enterprise/tools${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, payload);
           createdNewTool = true;
         } catch (error) {
           if (!(error instanceof Error) || !error.message.includes('409')) throw error;
@@ -1667,12 +1667,11 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
     <div className="skill-distill-page">
       <div className="page-title">
         <div>
-          <Typography.Title level={3}>SOP管理子页面</Typography.Title>
-          <Typography.Text type="secondary">新建、编辑和启用员工 SOP 学习结果。</Typography.Text>
+          <Typography.Title level={3}>编辑 SOP</Typography.Title>
         </div>
         <Space>
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/enterprise/skills')}>
-            返回SOP管理
+            返回
           </Button>
         </Space>
       </div>
@@ -2194,6 +2193,16 @@ function SkillSource({
     onEdit(next, stepTargetPath(index));
   }
 
+  const steps = skillGraphSteps(skill);
+  const nodeNameMap = steps.reduce<Record<string, string>>((acc, step, index) => {
+    const nodeId = String(step.node_id || step.step_id || `node_${index + 1}`);
+    acc[nodeId] = String(step.name || nodeId);
+    return acc;
+  }, {});
+  const edgeMap = skillGraphEdgeMap(skill);
+  const terminalNodeIds = new Set(asStringList(skill.terminal_node_ids));
+  const startNodeId = String(skill.start_node_id || '');
+
   return (
     <div className="skill-source-md" ref={containerRef}>
       <div className="skill-source-group-title">基础信息</div>
@@ -2220,9 +2229,20 @@ function SkillSource({
       </SelectableTarget>
       <div className="skill-source-group-title">详细节点</div>
       <div className="skill-source-steps">
-        {skillGraphSteps(skill).map((step, index) => {
-          const stepId = String(step.step_id || `step_${index + 1}`);
+        {steps.map((step, index) => {
+          const stepId = String(step.node_id || step.step_id || `node_${index + 1}`);
           const path = stepTargetPath(index);
+          const outgoingEdges = edgeMap[stepId] || [];
+          const nodeState = [
+            stepId === startNodeId ? '起始节点' : '',
+            Boolean(step.optional) ? '可选' : '必选',
+            terminalNodeIds.has(stepId) ? '终止节点' : '流程节点',
+          ].filter(Boolean).join(' · ');
+          const routeText = outgoingEdges.length > 0
+            ? outgoingEdges.map((edge, edgeIndex) => sourceEdgeSummary(edge, nodeNameMap, edgeIndex)).join('\n')
+            : terminalNodeIds.has(stepId)
+              ? '流程结束'
+              : '未配置后续节点';
           return (
             <SelectableTarget
               key={path}
@@ -2241,6 +2261,7 @@ function SkillSource({
                 <div className="skill-source-meta-list">
                   <EditableSourceTextLine label={fieldLabel('step_id')} value={stepId} onChange={(value) => editStep(index, 'step_id', value)} />
                   <EditableSourceTextLine label={fieldLabel('type')} value={String(step.type || 'collect_info')} onChange={(value) => editStep(index, 'type', value)} />
+                  <SourceReadonlyLine label="节点状态" value={nodeState} />
                   <EditableSourceTextLine label={fieldLabel('condition')} value={String(step.condition || '')} onChange={(value) => editStep(index, 'condition', value)} />
                   <EditableSourceTextLine label={fieldLabel('instruction')} value={String(step.instruction || '')} multiline onChange={(value) => editStep(index, 'instruction', value)} />
                   <EditableSourceListLine label={fieldLabel('expected_user_info')} values={asStringList(step.expected_user_info)} onChange={(value) => editStep(index, 'expected_user_info', value)} />
@@ -2250,6 +2271,10 @@ function SkillSource({
                     toolStatuses={toolStatuses}
                     onChange={(value) => editStep(index, 'allowed_actions', value)}
                   />
+                  <SourceReadonlyLine label="流转规则" value={routeText} />
+                  <SourceJsonLine label="知识范围" value={step.knowledge_scope} />
+                  <SourceJsonLine label="重试策略" value={step.retry_policy} />
+                  <SourceJsonLine label="节点元数据" value={step.metadata} />
                 </div>
               </div>
             </SelectableTarget>
@@ -3080,6 +3105,18 @@ function edgeDisplayLabel(edge: Record<string, unknown>, nodeNameMap: Record<str
   return sourceName ? `来自 ${sourceName}` : '流转';
 }
 
+function sourceEdgeSummary(edge: Record<string, unknown>, nodeNameMap: Record<string, string> = {}, index = 0): string {
+  const targetId = String(edge.next_node_id || '').trim();
+  const targetName = targetId ? nodeNameMap[targetId] || targetId : '未指定节点';
+  const label = String(edge.label || '').trim();
+  const condition = String(edge.condition || '').trim();
+  const hasPriority = edge.priority !== undefined && edge.priority !== null && String(edge.priority).trim() !== '';
+  const priority = hasPriority && typeof edge.priority === 'number' ? edge.priority : hasPriority && Number.isFinite(Number(edge.priority)) ? Number(edge.priority) : index;
+  const prefix = label || condition;
+  const priorityText = hasPriority && Number.isFinite(priority) ? ` · 优先级 ${priority}` : '';
+  return `${prefix ? `${prefix} -> ` : ''}${targetName}${priorityText}`;
+}
+
 function compactEdgeLabel(value: string): string {
   const text = value.replace(/\s+/g, ' ').trim();
   if (text.length <= 24) return text;
@@ -3105,9 +3142,16 @@ function knowledgeScopeLabels(value: unknown): string[] {
 }
 
 function compactInputStyle(value: string, minCh = 8, maxCh = 92): CSSProperties {
-  const longestLine = String(value || '').split('\n').reduce((max, line) => Math.max(max, line.length), 0);
+  const longestLine = String(value || '').split('\n').reduce((max, line) => Math.max(max, visualTextWidth(line)), 0);
   const width = Math.max(minCh, Math.min(maxCh, longestLine + 2));
   return { width: `min(${width}ch, 100%)` };
+}
+
+function visualTextWidth(value: string): number {
+  return Array.from(value).reduce((total, char) => {
+    if (/[\u2e80-\u9fff\uff00-\uffef]/.test(char)) return total + 2;
+    return total + 1;
+  }, 0);
 }
 
 function fullSourceInputStyle(): CSSProperties {
@@ -3144,7 +3188,7 @@ function EditableSourceStepHeading({
         <span>Node {index + 1}:</span>
         <Input
           value={value || fallback}
-          style={compactInputStyle(value || fallback, 10, 56)}
+          style={compactInputStyle(value || fallback, 10, 88)}
           onChange={(event) => onChange(event.target.value)}
         />
       </div>
@@ -3215,6 +3259,32 @@ function EditableSourceListLine({
       </span>
     </div>
   );
+}
+
+function SourceReadonlyLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="skill-source-line readonly">
+      <span className="skill-source-key">{label}</span>
+      <span className="skill-source-value skill-source-readonly-value">{value || '-'}</span>
+    </div>
+  );
+}
+
+function SourceJsonLine({ label, value }: { label: string; value: unknown }) {
+  if (!hasReadableSourceObject(value)) return null;
+  return (
+    <div className="skill-source-line readonly">
+      <span className="skill-source-key">{label}</span>
+      <span className="skill-source-value">
+        <pre className="skill-source-json-inline">{JSON.stringify(value, null, 2)}</pre>
+      </span>
+    </div>
+  );
+}
+
+function hasReadableSourceObject(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return Object.keys(value).length > 0;
 }
 
 function EditableSourceActionLine({

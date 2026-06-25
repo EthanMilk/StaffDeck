@@ -337,43 +337,53 @@ textarea,
   text-align: center;
 }
 
+.sidebar-workspace-panel {
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface) 92%, transparent), color-mix(in srgb, var(--surface-muted) 52%, transparent));
+  box-shadow: 0 12px 28px rgba(37, 32, 24, 0.055);
+}
+
 .sidebar-gallery-entry {
   width: 100%;
   min-width: 0;
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) 14px;
+  grid-template-columns: 28px minmax(0, 1fr) 12px;
   align-items: center;
-  gap: 10px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 10px;
   color: var(--foreground);
-  background:
-    radial-gradient(circle at 0 0, color-mix(in srgb, var(--accent-soft) 46%, transparent), transparent 42%),
-    color-mix(in srgb, var(--surface) 90%, transparent);
-  box-shadow: 0 10px 24px rgba(37, 32, 24, 0.055);
+  background: transparent;
+  box-shadow: none;
   text-align: left;
   cursor: pointer;
-  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
 }
 
 .sidebar-gallery-entry:hover,
 .sidebar-gallery-entry.active {
-  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
-  background:
-    radial-gradient(circle at 0 0, color-mix(in srgb, var(--accent-soft) 66%, transparent), transparent 46%),
-    color-mix(in srgb, var(--surface) 96%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 56%, transparent);
 }
 
 .sidebar-gallery-entry-icon {
-  width: 34px;
-  height: 34px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
-  border-radius: 12px;
+  border-radius: 9px;
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent-soft) 74%, var(--surface));
+  background: color-mix(in srgb, var(--accent-soft) 68%, var(--surface));
   border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
 }
 
@@ -398,7 +408,7 @@ textarea,
 
 .sidebar-gallery-entry-copy span {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .sidebar-gallery-entry > .anticon {
@@ -604,11 +614,24 @@ textarea,
   overflow: hidden;
 }
 
+.employee-avatar-mark {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  overflow: hidden;
+  color: var(--accent-foreground);
+  background: var(--accent);
+}
+
 .chat-agent-mark img,
-.new-session-agent-logo img {
+.new-session-agent-logo img,
+.session-agent-avatar img,
+.employee-avatar-mark img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  display: block;
 }
 
 .employee-avatar-portrait {
@@ -745,22 +768,41 @@ textarea,
 
 .session-filter-bar {
   display: grid;
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
-  box-shadow: 0 8px 18px rgba(37, 32, 24, 0.05);
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .session-filter-label {
   color: var(--muted);
   font-size: 11px;
   font-weight: 760;
+  white-space: nowrap;
 }
 
 .session-filter-select {
   width: 100%;
+}
+
+.session-filter-select .ant-select-selector {
+  min-height: 28px !important;
+  height: 28px !important;
+  border-radius: 9px !important;
+  background: color-mix(in srgb, var(--surface) 78%, transparent) !important;
+  border-color: color-mix(in srgb, var(--border) 86%, transparent) !important;
+  box-shadow: none !important;
+}
+
+.session-filter-select .ant-select-selection-item {
+  line-height: 26px !important;
+  font-size: 12px;
+  font-weight: 650;
 }
 
 .session-list-empty {
@@ -886,14 +928,13 @@ textarea,
 .session-agent-avatar {
   width: 28px;
   height: 28px;
+  display: grid;
+  place-items: center;
   border-radius: 999px;
+  color: var(--accent-foreground);
+  background: var(--accent);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
-}
-
-.session-agent-avatar img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+  overflow: hidden;
 }
 
 .session-title-icon .anticon,
@@ -1089,35 +1130,40 @@ textarea,
 }
 
 .new-session-agent-logo.tone-teal,
-.chat-agent-mark.tone-teal {
+.chat-agent-mark.tone-teal,
+.session-agent-avatar.tone-teal {
   background:
     radial-gradient(circle at 70% 22%, rgba(255, 255, 255, 0.28), transparent 24%),
     linear-gradient(145deg, #11998e, #0f766e 54%, #075e59);
 }
 
 .new-session-agent-logo.tone-copper,
-.chat-agent-mark.tone-copper {
+.chat-agent-mark.tone-copper,
+.session-agent-avatar.tone-copper {
   background:
     radial-gradient(circle at 68% 22%, rgba(255, 244, 220, 0.32), transparent 25%),
     linear-gradient(145deg, #c77b43, #a85d32 56%, #734023);
 }
 
 .new-session-agent-logo.tone-olive,
-.chat-agent-mark.tone-olive {
+.chat-agent-mark.tone-olive,
+.session-agent-avatar.tone-olive {
   background:
     radial-gradient(circle at 70% 22%, rgba(255, 255, 255, 0.24), transparent 24%),
     linear-gradient(145deg, #8a9a5b, #65743a 56%, #465125);
 }
 
 .new-session-agent-logo.tone-ink,
-.chat-agent-mark.tone-ink {
+.chat-agent-mark.tone-ink,
+.session-agent-avatar.tone-ink {
   background:
     radial-gradient(circle at 70% 22%, rgba(255, 255, 255, 0.22), transparent 24%),
     linear-gradient(145deg, #43505a, #29323a 56%, #141b22);
 }
 
 .new-session-agent-logo.tone-gold,
-.chat-agent-mark.tone-gold {
+.chat-agent-mark.tone-gold,
+.session-agent-avatar.tone-gold {
   color: #191713;
   background:
     radial-gradient(circle at 72% 24%, rgba(255, 255, 255, 0.38), transparent 24%),
@@ -1125,21 +1171,25 @@ textarea,
 }
 
 .new-session-agent-logo.tone-blue,
-.chat-agent-mark.tone-blue {
+.chat-agent-mark.tone-blue,
+.session-agent-avatar.tone-blue {
   background:
     radial-gradient(circle at 70% 22%, rgba(255, 255, 255, 0.26), transparent 24%),
     linear-gradient(145deg, #5b8def, #3562b8 56%, #1f3f84);
 }
 
 .new-session-agent-logo.tone-overall,
-.chat-agent-mark.tone-overall {
+.chat-agent-mark.tone-overall,
+.session-agent-avatar.tone-overall {
   background:
     radial-gradient(circle at 72% 24%, rgba(255, 255, 255, 0.24), transparent 24%),
     linear-gradient(145deg, #0f766e, #263238);
 }
 
 .new-session-agent-logo.is-uploaded-avatar,
-.chat-agent-mark.is-uploaded-avatar {
+.chat-agent-mark.is-uploaded-avatar,
+.session-agent-avatar.is-uploaded-avatar,
+.employee-avatar-mark.is-uploaded-avatar {
   color: transparent;
   background: var(--surface-subtle);
 }
@@ -3107,7 +3157,7 @@ textarea,
     linear-gradient(180deg, rgba(38, 52, 78, 0.95), rgba(16, 25, 42, 0.96));
 }
 
-:root[data-theme='dark'] .sidebar-gallery-entry,
+:root[data-theme='dark'] .sidebar-workspace-panel,
 :root[data-theme='dark'] .employee-gallery-page-hero,
 :root[data-theme='dark'] .employee-gallery-page-section,
 :root[data-theme='dark'] .employee-gallery-page-card {

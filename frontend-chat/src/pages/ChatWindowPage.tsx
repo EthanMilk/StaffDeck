@@ -119,7 +119,7 @@ function persistSessionReadTimes(userId: string, values: Record<string, string>)
 }
 
 function isScheduledSession(session: ChatSession): boolean {
-  return (session.title || '').startsWith('自动任务：');
+  return (session.title || '').startsWith('定时任务：');
 }
 
 function sessionHasUnreadReply(session: ChatSession, readTimes: Record<string, string>, activeSessionId?: string): boolean {
@@ -442,7 +442,7 @@ function publicStreamPhase(data: Record<string, unknown>): string {
   const phase = typeof data.phase === 'string' ? data.phase : '';
   const text = typeof data.text === 'string' ? data.text : '';
   if (phase === 'error') return text || '请求失败';
-  if (phase === 'scheduled_task_draft') return text || '生成自动任务草案';
+  if (phase === 'scheduled_task_draft') return text || '生成定时任务草案';
   if (isKnowledgeTracePhase(phase)) return text || knowledgeTraceText(data);
   return '正在思考';
 }
@@ -473,15 +473,15 @@ function knowledgeTraceText(data: Record<string, unknown>): string {
     : typeof data.text === 'string'
       ? data.text
       : '';
-  if (!raw) return '查询业务资料';
-  return raw.replace(/知识/g, '业务资料');
+  if (!raw) return '检索知识库';
+  return raw.replace(/知识/g, '知识库');
 }
 
 function knowledgeTraceDetail(data: Record<string, unknown>): string | undefined {
   const query = isPlainRecord(data.query) && typeof data.query.query === 'string' ? data.query.query : '';
   const parts = [
     query ? `查询：${query}` : '',
-    typeof data.selected_count === 'number' ? `命中 Wiki ${data.selected_count} 个` : '',
+    typeof data.selected_count === 'number' ? `命中知识图谱 ${data.selected_count} 个` : '',
     typeof data.candidate_count === 'number' ? `候选 ${data.candidate_count} 个` : '',
     typeof data.chunk_count === 'number' ? `读取 ${data.chunk_count} 个片段` : '',
     typeof data.evidence_count === 'number' ? `整理 ${data.evidence_count} 条证据` : '',
@@ -494,7 +494,7 @@ function knowledgeResultTraceDetail(data: Record<string, unknown>): string | und
   const chunks = Array.isArray(data.chunks) ? data.chunks.length : 0;
   const evidence = Array.isArray(data.evidence_pack) ? data.evidence_pack.length : 0;
   const parts = [
-    concepts ? `命中 Wiki ${concepts} 个` : '',
+    concepts ? `命中知识图谱 ${concepts} 个` : '',
     chunks ? `读取 ${chunks} 个片段` : '',
     evidence ? `生成 ${evidence} 条引用候选` : '',
   ].filter(Boolean);
@@ -821,7 +821,7 @@ function ScheduledDraftCard({
   const scheduleValue = scheduleEditValue(editableDraft);
   const validateDraft = (nextDraft: ScheduledTaskDraftRead) => {
     if (!nextDraft.title.trim()) {
-      message.warning('请输入自动任务名称');
+      message.warning('请输入定时任务名称');
       return false;
     }
     if (!nextDraft.prompt.trim()) {
@@ -989,7 +989,7 @@ function ScheduledDraftCard({
       )}
       {!created && (
         <div className="scheduled-draft-footer">
-          {editing && <Button size="small" type="text" onClick={onDismiss}>忽略草案</Button>}
+          {editing && <Button size="small" type="text" onClick={onDismiss}>忽略</Button>}
           <Button size="small" type="primary" onClick={confirmDraft}>确认创建</Button>
         </div>
       )}
@@ -998,9 +998,9 @@ function ScheduledDraftCard({
 }
 
 function citationKindLabel(citation: KnowledgeCitation): string {
-  if (citation.kind === 'concept') return 'Wiki 概念';
-  if (citation.kind === 'okf') return 'OKF 引用';
-  return '证据片段';
+  if (citation.kind === 'concept') return '知识图谱';
+  if (citation.kind === 'okf') return '知识图谱引用';
+  return '引用来源';
 }
 
 function citationDisplayTitle(citation: KnowledgeCitation): string {
@@ -1545,7 +1545,6 @@ export default function ChatWindowPage() {
         if (slot.timer) {
           window.clearTimeout(slot.timer);
         }
-        slot.abortController?.abort();
       });
     };
   }, []);
@@ -1576,7 +1575,7 @@ export default function ChatWindowPage() {
   function confirmDelete(event: MouseEvent<HTMLElement>, target: ChatSession) {
     event.stopPropagation();
     Modal.confirm({
-      title: '删除任务记录',
+      title: '删除历史任务',
       content: `确定删除「${target.title || target.id}」吗？此操作会同时删除该任务的消息记录。`,
       okText: '删除',
       okButtonProps: { danger: true },
@@ -1605,7 +1604,7 @@ export default function ChatWindowPage() {
     appendRealtime(sessionId, {
       id: `local_interrupt_${Date.now()}`,
       role: 'system',
-      content: '已停止本次生成。',
+      content: '已停止生成',
       created_at: new Date().toISOString(),
     });
     stream.loading = false;
@@ -1668,14 +1667,14 @@ export default function ChatWindowPage() {
         delete next[sessionId];
         return next;
       });
-      message.success(`自动任务「${saved.title}」已启用`);
+      message.success(`定时任务「${saved.title}」已启用`);
     } catch (error) {
       if (isAuthError(error)) {
         clearAuthSession();
         navigate('/login', { replace: true });
         return;
       }
-      message.error(error instanceof Error ? error.message : '创建自动任务失败');
+      message.error(error instanceof Error ? error.message : '创建定时任务失败');
     }
   }
 
@@ -1789,7 +1788,7 @@ export default function ChatWindowPage() {
       upsertTraceLine(turnId, {
         id: 'knowledge_lookup',
         kind: 'knowledge',
-        text: '读取业务资料',
+        text: '读取知识库',
         detail: knowledgeResultTraceDetail(item.data),
         state: 'completed',
       });
@@ -1816,9 +1815,9 @@ export default function ChatWindowPage() {
       upsertTraceLine(turnId, {
         id: `decision_stepping_tool_continuation_${iteration}`,
         kind: 'decision',
-        text: '重新分析执行动作',
+        text: '重新分析',
         detail: item.event === 'agent_loop_continued'
-          ? (targetTool ? `决定继续调用工具 ${targetTool}` : '决定继续调用工具')
+          ? (targetTool ? `决定继续调用 ${targetTool}` : '决定继续调用工具')
           : '判断无需继续调用工具',
         state: 'completed',
       });
@@ -1826,7 +1825,7 @@ export default function ChatWindowPage() {
         upsertTraceLine(turnId, {
           id: 'decision_responding',
           kind: 'decision',
-          text: '组织回复',
+          text: '生成回复',
           state: 'running',
         });
       }
@@ -1853,7 +1852,7 @@ export default function ChatWindowPage() {
         upsertTraceLine(turnId, {
           id: `tool_${toolCallId}`,
           kind: 'tool',
-          text: `正在调用工具 ${item.data.tool_name}`,
+          text: `正在调用 ${item.data.tool_name}`,
           state: 'running',
         });
       } else if (phase === 'routing') {
@@ -1874,19 +1873,19 @@ export default function ChatWindowPage() {
         upsertTraceLine(turnId, {
           id: `decision_stepping_${repairReason}${iteration}`,
           kind: 'decision',
-          text: repairReason === 'main' ? '分析执行动作' : '重新分析执行动作',
+          text: repairReason === 'main' ? '决定下一步' : '重新分析',
           state: 'running',
         });
       } else if (phase === 'reflecting') {
         upsertTraceLine(turnId, { id: 'reflection', kind: 'decision', text: '正在反思', state: 'running' });
       } else if (phase === 'responding') {
-        upsertTraceLine(turnId, { id: 'decision_responding', kind: 'decision', text: '组织回复', state: 'running' });
+        upsertTraceLine(turnId, { id: 'decision_responding', kind: 'decision', text: '生成回复', state: 'running' });
       } else if (phase === 'scheduled_task_draft') {
         upsertTraceLine(turnId, {
           id: 'scheduled_task_draft',
           kind: 'decision',
-          text: '生成自动任务草案',
-          detail: '来自本条消息的定时项目，等待用户确认后启用',
+          text: '生成定时任务草案',
+          detail: '来自本条消息的定时任务，等待用户确认后启用',
           state: 'completed',
         });
       } else if (phase !== 'received') {
@@ -1970,7 +1969,7 @@ export default function ChatWindowPage() {
       appendRealtime(eventSessionId, {
         id: `scheduled_error_${Date.now()}`,
         role: 'assistant',
-        content: typeof item.data.message === 'string' ? item.data.message : '自动任务执行失败。',
+        content: typeof item.data.message === 'string' ? item.data.message : '定时任务执行失败。',
         created_at: new Date().toISOString(),
         isError: true,
       });
@@ -2040,13 +2039,21 @@ export default function ChatWindowPage() {
   ]);
 
   useEffect(() => {
-    if (!auth || !sessionId) return;
-    void pollScheduledSessionEvents(sessionId);
-    const timer = window.setInterval(() => {
-      void pollScheduledSessionEvents(sessionId);
-    }, currentStream.loading ? 1000 : 1800);
+    if (!auth) return;
+    const pollBackgroundSessions = () => {
+      const ids = new Set<string>();
+      sessions.forEach((session) => ids.add(session.id));
+      streamRef.current.forEach((slot, id) => {
+        if (slot.loading) ids.add(id);
+      });
+      ids.forEach((id) => {
+        void pollScheduledSessionEvents(id);
+      });
+    };
+    pollBackgroundSessions();
+    const timer = window.setInterval(pollBackgroundSessions, 1800);
     return () => window.clearInterval(timer);
-  }, [auth, currentStream.loading, pollScheduledSessionEvents, sessionId]);
+  }, [auth, pollScheduledSessionEvents, sessions, streamTick]);
 
   async function send() {
     if (!input.trim() || !sessionId) return;
@@ -2058,7 +2065,7 @@ export default function ChatWindowPage() {
     }
     const sessionAgentId = activeSession?.agent_id || selectedAgentId || '';
     if (!sessionAgentId) {
-      message.warning('该任务没有绑定接单员工，请新建任务后再发送');
+      message.warning('该任务没有绑定数字员工，请新建任务后再发送');
       return;
     }
     const stream = getStreamSlot(currentSessionId);
@@ -2197,7 +2204,7 @@ export default function ChatWindowPage() {
           upsertTraceLine(turnId, {
             id: 'knowledge_lookup',
             kind: 'knowledge',
-            text: '读取业务资料',
+            text: '读取知识库',
             detail: knowledgeResultTraceDetail(item.data),
             state: 'completed',
           });
@@ -2224,9 +2231,9 @@ export default function ChatWindowPage() {
           upsertTraceLine(turnId, {
             id: `decision_stepping_tool_continuation_${iteration}`,
             kind: 'decision',
-            text: '重新分析执行动作',
+            text: '重新分析',
             detail: item.event === 'agent_loop_continued'
-              ? (targetTool ? `决定继续调用工具 ${targetTool}` : '决定继续调用工具')
+              ? (targetTool ? `决定继续调用 ${targetTool}` : '决定继续调用工具')
               : '判断无需继续调用工具',
             state: 'completed',
           });
@@ -2234,7 +2241,7 @@ export default function ChatWindowPage() {
             upsertTraceLine(turnId, {
               id: 'decision_responding',
               kind: 'decision',
-              text: '组织回复',
+              text: '生成回复',
               state: 'running',
             });
           }
@@ -2261,7 +2268,7 @@ export default function ChatWindowPage() {
             upsertTraceLine(turnId, {
               id: `tool_${toolCallId}`,
               kind: 'tool',
-              text: `正在调用工具 ${item.data.tool_name}`,
+              text: `正在调用 ${item.data.tool_name}`,
               state: 'running',
             });
           } else if (phase === 'routing') {
@@ -2282,19 +2289,19 @@ export default function ChatWindowPage() {
             upsertTraceLine(turnId, {
               id: `decision_stepping_${repairReason}${iteration}`,
               kind: 'decision',
-              text: repairReason === 'main' ? '分析执行动作' : '重新分析执行动作',
+              text: repairReason === 'main' ? '决定下一步' : '重新分析',
               state: 'running',
             });
           } else if (phase === 'reflecting') {
             upsertTraceLine(turnId, { id: 'reflection', kind: 'decision', text: '正在反思', state: 'running' });
           } else if (phase === 'responding') {
-            upsertTraceLine(turnId, { id: 'decision_responding', kind: 'decision', text: '组织回复', state: 'running' });
+            upsertTraceLine(turnId, { id: 'decision_responding', kind: 'decision', text: '生成回复', state: 'running' });
           } else if (phase === 'scheduled_task_draft') {
             upsertTraceLine(turnId, {
               id: 'scheduled_task_draft',
               kind: 'decision',
-              text: '生成自动任务草案',
-              detail: '来自本条消息的定时项目，等待用户确认后启用',
+              text: '生成定时任务草案',
+              detail: '来自本条消息的定时任务，等待用户确认后启用',
               state: 'completed',
             });
           } else if (phase !== 'received') {
@@ -2386,7 +2393,7 @@ export default function ChatWindowPage() {
       appendRealtime(currentSessionId, {
         id: `error_${Date.now()}`,
         role: 'assistant',
-        content: '发送失败，请检查后端服务是否已启动。',
+        content: '发送失败，请稍后重试',
         created_at: new Date().toISOString(),
         isError: true,
       });
@@ -2434,17 +2441,15 @@ export default function ChatWindowPage() {
           </div>
         </div>
         {!sidebarCollapsed && (
-          <button type="button" className="sidebar-gallery-entry" onClick={() => navigate('/employees')}>
-            <span className="sidebar-gallery-entry-icon"><GlobalOutlined /></span>
-            <span className="sidebar-gallery-entry-copy">
-              <strong>员工广场</strong>
-              <span>选择接单员工</span>
-            </span>
-            <RightOutlined />
-          </button>
-        )}
-        <div className="session-list-scroll">
-          {!sidebarCollapsed && (
+          <div className="sidebar-workspace-panel">
+            <button type="button" className="sidebar-gallery-entry" onClick={() => navigate('/employees')}>
+              <span className="sidebar-gallery-entry-icon"><GlobalOutlined /></span>
+              <span className="sidebar-gallery-entry-copy">
+                <strong>数字员工广场</strong>
+                <span>选择数字员工</span>
+              </span>
+              <RightOutlined />
+            </button>
             <div className="session-filter-bar">
               <span className="session-filter-label">员工会话</span>
               <Select
@@ -2455,10 +2460,12 @@ export default function ChatWindowPage() {
                 onChange={setSessionAgentFilter}
               />
             </div>
-          )}
-          <div className="session-section-label">任务记录</div>
+          </div>
+        )}
+        <div className="session-list-scroll">
+          <div className="session-section-label">历史任务</div>
           {visibleSessions.length === 0 && !sidebarCollapsed ? (
-            <div className="session-list-empty">当前员工暂无任务记录</div>
+            <div className="session-list-empty">当前员工暂无历史任务</div>
           ) : null}
           {visibleSessions.map((session) => {
             const itemStream = getStreamSlot(session.id);
@@ -2515,7 +2522,7 @@ export default function ChatWindowPage() {
                       size="small"
                       type="text"
                       icon={<EditOutlined />}
-                      aria-label="重命名任务"
+                      aria-label="重命名"
                       onClick={(event) => openRename(event, session)}
                     />
                     <Button
@@ -2536,12 +2543,12 @@ export default function ChatWindowPage() {
           <EmployeeAvatarMark profile={displayedProfile} fallback="UR" className="chat-agent-mark" />
           <div className="chat-agent-main">
             <span className="chat-agent-label">
-              {sessionId ? '当前接单员工' : '新任务默认员工'}
+              {sessionId ? '当前数字员工' : '默认数字员工'}
             </span>
             <span className="chat-agent-name">
               {displayedAgent && displayedProfile
                 ? `${employeeDisplayName(displayedAgent)} · ${displayedProfile.roleName}`
-                : '暂无可用员工'}
+                : '暂无数字员工'}
             </span>
           </div>
         </div>
@@ -2549,10 +2556,14 @@ export default function ChatWindowPage() {
       <main className="chat-main">
         <div className="chat-header">
           <div>
-            <Typography.Text strong>任务派发台</Typography.Text>
-            <div className="header-subtitle">{sessionId}</div>
+            <Typography.Text strong>
+              {displayedAgent ? `chat with ${employeeDisplayName(displayedAgent)}` : 'chat with 数字员工'}
+            </Typography.Text>
           </div>
           <div className="chat-header-actions">
+            <Button icon={<GlobalOutlined />} onClick={() => { window.location.href = '/enterprise/dashboard'; }}>
+              数字账号管理
+            </Button>
             <ThemeToggleButton />
           </div>
         </div>
@@ -2644,7 +2655,7 @@ export default function ChatWindowPage() {
                             {scheduledTaskPrompt && (
                               <span className="message-mode-chip">
                                 <ClockCircleOutlined />
-                                定时项目
+                                定时任务
                               </span>
                             )}
                             <span>{visibleContent}</span>
@@ -2657,7 +2668,7 @@ export default function ChatWindowPage() {
                         <div className="message-citations" aria-label="知识引用">
                           <div className="citation-heading">
                             <FileSearchOutlined />
-                            <span>引用的业务资料</span>
+                            <span>知识来源</span>
                           </div>
                           <div className="citation-list">
                             {citations.map((citation) => (
@@ -2739,7 +2750,7 @@ export default function ChatWindowPage() {
               onCompositionStart={() => setIsComposing(true)}
               onCompositionEnd={() => window.setTimeout(() => setIsComposing(false), 0)}
               autoSize={{ minRows: 2, maxRows: 8 }}
-              placeholder="描述要交给员工办理的任务..."
+              placeholder="输入消息，按 Enter 发送..."
             />
             <div className="composer-toolbar">
               <div className="composer-context-row">
@@ -2772,13 +2783,13 @@ export default function ChatWindowPage() {
                   <button
                     type="button"
                     className="composer-intent-chip"
-                    title="取消定时项目"
+                    title="取消定时任务"
                     onClick={() => setComposerIntent('normal')}
                   >
                     <span className="composer-intent-icon" aria-hidden="true">
                       <ClockCircleOutlined />
                     </span>
-                    <span>定时项目</span>
+                    <span>定时任务</span>
                   </button>
                 )}
                 <div className="composer-hint">Enter 发送 / Shift+Enter 换行</div>
@@ -2840,7 +2851,7 @@ export default function ChatWindowPage() {
             )}
             {activeCitation.summary && activeCitation.excerpt && (
               <div className="citation-detail-section">
-                <span>证据片段</span>
+                <span>引用来源</span>
                 <blockquote>{activeCitation.excerpt}</blockquote>
               </div>
             )}
@@ -2860,7 +2871,7 @@ export default function ChatWindowPage() {
                 )}
                 {activeCitation.concept_id && (
                   <div>
-                    <span>Wiki 页面</span>
+                    <span>知识图谱</span>
                     <strong>{activeCitation.concept_id}</strong>
                   </div>
                 )}
@@ -2873,7 +2884,7 @@ export default function ChatWindowPage() {
         )}
       </Modal>
       <Modal
-        title="重命名任务"
+        title="重命名"
         open={Boolean(renameSession)}
         okText="保存"
         cancelText="取消"

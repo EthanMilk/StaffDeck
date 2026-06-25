@@ -6,10 +6,16 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
-from app.agents.branching import require_overall_agent
+from app.agents.branching import (
+    ensure_open_gallery_binding,
+    ensure_private_resource_binding,
+    get_agent,
+    is_open_gallery_resource,
+    require_overall_agent,
+)
 from app.config import get_settings
 from app.db import get_session
-from app.db.models import Tool, utc_now
+from app.db.models import AgentResourceBinding, Tool, utc_now
 from app.security.tenant import ensure_tenant
 from app.tools import ToolExecutor
 from app.tools.mcp_client import MCPClientError, execute_mcp_tool
@@ -56,20 +62,22 @@ def tool_read(row: Tool) -> ToolRead:
 def list_tools(
     tenant_id: str = Query(...),
     bucket: str | None = Query(default=None),
+    agent_id: str | None = Query(default=None),
     db: Session = Depends(get_session),
 ) -> list[ToolRead]:
     ensure_tenant(db, tenant_id)
-    stmt = select(Tool).where(Tool.tenant_id == tenant_id)
-    if bucket and bucket != "__all__":
-        stmt = stmt.where(Tool.bucket == bucket)
-    rows = db.exec(stmt.order_by(Tool.bucket, Tool.name)).all()
+    rows = _visible_tool_rows(db, tenant_id, bucket, agent_id)
     return [tool_read(row) for row in rows]
 
 
 @router.get("/buckets", response_model=list[ToolBucketRead])
-def list_tool_buckets(tenant_id: str = Query(...), db: Session = Depends(get_session)) -> list[ToolBucketRead]:
+def list_tool_buckets(
+    tenant_id: str = Query(...),
+    agent_id: str | None = Query(default=None),
+    db: Session = Depends(get_session),
+) -> list[ToolBucketRead]:
     ensure_tenant(db, tenant_id)
-    rows = db.exec(select(Tool).where(Tool.tenant_id == tenant_id).order_by(Tool.bucket, Tool.name)).all()
+    rows = _visible_tool_rows(db, tenant_id, None, agent_id)
     grouped: dict[str, ToolBucketRead] = {}
     for row in rows:
         bucket = row.bucket or "未分桶"
@@ -84,7 +92,11 @@ def list_tool_buckets(tenant_id: str = Query(...), db: Session = Depends(get_ses
 
 
 @router.post("", response_model=ToolRead)
-def create_tool(request: ToolCreateRequest, db: Session = Depends(get_session)) -> ToolRead:
+def create_tool(
+    request: ToolCreateRequest,
+    agent_id: str | None = Query(default=None),
+    db: Session = Depends(get_session),
+) -> ToolRead:
     ensure_tenant(db, request.tenant_id)
     existing = db.exec(
         select(Tool).where(Tool.tenant_id == request.tenant_id, Tool.name == request.name)
@@ -109,6 +121,19 @@ def create_tool(request: ToolCreateRequest, db: Session = Depends(get_session)) 
         enabled=request.enabled,
     )
     db.add(row)
+    db.flush()
+    agent = get_agent(db, request.tenant_id, agent_id)
+    if agent and not agent.is_overall:
+        ensure_private_resource_binding(
+            db,
+            request.tenant_id,
+            agent.id,
+            "tool",
+            row.id,
+            "active" if request.enabled else "inactive",
+        )
+    else:
+        ensure_open_gallery_binding(db, request.tenant_id, "tool", row.id, "active" if request.enabled else "inactive")
     db.commit()
     db.refresh(row)
     return tool_read(row)
@@ -176,14 +201,27 @@ def probe_tool(request: ToolProbeRequest, db: Session = Depends(get_session)) ->
 
 
 @router.get("/{tool_id}", response_model=ToolRead)
-def get_tool(tool_id: str, tenant_id: str = Query(...), db: Session = Depends(get_session)) -> ToolRead:
+def get_tool(
+    tool_id: str,
+    tenant_id: str = Query(...),
+    agent_id: str | None = Query(default=None),
+    db: Session = Depends(get_session),
+) -> ToolRead:
     row = _get_tool(db, tenant_id, tool_id)
+    _ensure_tool_visible(db, tenant_id, row, agent_id)
     return tool_read(row)
 
 
 @router.put("/{tool_id}", response_model=ToolRead)
-def update_tool(tool_id: str, request: ToolUpdateRequest, db: Session = Depends(get_session)) -> ToolRead:
+def update_tool(
+    tool_id: str,
+    request: ToolUpdateRequest,
+    agent_id: str | None = Query(default=None),
+    db: Session = Depends(get_session),
+) -> ToolRead:
     row = _get_tool(db, request.tenant_id, tool_id)
+    agent = get_agent(db, request.tenant_id, agent_id)
+    _ensure_tool_visible(db, request.tenant_id, row, agent_id)
     row.name = request.name
     row.display_name = request.display_name
     row.description = request.description
@@ -200,6 +238,18 @@ def update_tool(tool_id: str, request: ToolUpdateRequest, db: Session = Depends(
     row.enabled = request.enabled
     row.updated_at = utc_now()
     db.add(row)
+    db.flush()
+    if agent and not agent.is_overall:
+        ensure_private_resource_binding(
+            db,
+            request.tenant_id,
+            agent.id,
+            "tool",
+            row.id,
+            "active" if request.enabled else "inactive",
+        )
+    else:
+        ensure_open_gallery_binding(db, request.tenant_id, "tool", row.id, "active" if request.enabled else "inactive")
     db.commit()
     db.refresh(row)
     return tool_read(row)
@@ -212,16 +262,34 @@ def delete_tool(
     db: Session = Depends(get_session),
     agent_id: str | None = None,
 ) -> dict[str, str]:
-    require_overall_agent(db, tenant_id, agent_id)
     row = _get_tool(db, tenant_id, tool_id)
+    agent = get_agent(db, tenant_id, agent_id)
+    if agent and not agent.is_overall:
+        binding = _tool_binding(db, tenant_id, agent.id, row.id)
+        if binding:
+            binding.status = "deleted"
+            binding.updated_at = utc_now()
+            db.add(binding)
+            db.commit()
+            return {"status": "hidden"}
+        raise HTTPException(status_code=404, detail="Tool not visible to this agent")
+    if agent and agent.is_overall and not is_open_gallery_resource(db, tenant_id, "tool", row):
+        raise HTTPException(status_code=404, detail="Tool not visible in open gallery")
+    require_overall_agent(db, tenant_id, agent_id)
     db.delete(row)
     db.commit()
     return {"status": "deleted"}
 
 
 @router.post("/{tool_id}/test", response_model=ToolResult)
-def test_tool(tool_id: str, request: ToolTestRequest, db: Session = Depends(get_session)) -> ToolResult:
+def test_tool(
+    tool_id: str,
+    request: ToolTestRequest,
+    agent_id: str | None = Query(default=None),
+    db: Session = Depends(get_session),
+) -> ToolResult:
     row = _get_tool(db, request.tenant_id, tool_id)
+    _ensure_tool_visible(db, request.tenant_id, row, agent_id)
     return ToolExecutor(db).execute(request.tenant_id, ToolCall(name=row.name, arguments=request.arguments))
 
 
@@ -231,6 +299,58 @@ def _get_tool(db: Session, tenant_id: str, tool_id: str) -> Tool:
     if not row or row.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Tool not found")
     return row
+
+
+def _visible_tool_rows(
+    db: Session,
+    tenant_id: str,
+    bucket: str | None = None,
+    agent_id: str | None = None,
+) -> list[Tool]:
+    agent = get_agent(db, tenant_id, agent_id)
+    if agent and not agent.is_overall:
+        bindings = db.exec(
+            select(AgentResourceBinding)
+            .where(
+                AgentResourceBinding.tenant_id == tenant_id,
+                AgentResourceBinding.agent_id == agent.id,
+                AgentResourceBinding.resource_type == "tool",
+                AgentResourceBinding.status != "deleted",
+            )
+            .order_by(AgentResourceBinding.updated_at.desc())
+        ).all()
+        ids = [binding.resource_id for binding in bindings]
+        if not ids:
+            return []
+        stmt = select(Tool).where(Tool.tenant_id == tenant_id, Tool.id.in_(ids))
+    else:
+        stmt = select(Tool).where(Tool.tenant_id == tenant_id)
+    if bucket and bucket != "__all__":
+        stmt = stmt.where(Tool.bucket == bucket)
+    rows = list(db.exec(stmt.order_by(Tool.bucket, Tool.name)).all())
+    if agent and not agent.is_overall:
+        return rows
+    return [row for row in rows if is_open_gallery_resource(db, tenant_id, "tool", row)]
+
+
+def _ensure_tool_visible(db: Session, tenant_id: str, row: Tool, agent_id: str | None) -> None:
+    agent = get_agent(db, tenant_id, agent_id)
+    if agent and not agent.is_overall and not _tool_binding(db, tenant_id, agent.id, row.id):
+        raise HTTPException(status_code=404, detail="Tool not visible to this agent")
+    if agent and agent.is_overall and not is_open_gallery_resource(db, tenant_id, "tool", row):
+        raise HTTPException(status_code=404, detail="Tool not visible in open gallery")
+
+
+def _tool_binding(db: Session, tenant_id: str, agent_id: str, tool_id: str) -> AgentResourceBinding | None:
+    return db.exec(
+        select(AgentResourceBinding).where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.agent_id == agent_id,
+            AgentResourceBinding.resource_type == "tool",
+            AgentResourceBinding.resource_id == tool_id,
+            AgentResourceBinding.status != "deleted",
+        )
+    ).first()
 
 
 def _normalize_bucket(value: str | None) -> str:

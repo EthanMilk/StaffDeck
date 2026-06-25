@@ -165,10 +165,10 @@ export default function PersonaPage() {
       <Card className="editor-card" title={<><UserOutlined /> 岗位人设</>}>
         <Form form={form} layout="vertical">
           <Form.Item name="agent_name" label="名称" rules={[{ required: true }]}>
-            <Input placeholder="员工姓名" />
+            <Input placeholder="数字员工姓名" />
           </Form.Item>
           <Form.Item name="agent_description" label="描述">
-            <Input.TextArea rows={2} placeholder="员工岗位人设摘要" />
+            <Input.TextArea rows={2} placeholder="员工岗位描述" />
           </Form.Item>
           <Form.Item name="system_prompt" label="岗位 Prompt" rules={[{ required: true }]}>
             <Input.TextArea

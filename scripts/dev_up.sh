@@ -8,6 +8,9 @@ CHAT_DIR="$ROOT_DIR/frontend-chat"
 RUN_DIR="$ROOT_DIR/.dev"
 LOG_DIR="$RUN_DIR/logs"
 
+SINGLE_PORT="${SINGLE_PORT:-1}"
+APP_HOST="${APP_HOST:-127.0.0.1}"
+APP_PORT="${APP_PORT:-5173}"
 BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 ENTERPRISE_HOST="${ENTERPRISE_HOST:-127.0.0.1}"
@@ -22,22 +25,37 @@ api_default_host="$BACKEND_HOST"
 if [[ "$api_default_host" == "0.0.0.0" ]]; then
   api_default_host="127.0.0.1"
 fi
-API_BASE_URL="${VITE_API_BASE_URL:-${API_BASE_URL:-http://$api_default_host:$BACKEND_PORT}}"
-
-DEFAULT_CORS_ORIGINS="http://localhost:$ENTERPRISE_PORT,http://localhost:$CHAT_PORT,http://127.0.0.1:$ENTERPRISE_PORT,http://127.0.0.1:$CHAT_PORT"
-if [[ -n "${PUBLIC_ENTERPRISE_ORIGIN:-}" ]]; then
-  DEFAULT_CORS_ORIGINS="$DEFAULT_CORS_ORIGINS,$PUBLIC_ENTERPRISE_ORIGIN"
+if [[ "$SINGLE_PORT" == "1" ]]; then
+  API_BASE_URL="${VITE_API_BASE_URL:-${API_BASE_URL:-}}"
+  TOOL_BASE_URL="${TOOL_BASE_URL:-http://localhost:$APP_PORT}"
+else
+  API_BASE_URL="${VITE_API_BASE_URL:-${API_BASE_URL:-http://$api_default_host:$BACKEND_PORT}}"
+  TOOL_BASE_URL="${TOOL_BASE_URL:-http://localhost:$BACKEND_PORT}"
 fi
-if [[ -n "${PUBLIC_CHAT_ORIGIN:-}" ]]; then
-  DEFAULT_CORS_ORIGINS="$DEFAULT_CORS_ORIGINS,$PUBLIC_CHAT_ORIGIN"
+
+if [[ "$SINGLE_PORT" == "1" ]]; then
+  DEFAULT_CORS_ORIGINS="http://localhost:$APP_PORT,http://127.0.0.1:$APP_PORT"
+  if [[ -n "${PUBLIC_APP_ORIGIN:-}" ]]; then
+    DEFAULT_CORS_ORIGINS="$DEFAULT_CORS_ORIGINS,$PUBLIC_APP_ORIGIN"
+  fi
+else
+  DEFAULT_CORS_ORIGINS="http://localhost:$ENTERPRISE_PORT,http://localhost:$CHAT_PORT,http://127.0.0.1:$ENTERPRISE_PORT,http://127.0.0.1:$CHAT_PORT"
+  if [[ -n "${PUBLIC_ENTERPRISE_ORIGIN:-}" ]]; then
+    DEFAULT_CORS_ORIGINS="$DEFAULT_CORS_ORIGINS,$PUBLIC_ENTERPRISE_ORIGIN"
+  fi
+  if [[ -n "${PUBLIC_CHAT_ORIGIN:-}" ]]; then
+    DEFAULT_CORS_ORIGINS="$DEFAULT_CORS_ORIGINS,$PUBLIC_CHAT_ORIGIN"
+  fi
 fi
 CORS_ORIGINS="${CORS_ORIGINS:-$DEFAULT_CORS_ORIGINS}"
+export SINGLE_PORT APP_HOST APP_PORT BACKEND_HOST BACKEND_PORT ENTERPRISE_HOST ENTERPRISE_PORT CHAT_HOST CHAT_PORT
+export API_BASE_URL VITE_API_BASE_URL="$API_BASE_URL" CORS_ORIGINS TOOL_BASE_URL
 
 mkdir -p "$RUN_DIR" "$LOG_DIR"
 
 remove_legacy_launchctl_labels() {
   for prefix in com.ultrarag4.dev com.skill-agent-loop; do
-    for name in backend enterprise chat; do
+    for name in app backend enterprise chat; do
       launchctl remove "$prefix.$name" >/dev/null 2>&1 || true
     done
   done
@@ -144,17 +162,109 @@ wait_url() {
   exit 1
 }
 
+build_frontends() {
+  echo "Building frontend bundles for single-port app..."
+  npm --prefix "$ENTERPRISE_DIR" run build
+  npm --prefix "$CHAT_DIR" run build
+}
+
 cleanup() {
-  for name in supervisor backend enterprise chat; do
+  for name in supervisor app backend enterprise chat; do
     stop_pid_file "$name"
   done
 }
 
 remove_legacy_launchctl_labels
 
-for name in supervisor backend enterprise chat; do
+for name in supervisor app backend enterprise chat; do
   stop_pid_file "$name"
 done
+
+if [[ "$SINGLE_PORT" == "1" ]]; then
+  ensure_port_free "$APP_PORT"
+  build_frontends
+
+  app_url_host="$(url_host "$APP_HOST")"
+
+  if [[ "$DETACH" == "1" && "$AUTO_RESTART" == "1" ]]; then
+    supervisor_log="$LOG_DIR/supervisor.log"
+    supervisor_err_file="$LOG_DIR/supervisor.err.log"
+    : > "$supervisor_log"
+    : > "$supervisor_err_file"
+    : > "$LOG_DIR/app.log"
+    : > "$LOG_DIR/app.err.log"
+    supervisor_pid="$(
+      python3 -c '
+import os
+import subprocess
+import sys
+
+root_dir, script_path, log_file, err_file = sys.argv[1:5]
+env = os.environ.copy()
+with open(log_file, "ab", buffering=0) as stdout, open(err_file, "ab", buffering=0) as stderr:
+    process = subprocess.Popen(
+        [sys.executable, script_path],
+        cwd=root_dir,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=stdout,
+        stderr=stderr,
+        start_new_session=True,
+    )
+print(process.pid)
+' "$ROOT_DIR" "$ROOT_DIR/scripts/dev_supervisor.py" "$supervisor_log" "$supervisor_err_file"
+    )"
+    echo "$supervisor_pid" > "$RUN_DIR/supervisor.pid"
+
+    wait_url "app" "http://$app_url_host:$APP_PORT/api/health" "$LOG_DIR/app.log"
+    wait_url "chat" "http://$app_url_host:$APP_PORT/chat/" "$LOG_DIR/app.log"
+    wait_url "enterprise" "http://$app_url_host:$APP_PORT/enterprise/dashboard" "$LOG_DIR/app.log"
+
+    echo "Started stable single-port app:"
+    echo "  supervisor $supervisor_pid"
+    echo "  app        http://$app_url_host:$APP_PORT/chat/"
+    echo "  enterprise http://$app_url_host:$APP_PORT/enterprise/dashboard"
+    echo "  api docs   http://$app_url_host:$APP_PORT/docs"
+    echo
+    echo "Logs:"
+    echo "  $LOG_DIR/supervisor.log"
+    echo "  $LOG_DIR/app.log"
+    echo
+    echo "Detached with auto-restart. Use scripts/dev_down.sh to stop."
+    exit 0
+  fi
+
+  app_pid="$(start_service "app" "$BACKEND_DIR" "export CORS_ORIGINS='$CORS_ORIGINS' TOOL_BASE_URL='$TOOL_BASE_URL'; exec .venv/bin/uvicorn single_port_app:app --host '$APP_HOST' --port '$APP_PORT'")"
+
+  wait_url "app" "http://$app_url_host:$APP_PORT/api/health" "$LOG_DIR/app.log"
+  wait_url "chat" "http://$app_url_host:$APP_PORT/chat/" "$LOG_DIR/app.log"
+  wait_url "enterprise" "http://$app_url_host:$APP_PORT/enterprise/dashboard" "$LOG_DIR/app.log"
+
+  echo "Started single-port app:"
+  echo "  app        http://$app_url_host:$APP_PORT/chat/ ($app_pid)"
+  echo "  enterprise http://$app_url_host:$APP_PORT/enterprise/dashboard"
+  echo "  api docs   http://$app_url_host:$APP_PORT/docs"
+  echo
+  echo "Logs:"
+  echo "  $LOG_DIR/app.log"
+
+  if [[ "$DETACH" == "1" ]]; then
+    echo
+    echo "Detached. Use scripts/dev_down.sh to stop."
+    exit 0
+  fi
+
+  trap cleanup INT TERM EXIT
+  echo
+  echo "Single-port app running. Press Ctrl-C to stop."
+  while true; do
+    if ! kill -0 "$app_pid" 2>/dev/null; then
+      echo "App process $app_pid exited." >&2
+      exit 1
+    fi
+    sleep 1
+  done
+fi
 
 ensure_port_free "$BACKEND_PORT"
 ensure_port_free "$ENTERPRISE_PORT"

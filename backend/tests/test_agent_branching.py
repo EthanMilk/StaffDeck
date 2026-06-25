@@ -7,14 +7,17 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import (
     copy_overall_scope_to_agent,
+    ensure_private_resource_binding,
     ensure_knowledge_base_version,
     knowledge_version_for_upload,
     require_overall_agent,
     update_branch_skill,
+    visible_knowledge_base_versions,
     visible_skill_rows,
 )
 from app.agents.schema import AgentResourceImportRequest
-from app.api.agents import _skill_branch_read, import_agent_resources
+from app.api.agents import _skill_branch_read, import_agent_resources, list_agents
+from app.api.tools import list_tools
 from app.db.models import (
     AgentProfile,
     AgentResourceBinding,
@@ -27,6 +30,7 @@ from app.db.models import (
     KnowledgeDocument,
     Skill,
     Tenant,
+    Tool,
 )
 from app.knowledge.okf import upsert_concepts
 
@@ -68,6 +72,37 @@ def test_agent_skill_branch_is_copy_on_write_and_reports_branch_state() -> None:
         assert global_skill is not None
         assert global_skill.name == "购买流程"
         assert _skill_branch_read(branch_visible)["branch_sync_state"] == "diverged"
+
+
+def test_list_agents_allows_tool_resource_bindings() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        agent = AgentProfile(id="agent_tool_owner", tenant_id="tenant_demo", name="工具员工", is_overall=False)
+        tool = Tool(
+            id="tool_lookup",
+            tenant_id="tenant_demo",
+            name="product.lookup",
+            display_name="商品查询",
+            method="POST",
+            url="/api/mock/product/lookup",
+        )
+        db.add(agent)
+        db.add(tool)
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id=agent.id,
+                resource_type="tool",
+                resource_id=tool.id,
+                status="active",
+            )
+        )
+        db.commit()
+
+        result = list_agents("tenant_demo", db)
+
+        assert result[0].resources[0].resource_type == "tool"
+        assert result[0].resources[0].resource_id == tool.id
 
 
 def test_non_overall_agent_cannot_delete_global_resources() -> None:
@@ -203,6 +238,110 @@ def test_disabled_open_gallery_resources_cannot_be_learned() -> None:
         copy_overall_scope_to_agent(db, "tenant_demo", inherited)
 
         assert db.exec(select(AgentResourceBinding).where(AgentResourceBinding.agent_id == inherited.id)).all() == []
+
+
+def test_private_agent_resources_are_not_visible_in_open_gallery() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        overall = AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True)
+        owner = AgentProfile(id="agent_owner", tenant_id="tenant_demo", name="个人员工", is_overall=False)
+        target = AgentProfile(id="agent_target", tenant_id="tenant_demo", name="学习员工", is_overall=False)
+        private_skill = Skill(
+            id="skill_private",
+            tenant_id="tenant_demo",
+            skill_id="private_sop",
+            version="1.0.0",
+            name="个人 SOP",
+            business_domain="电商",
+            description="个人创建的 SOP",
+            status="published",
+            content_json=_graph("个人 SOP", "1.0.0"),
+        )
+        private_general_skill = GeneralSkill(
+            id="general_private",
+            tenant_id="tenant_demo",
+            slug="private-general-skill",
+            name="个人通用技能",
+            skill_markdown="# 个人通用技能",
+            status="published",
+        )
+        private_knowledge_base = KnowledgeBase(
+            id="kb_private",
+            tenant_id="tenant_demo",
+            name="个人业务资料",
+            status="active",
+        )
+        private_tool = Tool(
+            id="tool_private",
+            tenant_id="tenant_demo",
+            name="private_tool",
+            display_name="个人工具",
+            description="个人工具",
+            method="POST",
+            url="mock://private",
+            enabled=True,
+        )
+        db.add(overall)
+        db.add(owner)
+        db.add(target)
+        db.add(private_skill)
+        db.add(private_general_skill)
+        db.add(private_knowledge_base)
+        db.add(private_tool)
+        db.flush()
+
+        for resource_type, resource_id in [
+            ("skill", private_skill.id),
+            ("general_skill", private_general_skill.id),
+            ("knowledge_base", private_knowledge_base.id),
+            ("tool", private_tool.id),
+        ]:
+            ensure_private_resource_binding(db, "tenant_demo", owner.id, resource_type, resource_id, "active")
+
+        legacy_private_knowledge_base = KnowledgeBase(
+            id="kb_legacy_private",
+            tenant_id="tenant_demo",
+            name="旧版个人上传资料",
+            status="active",
+            metadata_json={"created_from_document_upload": True},
+        )
+        db.add(legacy_private_knowledge_base)
+        db.flush()
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id=owner.id,
+                resource_type="knowledge_base",
+                resource_id=legacy_private_knowledge_base.id,
+                status="active",
+                metadata_json={"created_from_agent": True, "created_from_upload": True},
+            )
+        )
+        db.commit()
+
+        for resource_type, resource_id in [
+            ("skill", private_skill.id),
+            ("general_skill", private_general_skill.id),
+            ("knowledge_base", private_knowledge_base.id),
+        ]:
+            result = import_agent_resources(
+                target.id,
+                AgentResourceImportRequest(
+                    tenant_id="tenant_demo",
+                    source_agent_id=overall.id,
+                    resource_type=resource_type,  # type: ignore[arg-type]
+                    resource_ids=[resource_id],
+                ),
+                db,
+            )
+
+            assert result["imported"] == []
+            assert result["missing"] == [{"resource_id": resource_id, "reason": "disabled_in_open_gallery"}]
+
+        open_tools = list_tools(tenant_id="tenant_demo", bucket=None, agent_id=overall.id, db=db)
+        assert [row.id for row in open_tools] == []
+        open_knowledge_versions = visible_knowledge_base_versions(db, "tenant_demo", overall.id)
+        assert "kb_legacy_private" not in open_knowledge_versions
 
 
 def test_knowledge_branch_write_clones_existing_wiki_before_appending_concept() -> None:

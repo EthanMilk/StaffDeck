@@ -1,4 +1,5 @@
 import {
+  CommentOutlined,
   DeleteOutlined,
   EditOutlined,
   GlobalOutlined,
@@ -87,6 +88,13 @@ export default function AgentsPage({
     navigate('/enterprise/dashboard');
   }
 
+  function startEmployeeChat(row: AgentProfileRead) {
+    const url = new URL('/chat/', window.location.origin);
+    url.searchParams.set('agent_id', row.id);
+    url.searchParams.set('create', '1');
+    window.location.href = `${url.pathname}${url.search}`;
+  }
+
   async function updateStatus(row: AgentProfileRead, status: 'active' | 'archived') {
     try {
       await api.put<AgentProfileRead>(`/api/enterprise/agents/${row.id}`, {
@@ -114,18 +122,18 @@ export default function AgentsPage({
         tenant_id: TENANT_ID,
         metadata,
       });
-      message.success(published ? '已发布到员工广场' : '已从员工广场下架');
+      message.success(published ? '已发布到广场' : '已从广场下架');
       await load();
       window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '更新员工广场状态失败');
+      message.error(error instanceof Error ? error.message : '更新广场状态失败');
     }
   }
 
   function deleteEmployee(row: AgentProfileRead) {
     Modal.confirm({
       title: `删除员工「${employeeDisplayName(row)}」？`,
-      content: '删除后会移除该员工的资料、SOP 和技能绑定；开放广场平台不受影响。',
+      content: '删除后该员工的所有配置将一并移除，操作不可撤销。',
       okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -154,12 +162,7 @@ export default function AgentsPage({
     <div className="page agents-page">
       <div className="page-title">
         <div>
-          <Typography.Title level={2}>{isOverallScope ? '员工广场' : '员工名册'}</Typography.Title>
-          <Typography.Paragraph type="secondary">
-            {isOverallScope
-              ? '管理可开放给任务派发台的数字员工，控制员工上线、下线和广场发布状态。'
-              : '查看个人员工和员工广场开放员工，点击员工进入员工信息页。'}
-          </Typography.Paragraph>
+          <Typography.Title level={2}>{isOverallScope ? '数字员工广场' : '我的数字员工'}</Typography.Title>
         </div>
         <Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>
           刷新
@@ -173,14 +176,14 @@ export default function AgentsPage({
           <small>{employees.filter((item) => item.status === 'active').length} 位在线</small>
         </Card>
         <Card className="agent-summary-card">
-          <span>员工广场</span>
+          <span>已发布到广场</span>
           <strong>{employees.filter(isGalleryEmployee).length}</strong>
-          <small>已开放给任务派发台选择</small>
+          <small>聊天端可选择</small>
         </Card>
         <Card className="agent-summary-card">
-          <span>下线员工</span>
+          <span>已下线</span>
           <strong>{employees.filter((item) => item.status !== 'active').length}</strong>
-          <small>下线后任务派发台不可选择</small>
+          <small>下线后聊天端不可选择</small>
         </Card>
       </div>
 
@@ -196,6 +199,7 @@ export default function AgentsPage({
             onDelete={() => deleteEmployee(employee)}
             onAvatar={() => setAvatarAgent(employee)}
             onEdit={() => setProfileAgent(employee)}
+            onChat={() => startEmployeeChat(employee)}
           />
         ))}
       </div>
@@ -225,6 +229,7 @@ function EmployeeCard({
   onDelete,
   onAvatar,
   onEdit,
+  onChat,
 }: {
   employee: AgentProfileRead;
   canManage: boolean;
@@ -234,6 +239,7 @@ function EmployeeCard({
   onDelete: () => void;
   onAvatar: () => void;
   onEdit: () => void;
+  onChat: () => void;
 }) {
   const profile = employeeProfile(employee);
   const sopCount = resourceCount(employee.resources, 'skill');
@@ -252,13 +258,14 @@ function EmployeeCard({
           trigger={['click']}
           menu={{
             items: [
+              { key: 'chat', icon: <CommentOutlined />, label: '发起对话', disabled: employee.status !== 'active' },
               employee.status === 'active'
                 ? { key: 'archive', icon: <PauseCircleOutlined />, label: '下线', disabled: !canManage }
                 : { key: 'active', icon: <PlayCircleOutlined />, label: '上线', disabled: !canManage },
               {
                 key: 'gallery',
                 icon: <GlobalOutlined />,
-                label: galleryPublished ? '从员工广场下架' : '发布到员工广场',
+                label: galleryPublished ? '从广场下架' : '发布到广场',
                 disabled: !canManage,
               },
               { key: 'edit', icon: <EditOutlined />, label: '编辑资料', disabled: !canManage },
@@ -267,6 +274,7 @@ function EmployeeCard({
             ],
             onClick: ({ key, domEvent }) => {
               domEvent.stopPropagation();
+              if (key === 'chat') onChat();
               if (key === 'active') onStatus('active');
               if (key === 'archive') onStatus('archived');
               if (key === 'gallery') onGallery(!galleryPublished);
@@ -285,11 +293,11 @@ function EmployeeCard({
         </Dropdown>
       </div>
       <Typography.Paragraph ellipsis={{ rows: 2 }}>
-        {employee.description || '负责接收任务、调用资料和 SOP 完成企业服务。'}
+        {employee.description || '暂无描述'}
       </Typography.Paragraph>
       <Space wrap className="employee-roster-tags">
         <Tag color={employee.status === 'active' ? 'green' : 'default'}>{employee.status === 'active' ? '在线' : '下线'}</Tag>
-        {galleryPublished && <Tag color="cyan">员工广场</Tag>}
+        {galleryPublished && <Tag color="cyan">广场</Tag>}
         <Tag>SOP {sopCount}</Tag>
         <Tag>技能 {skillCount}</Tag>
         <Tag>资料 {kbCount}</Tag>

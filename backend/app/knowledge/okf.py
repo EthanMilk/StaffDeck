@@ -59,6 +59,7 @@ GENERIC_QUERY_TOKENS = {
     "相关",
     "基于",
 }
+MIN_CONCEPT_SEARCH_SCORE = 4.0
 
 
 @dataclass
@@ -168,6 +169,7 @@ def selected_concept_cards(concepts: list[KnowledgeConcept]) -> list[dict[str, A
             "links": row.links_json or [],
             "citations": row.citations_json or [],
             "source_refs": row.source_refs_json or [],
+            "content_excerpt": _strip_frontmatter(row.content_md).strip()[:1600],
         }
         for row in concepts
     ]
@@ -206,7 +208,7 @@ def search_concepts(query: str, concepts: list[KnowledgeConcept], limit: int = 6
             specific_hit = True
         if row.concept_type == "Source Document" and specific_hit:
             score -= 2
-        if score and specific_hit:
+        if score >= MIN_CONCEPT_SEARCH_SCORE and specific_hit:
             scored.append((score, row.updated_at, row))
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return [row for _score, _updated_at, row in scored[:limit]]

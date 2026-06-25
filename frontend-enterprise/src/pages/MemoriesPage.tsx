@@ -64,8 +64,8 @@ export default function MemoriesPage() {
 
   const groups = useMemo(() => groupMemories(rows), [rows]);
   const emptyDescription = agentId
-    ? '当前员工暂无成长轨迹；新的对话记忆会按员工隔离沉淀。'
-    : '暂无成长轨迹';
+    ? '当前员工暂无用户记忆；新的对话记忆会按员工和用户隔离沉淀。'
+    : '暂无记忆';
 
   const columns: ColumnsType<MemoryUserGroup> = [
     { title: '用户名', dataIndex: 'username', width: 160, ellipsis: true, render: (value) => value || '-' },
@@ -103,9 +103,9 @@ export default function MemoriesPage() {
   return (
     <>
       <div className="page-title">
-        <Typography.Title level={3}>成长轨迹</Typography.Title>
+        <Typography.Title level={3}>记忆</Typography.Title>
       </div>
-      <Card className="data-card" title={<><DatabaseOutlined /> 成长轨迹查询</>}>
+      <Card className="data-card" title={<><DatabaseOutlined /> 记忆查询</>}>
         <Form form={form} layout="inline" className="toolbar-form" onFinish={load}>
           <Form.Item name="username" label="用户名">
             <Input allowClear placeholder="如 user_demo" />
@@ -132,7 +132,7 @@ export default function MemoriesPage() {
         />
       </Card>
       <Drawer
-        title="成长轨迹详情"
+        title="记忆详情"
         open={Boolean(detail)}
         width={780}
         onClose={() => setDetail(null)}

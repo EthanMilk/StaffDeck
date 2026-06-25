@@ -13,6 +13,7 @@ from app.db.models import (
     AgentResourceBinding,
     AgentSkillBranch,
     AgentSkillBranchVersion,
+    GeneralSkill,
     KnowledgeBase,
     KnowledgeBaseVersion,
     KnowledgeBucket,
@@ -23,11 +24,14 @@ from app.db.models import (
     ModelConfig,
     Skill,
     SkillVersion,
+    Tool,
     utc_now,
 )
 
 
 DEFAULT_AGENT_ROLES = ("default", "router", "step", "response", "general_skill")
+OPEN_GALLERY_SCOPE = "open_gallery"
+AGENT_PRIVATE_SCOPE = "agent_private"
 
 
 def get_overall_agent(db: Session, tenant_id: str) -> AgentProfile | None:
@@ -64,6 +68,109 @@ def require_overall_agent(db: Session, tenant_id: str, agent_id: str | None) -> 
         from fastapi import HTTPException
 
         raise HTTPException(status_code=403, detail="Only the overall agent can delete global resources")
+
+
+def open_gallery_metadata(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    metadata = dict(extra or {})
+    metadata["scope"] = OPEN_GALLERY_SCOPE
+    metadata["visibility"] = OPEN_GALLERY_SCOPE
+    metadata.pop("owner_agent_id", None)
+    metadata.pop("created_from_agent", None)
+    metadata.pop("created_from_upload", None)
+    return metadata
+
+
+def agent_private_metadata(agent_id: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    metadata = dict(extra or {})
+    metadata["scope"] = AGENT_PRIVATE_SCOPE
+    metadata["visibility"] = AGENT_PRIVATE_SCOPE
+    metadata["owner_agent_id"] = agent_id
+    metadata["created_from_agent"] = True
+    return metadata
+
+
+def mark_resource_open_gallery(resource: object) -> None:
+    if not hasattr(resource, "metadata_json"):
+        return
+    metadata = open_gallery_metadata(getattr(resource, "metadata_json", None) or {})
+    setattr(resource, "metadata_json", metadata)
+
+
+def mark_resource_private_for_agent(resource: object, agent_id: str) -> None:
+    if not hasattr(resource, "metadata_json"):
+        return
+    metadata = agent_private_metadata(agent_id, getattr(resource, "metadata_json", None) or {})
+    setattr(resource, "metadata_json", metadata)
+
+
+def ensure_open_gallery_binding(
+    db: Session,
+    tenant_id: str,
+    resource_type: str,
+    resource_id: str,
+    status: str = "active",
+) -> None:
+    overall = get_overall_agent(db, tenant_id)
+    if overall:
+        _ensure_binding(
+            db,
+            tenant_id,
+            overall.id,
+            resource_type,
+            resource_id,
+            status,
+            metadata_json=open_gallery_metadata(),
+        )
+
+
+def ensure_private_resource_binding(
+    db: Session,
+    tenant_id: str,
+    agent_id: str,
+    resource_type: str,
+    resource_id: str,
+    status: str = "active",
+) -> None:
+    _ensure_binding(
+        db,
+        tenant_id,
+        agent_id,
+        resource_type,
+        resource_id,
+        status,
+        metadata_json=agent_private_metadata(agent_id),
+    )
+
+
+def is_open_gallery_resource(db: Session, tenant_id: str, resource_type: str, resource: object) -> bool:
+    resource_id = getattr(resource, "id", None)
+    if not resource_id or getattr(resource, "tenant_id", None) != tenant_id:
+        return False
+    overall = get_overall_agent(db, tenant_id)
+    if overall:
+        overall_binding = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == tenant_id,
+                AgentResourceBinding.agent_id == overall.id,
+                AgentResourceBinding.resource_type == resource_type,
+                AgentResourceBinding.resource_id == resource_id,
+            )
+        ).first()
+        if overall_binding:
+            return overall_binding.status != "deleted" and not _binding_is_private(overall_binding)
+    metadata = _resource_metadata(resource)
+    if _metadata_is_private(metadata):
+        return False
+    private_binding = db.exec(
+        select(AgentResourceBinding).where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.resource_type == resource_type,
+            AgentResourceBinding.resource_id == resource_id,
+        )
+    ).all()
+    if any(_binding_is_private(binding) for binding in private_binding):
+        return False
+    return True
 
 
 def project_skill_with_branch(
@@ -110,13 +217,14 @@ def visible_skill_rows(
     agent = get_agent(db, tenant_id, agent_id)
     if not agent or agent.is_overall:
         status_clause = Skill.status != "deleted" if include_inactive else Skill.status == "published"
-        return list(
+        rows = list(
             db.exec(
                 select(Skill)
                 .where(Skill.tenant_id == tenant_id, status_clause)
                 .order_by(Skill.updated_at.desc())
             ).all()
         )
+        return [row for row in rows if is_open_gallery_resource(db, tenant_id, "skill", row)]
     rows: list[Skill] = []
     bindings = db.exec(
         select(AgentResourceBinding).where(
@@ -153,6 +261,8 @@ def visible_skill(db: Session, tenant_id: str, skill_id: str, agent_id: str | No
     agent = get_agent(db, tenant_id, agent_id)
     if not agent or agent.is_overall:
         if skill.status == "archived":
+            return None
+        if not is_open_gallery_resource(db, tenant_id, "skill", skill):
             return None
         return skill
     binding = db.exec(
@@ -226,6 +336,10 @@ def update_branch_skill(
 
 
 def sync_branch_from_overall(db: Session, tenant_id: str, agent_id: str, skill: Skill) -> AgentSkillBranch:
+    if skill.status != "published" or not is_open_gallery_resource(db, tenant_id, "skill", skill):
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=400, detail="Disabled skill cannot be learned from the open gallery")
     branch = ensure_agent_skill_branch(db, tenant_id, agent_id, skill)
     branch.base_version = skill.version
     branch.head_version = skill.version
@@ -255,6 +369,8 @@ def promote_branch_to_overall(db: Session, tenant_id: str, branch: AgentSkillBra
     skill.content_json = content
     skill.status = "published"
     skill.updated_at = utc_now()
+    mark_resource_open_gallery(skill)
+    ensure_open_gallery_binding(db, tenant_id, "skill", skill.id, "active")
     db.add(
         SkillVersion(
             tenant_id=tenant_id,
@@ -339,6 +455,7 @@ def visible_knowledge_base_versions(
                 KnowledgeBase.status != "archived",
             )
         ).all()
+        rows = [row for row in rows if is_open_gallery_resource(db, tenant_id, "knowledge_base", row)]
         return {row.id: ensure_knowledge_base_version(db, row, _current_knowledge_version(row)) for row in rows}
     branches = db.exec(
         select(AgentKnowledgeBranch).where(
@@ -416,6 +533,25 @@ def knowledge_version_for_upload(
     return target_version
 
 
+def ensure_agent_private_knowledge_branch(
+    db: Session,
+    tenant_id: str,
+    agent_id: str,
+    knowledge_base: KnowledgeBase,
+) -> AgentKnowledgeBranch:
+    mark_resource_private_for_agent(knowledge_base, agent_id)
+    ensure_private_resource_binding(db, tenant_id, agent_id, "knowledge_base", knowledge_base.id, "active")
+    current_version = _current_knowledge_version(knowledge_base)
+    ensure_knowledge_base_version(db, knowledge_base, current_version)
+    branch = _ensure_knowledge_branch(db, tenant_id, agent_id, knowledge_base)
+    branch.base_version = current_version
+    branch.head_version = current_version
+    branch.status = "active"
+    branch.sync_state = "synced"
+    branch.updated_at = utc_now()
+    return branch
+
+
 def sync_knowledge_branch_from_overall(
     db: Session,
     tenant_id: str,
@@ -423,7 +559,7 @@ def sync_knowledge_branch_from_overall(
     knowledge_base_id: str,
 ) -> AgentKnowledgeBranch:
     kb = _get_knowledge_base(db, tenant_id, knowledge_base_id)
-    if kb.status != "active":
+    if kb.status != "active" or not is_open_gallery_resource(db, tenant_id, "knowledge_base", kb):
         from fastapi import HTTPException
 
         raise HTTPException(status_code=400, detail="Disabled knowledge base cannot be learned from the open gallery")
@@ -467,8 +603,9 @@ def promote_knowledge_branch_to_overall(
     _retag_knowledge_version(db, tenant_id, knowledge_base_id, source.id, target.id)
     kb.name = source.name
     kb.description = source.description
-    kb.metadata_json = {**(kb.metadata_json or {}), "current_version": next_version}
+    kb.metadata_json = open_gallery_metadata({**(kb.metadata_json or {}), "current_version": next_version})
     kb.updated_at = utc_now()
+    ensure_open_gallery_binding(db, tenant_id, "knowledge_base", kb.id, "active")
     branch.base_version = next_version
     branch.head_version = next_version
     branch.sync_state = "synced"
@@ -523,23 +660,27 @@ def copy_overall_scope_to_agent(db: Session, tenant_id: str, agent: AgentProfile
         select(Skill).where(Skill.tenant_id == tenant_id, Skill.status == "published")
     ).all()
     for skill in skills:
+        if not is_open_gallery_resource(db, tenant_id, "skill", skill):
+            continue
         _ensure_binding(db, tenant_id, agent.id, "skill", skill.id, _binding_status_from_resource_status(skill.status))
         ensure_agent_skill_branch(db, tenant_id, agent.id, skill)
     knowledge_bases = db.exec(
         select(KnowledgeBase).where(KnowledgeBase.tenant_id == tenant_id, KnowledgeBase.status == "active")
     ).all()
     for kb in knowledge_bases:
+        if not is_open_gallery_resource(db, tenant_id, "knowledge_base", kb):
+            continue
         _ensure_binding(db, tenant_id, agent.id, "knowledge_base", kb.id, _binding_status_from_resource_status(kb.status))
         branch = _ensure_knowledge_branch(db, tenant_id, agent.id, kb)
         branch.status = _binding_status_from_resource_status(kb.status)
         branch.updated_at = utc_now()
         db.add(branch)
-    from app.db.models import GeneralSkill
-
     general_skills = db.exec(
         select(GeneralSkill).where(GeneralSkill.tenant_id == tenant_id, GeneralSkill.status == "published")
     ).all()
     for general_skill in general_skills:
+        if not is_open_gallery_resource(db, tenant_id, "general_skill", general_skill):
+            continue
         _ensure_binding(
             db,
             tenant_id,
@@ -615,6 +756,25 @@ def _binding_status_from_resource_status(status: str | None) -> str:
     return "active" if status in {"active", "published"} else "inactive"
 
 
+def _resource_metadata(resource: object) -> dict[str, Any]:
+    metadata = getattr(resource, "metadata_json", None)
+    return dict(metadata) if isinstance(metadata, dict) else {}
+
+
+def _metadata_is_private(metadata: dict[str, Any]) -> bool:
+    return (
+        metadata.get("scope") == AGENT_PRIVATE_SCOPE
+        or metadata.get("visibility") == AGENT_PRIVATE_SCOPE
+        or metadata.get("created_from_agent") is True
+        or metadata.get("created_from_upload") is True
+    )
+
+
+def _binding_is_private(binding: AgentResourceBinding) -> bool:
+    metadata = dict(binding.metadata_json or {})
+    return _metadata_is_private(metadata)
+
+
 def _ensure_binding(
     db: Session,
     tenant_id: str,
@@ -622,6 +782,7 @@ def _ensure_binding(
     resource_type: str,
     resource_id: str,
     status: str = "active",
+    metadata_json: dict[str, Any] | None = None,
 ) -> None:
     existing = db.exec(
         select(AgentResourceBinding).where(
@@ -633,6 +794,8 @@ def _ensure_binding(
     ).first()
     if existing:
         existing.status = status
+        if metadata_json is not None:
+            existing.metadata_json = metadata_json
         existing.updated_at = utc_now()
         db.add(existing)
         return
@@ -643,6 +806,7 @@ def _ensure_binding(
             resource_type=resource_type,
             resource_id=resource_id,
             status=status,
+            metadata_json=metadata_json or {},
         )
     )
 

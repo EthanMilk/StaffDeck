@@ -45,51 +45,51 @@ const PLATFORM_CONFIGS: PlatformConfig[] = [
   {
     kind: 'agents',
     title: '数字员工广场',
-    subtitle: '已发布给任务派发台选择的数字员工。',
-    detail: '选择一个开放员工查看能力、岗位和服务范围。',
-    useLabel: '使用员工',
-    metricLabel: '开放员工',
-    signals: ['任务派发可选', '支持直接对话', '岗位能力可查看'],
+    subtitle: '已发布到广场，可在聊天端直接使用。',
+    detail: '选择一个数字员工查看能力、岗位和服务范围。',
+    useLabel: '使用此员工',
+    metricLabel: '数字员工',
+    signals: ['聊天端可用', '支持直接对话', '岗位能力可查看'],
     icon: <UsergroupAddOutlined />,
   },
   {
     kind: 'knowledge',
-    title: '业务知识广场',
-    subtitle: '可学习到当前员工的业务资料和 LLM Wiki。',
-    detail: '从广场资料学习到当前员工的业务资料库。',
-    useLabel: '新增到员工资料',
-    metricLabel: '业务资料',
-    signals: ['LLM Wiki', '证据片段', '员工可学习'],
+    title: '知识库广场',
+    subtitle: '发布到广场的知识库，可复制到你的数字员工。',
+    detail: '从广场复制到当前数字员工的知识库。',
+    useLabel: '复制到知识库',
+    metricLabel: '知识库',
+    signals: ['知识图谱', '引用来源', '可复制'],
     icon: <FileSearchOutlined />,
   },
   {
     kind: 'general-skills',
-    title: '通用技能广场',
-    subtitle: '浏览器、MCP、查询工具等可复用通用能力。',
-    detail: '从广场技能学习到当前员工的已掌握技能。',
-    useLabel: '新增到已掌握技能',
-    metricLabel: '通用技能',
+    title: '技能广场',
+    subtitle: '浏览器、MCP、查询工具等可复用能力。',
+    detail: '从广场复制到当前数字员工的技能。',
+    useLabel: '复制到技能',
+    metricLabel: '技能',
     signals: ['运行测试', 'MCP / 浏览器', '可复用能力'],
     icon: <SolutionOutlined />,
   },
   {
     kind: 'skills',
     title: 'SOP 广场',
-    subtitle: '可学习和复用的业务流程与执行规范。',
-    detail: '从广场 SOP 学习到当前员工的 SOP 管理。',
-    useLabel: '新增到 SOP 管理',
+    subtitle: '可复制和复用的业务流程与执行规范。',
+    detail: '从广场复制到当前数字员工的 SOP。',
+    useLabel: '复制到 SOP',
     metricLabel: '业务 SOP',
-    signals: ['流程推进', '执行规范', '启用后学习'],
+    signals: ['流程推进', '执行规范', '可复制'],
     icon: <ProfileOutlined />,
   },
   {
     kind: 'tools',
     title: '工具广场',
     subtitle: '可开放给员工调用和测试的工具能力。',
-    detail: '进入工具箱按现有新增流程配置和测试工具。',
-    useLabel: '进入工具新增',
+    detail: '前往工具页按现有流程配置和测试工具。',
+    useLabel: '前往工具页',
     metricLabel: '工具能力',
-    signals: ['调用权限', '测试可用', '工具箱配置'],
+    signals: ['调用权限', '测试可用', '工具配置'],
     icon: <ToolOutlined />,
   },
 ];
@@ -139,7 +139,7 @@ export default function OpenPlatformPage({
           overall
             ? api.get<SkillRead[]>(`/api/enterprise/agents/${overall.id}/skills?tenant_id=${TENANT_ID}`)
             : Promise.resolve([]),
-          api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}`),
+          api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${overallSuffix}`),
         ]);
         setAgents(agentRows);
         setKnowledgeBases(kbRows);
@@ -147,7 +147,7 @@ export default function OpenPlatformPage({
         setSkills(skillRows);
         setTools(toolRows);
       } catch (error) {
-        message.error(error instanceof Error ? error.message : '加载开放平台失败');
+        message.error(error instanceof Error ? error.message : '加载开放广场失败');
       } finally {
         setLoading(false);
       }
@@ -170,7 +170,7 @@ export default function OpenPlatformPage({
       return {
         id: item.id,
         title: employeeDisplayName(item),
-        description: item.description || '开放给任务派发台选择的数字员工。',
+        description: item.description || '广场开放的数字员工。',
         meta: profile.roleName,
         tags: [
           item.status === 'active' ? '在线' : '下线',
@@ -185,7 +185,7 @@ export default function OpenPlatformPage({
       .map((item) => ({
         id: item.id,
         title: item.name,
-        description: item.description || '开放平台沉淀的业务资料。',
+        description: item.description || '广场沉淀的知识库。',
         meta: `${item.document_count} 文档 / ${item.bucket_count} 桶 / ${item.chunk_count} 片段`,
         tags: [item.version || 'v1.0.0', item.branch_sync_state || '广场版'],
       })),
@@ -194,7 +194,7 @@ export default function OpenPlatformPage({
       .map((item) => ({
         id: item.id,
         title: item.name,
-        description: item.description || '可被员工学习的通用技能。',
+        description: item.description || '可复制到当前数字员工的技能。',
         meta: item.slug,
         tags: [item.homepage ? '外部能力' : '内置能力', '已启用'],
       })),
@@ -203,7 +203,7 @@ export default function OpenPlatformPage({
       .map((item) => ({
         id: item.id,
         title: item.name,
-        description: item.description || '可被员工学习的业务 SOP。',
+        description: item.description || '可复制和复用的业务 SOP。',
         meta: `${item.skill_id} / ${item.version}`,
         tags: [item.business_domain || '业务流程', `${item.total_call_count || item.call_count || 0} 次调用`],
       })),
@@ -212,8 +212,8 @@ export default function OpenPlatformPage({
       .map((item) => ({
         id: item.id,
         title: item.display_name || item.name,
-        description: item.description || '可配置到员工工具箱的工具。',
-        meta: `${item.bucket || '工具箱'} / ${item.tool_type.toUpperCase()}`,
+        description: item.description || '可配置到员工工具的工具。',
+        meta: `${item.bucket || '工具'} / ${item.tool_type.toUpperCase()}`,
         tags: [item.method, item.enabled ? '已启用' : '已停用'],
       })),
   }), [generalSkills, knowledgeBases, skills, tools, visibleAgents]);
@@ -225,7 +225,7 @@ export default function OpenPlatformPage({
 
   function ensureTargetEmployee(): boolean {
     if (!targetEmployee) {
-      message.warning('请先选择一个具体数字员工，再从开放平台新增能力');
+      message.warning('请先选择一个员工，再从广场复制资源。');
       return false;
     }
     if (targetEmployee.id !== agentId) {
@@ -240,7 +240,7 @@ export default function OpenPlatformPage({
     if (platformKind === 'agents') {
       const agent = visibleAgents.find((item) => item.id === itemId) || visibleAgents[0];
       if (!agent) {
-        message.warning('员工广场暂无可用员工');
+        message.warning('广场暂无可用数字员工');
         return;
       }
       window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, agent.id);
@@ -318,7 +318,7 @@ export default function OpenPlatformPage({
       <div className="page open-platform-page">
         <div className="open-platform-detail-hero">
           <div>
-            <Typography.Text type="secondary">开放广场平台 / {config.title}</Typography.Text>
+            <Typography.Text type="secondary">开放广场 / {config.title}</Typography.Text>
             <Typography.Title level={2}>{config.title}</Typography.Title>
             <Typography.Paragraph type="secondary">{config.detail}</Typography.Paragraph>
           </div>
@@ -333,7 +333,7 @@ export default function OpenPlatformPage({
                 <button
                   key={item.id}
                   type="button"
-                  className="open-platform-resource-card"
+                  className={`open-platform-resource-card${item.agent ? ' is-agent' : ''}`}
                   onClick={() => setDetailItem({ kind: selectedKind, item })}
                 >
                   {item.agent && <EmployeeAvatar agent={item.agent} size={48} />}
@@ -361,14 +361,14 @@ export default function OpenPlatformPage({
     <div className="page open-platform-page open-platform-page-main">
       <div className="page-title open-platform-title">
         <div>
-          <Typography.Text type="secondary">开放广场平台</Typography.Text>
-          <Typography.Title level={2}>开放广场平台</Typography.Title>
+          <Typography.Text type="secondary">开放广场</Typography.Text>
+          <Typography.Title level={2}>开放广场</Typography.Title>
           <Typography.Paragraph>
-            汇总数字员工、业务资料、通用技能、SOP 和工具五个广场。先进入广场查看详情，再把需要的能力新增到当前员工。
+            汇总数字员工、知识库、技能、SOP 和工具五个广场。先进入广场查看详情，再把需要的能力复制到当前数字员工。
           </Typography.Paragraph>
         </div>
         <Tag className="open-platform-target" icon={<AppstoreOutlined />}>
-          目标员工：{targetEmployee ? employeeDisplayName(targetEmployee) : '未选择'}
+          复制到：{targetEmployee ? employeeDisplayName(targetEmployee) : '未选择'}
         </Tag>
       </div>
       <div className="open-platform-overview-shell">
@@ -391,8 +391,8 @@ export default function OpenPlatformPage({
                 </div>
                 <div className="open-platform-preview-panel">
                   <div className="open-platform-preview-heading">
-                    <span>精选内容</span>
-                    <em>{previews.length ? `展示 ${previews.length} 项` : '等待开放'}</em>
+                    <span>广场内容</span>
+                    <em>{previews.length ? `${platform.count} 项可用` : '等待开放'}</em>
                   </div>
                   <div className="open-platform-card-preview-list">
                     {previews.length === 0 ? (
@@ -401,12 +401,20 @@ export default function OpenPlatformPage({
                       <button
                         key={item.id}
                         type="button"
-                        className="open-platform-preview-item"
+                        className={`open-platform-preview-item${item.agent ? ' is-agent-preview' : ''}`}
                         onClick={() => setDetailItem({ kind: platform.kind, item })}
                       >
-                        <strong>{item.title}</strong>
-                        <span>{item.meta}</span>
-                        {item.tags[0] && <em>{item.tags[0]}</em>}
+                        <span className="open-platform-preview-media">
+                          {item.agent ? <EmployeeAvatar agent={item.agent} size={42} /> : <span>{platform.icon}</span>}
+                        </span>
+                        <span className="open-platform-preview-copy">
+                          <strong>{item.title}</strong>
+                          <span>{item.meta}</span>
+                          <small>{item.description}</small>
+                          <span className="open-platform-preview-tags">
+                            {item.tags.slice(0, 2).map((tag) => <em key={tag}>{tag}</em>)}
+                          </span>
+                        </span>
                       </button>
                     ))}
                   </div>

@@ -51,7 +51,7 @@ export default function EmployeeAvatar({
 
   if (profile.avatarPreset === 'overall') {
     return (
-      <span className={classes} style={{ width: size, height: size }} aria-label="开放广场平台头像">
+      <span className={classes} style={{ width: size, height: size }} aria-label="开放广场头像">
         <PlazaAvatar />
       </span>
     );

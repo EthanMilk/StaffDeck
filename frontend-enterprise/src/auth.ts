@@ -10,11 +10,39 @@ export type EnterpriseAuthSession = {
   user: EnterpriseAuthUser;
 };
 
-export const ENTERPRISE_AUTH_STORAGE_KEY = 'ultrarag_enterprise_auth';
+export const ENTERPRISE_AUTH_STORAGE_KEY = 'ultrarag_auth';
+const LEGACY_ENTERPRISE_AUTH_STORAGE_KEY = 'ultrarag_enterprise_auth';
+const LEGACY_CHAT_AUTH_STORAGE_KEY = 'skill_agent_auth';
 const ADMIN_USERNAMES = new Set(['admin', 'admin_demo']);
 
 export function getEnterpriseAuthSession(): EnterpriseAuthSession | null {
-  const raw = window.localStorage.getItem(ENTERPRISE_AUTH_STORAGE_KEY);
+  const current = readStoredSession(ENTERPRISE_AUTH_STORAGE_KEY);
+  if (current) return current;
+
+  const legacyEnterprise = readStoredSession(LEGACY_ENTERPRISE_AUTH_STORAGE_KEY);
+  const legacyChat = readStoredSession(LEGACY_CHAT_AUTH_STORAGE_KEY);
+  const migrated = legacyEnterprise || legacyChat;
+  if (migrated) {
+    setEnterpriseAuthSession(migrated);
+    return migrated;
+  }
+  return null;
+}
+
+export function setEnterpriseAuthSession(session: EnterpriseAuthSession): void {
+  window.localStorage.setItem(ENTERPRISE_AUTH_STORAGE_KEY, JSON.stringify(session));
+  window.localStorage.removeItem(LEGACY_ENTERPRISE_AUTH_STORAGE_KEY);
+  window.localStorage.removeItem(LEGACY_CHAT_AUTH_STORAGE_KEY);
+}
+
+export function clearEnterpriseAuthSession(): void {
+  window.localStorage.removeItem(ENTERPRISE_AUTH_STORAGE_KEY);
+  window.localStorage.removeItem(LEGACY_ENTERPRISE_AUTH_STORAGE_KEY);
+  window.localStorage.removeItem(LEGACY_CHAT_AUTH_STORAGE_KEY);
+}
+
+function readStoredSession(key: string): EnterpriseAuthSession | null {
+  const raw = window.localStorage.getItem(key);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as EnterpriseAuthSession;
@@ -23,14 +51,6 @@ export function getEnterpriseAuthSession(): EnterpriseAuthSession | null {
   } catch {
     return null;
   }
-}
-
-export function setEnterpriseAuthSession(session: EnterpriseAuthSession): void {
-  window.localStorage.setItem(ENTERPRISE_AUTH_STORAGE_KEY, JSON.stringify(session));
-}
-
-export function clearEnterpriseAuthSession(): void {
-  window.localStorage.removeItem(ENTERPRISE_AUTH_STORAGE_KEY);
 }
 
 export function isEnterpriseAdmin(user?: EnterpriseAuthUser | null): boolean {

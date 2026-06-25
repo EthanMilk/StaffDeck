@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     demo_model_name: str = "qwen3.6-27b"
     demo_model_api_key: str = ""
     tool_timeout_seconds: float = 8.0
-    tool_base_url: str = "http://localhost:8000"
-    cors_origins: str = "http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174"
+    tool_base_url: str = "http://localhost:5173"
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     general_skill_runtime_python: str = ""
     general_skill_runtime_venv: str = ""
     general_skill_runtime_packages: str = "requests,httpx"

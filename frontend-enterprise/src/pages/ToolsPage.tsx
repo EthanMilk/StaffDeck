@@ -49,15 +49,16 @@ export default function ToolsPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
 
+  const agentQuery = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
   const load = () =>
     api
-      .get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}`)
+      .get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${agentQuery}`)
       .then(setRows)
       .catch((error) => message.error(error.message));
 
   useEffect(() => {
     load();
-  }, []);
+  }, [agentQuery]);
 
   useEffect(() => {
     const loadAgentScope = async () => {
@@ -87,7 +88,7 @@ export default function ToolsPage() {
     if (searchParams.get('add') !== 'plaza') return;
     if (!agentScopeLoaded) return;
     if (isOverallAgent) {
-      message.warning('请先切换到具体数字员工，再从工具广场新增工具');
+      message.warning('请先选择一个数字员工，再从广场复制工具');
     } else {
       handleCreateAction('plaza');
     }
@@ -167,11 +168,11 @@ export default function ToolsPage() {
       return;
     }
     if (key === 'plaza') {
-      message.info('工具广场能力当前已在工具列表中统一管理，请先新建空白工具并在测试子页面验证。');
+      message.warning('请先选择一个数字员工，再从广场复制工具');
       return;
     }
     if (key === 'employee') {
-      message.info('员工级工具学习会随工具权限分支能力接入；当前请在工具广场统一维护可用工具。');
+      message.info('从数字员工复制工具会在后续版本接入。');
     }
   }
 
@@ -179,15 +180,12 @@ export default function ToolsPage() {
     <>
       <div className="page-title">
         <div>
-          <Typography.Title level={3}>{isOverallAgent ? '工具广场' : '工具箱'}</Typography.Title>
-          <Typography.Text type="secondary">
-            {isOverallAgent ? '管理可开放给员工调用的工具能力。' : '查看当前员工可调用的工具能力。'}
-          </Typography.Text>
+          <Typography.Title level={3}>{isOverallAgent ? '工具广场' : '工具'}</Typography.Title>
         </div>
       </div>
       <Card
         className="data-card tools-list-card"
-        title={isOverallAgent ? '工具广场列表' : '员工工具箱'}
+        title={isOverallAgent ? '工具广场列表' : '员工工具'}
         extra={(
           <Space>
             <Button icon={<ReloadOutlined />} onClick={load}>刷新</Button>
@@ -196,8 +194,8 @@ export default function ToolsPage() {
               menu={{
                 items: [
                   { key: 'blank', icon: <PlusOutlined />, label: '新建空白工具' },
-                  ...(!isOverallAgent ? [{ key: 'plaza', icon: <ToolOutlined />, label: '从工具广场新增' }] : []),
-                  ...(!isOverallAgent ? [{ key: 'employee', icon: <TeamOutlined />, label: '向其他员工学习工具' }] : []),
+                  ...(!isOverallAgent ? [{ key: 'plaza', icon: <ToolOutlined />, label: '从广场复制' }] : []),
+                  ...(!isOverallAgent ? [{ key: 'employee', icon: <TeamOutlined />, label: '从数字员工复制' }] : []),
                 ],
                 onClick: ({ key }) => handleCreateAction(key),
               }}
@@ -283,8 +281,9 @@ function ToolEditorPage({ mode }: { mode: 'new' | 'edit' }) {
     }
     if (!toolId) return;
     setLoading(true);
+    const agentQuery = currentAgentQuery();
     api
-      .get<ToolRead>(`/api/enterprise/tools/${toolId}?tenant_id=${TENANT_ID}`)
+      .get<ToolRead>(`/api/enterprise/tools/${toolId}?tenant_id=${TENANT_ID}${agentQuery}`)
       .then((row) => {
         setTool(row);
         form.setFieldsValue(toolToFormValues(row));
@@ -304,9 +303,10 @@ function ToolEditorPage({ mode }: { mode: 'new' | 'edit' }) {
     if (!payload) return;
     setLoading(true);
     try {
+      const agentQuery = currentAgentQuery();
       const saved = isEdit && toolId
-        ? await api.put<ToolRead>(`/api/enterprise/tools/${toolId}`, payload)
-        : await api.post<ToolRead>('/api/enterprise/tools', payload);
+        ? await api.put<ToolRead>(`/api/enterprise/tools/${toolId}${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, payload)
+        : await api.post<ToolRead>(`/api/enterprise/tools${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, payload);
       message.success('已保存');
       setTool(saved);
       form.setFieldsValue(toolToFormValues(saved));
@@ -330,7 +330,7 @@ function ToolEditorPage({ mode }: { mode: 'new' | 'edit' }) {
           </Typography.Text>
         </div>
         <Space>
-          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/enterprise/tools')}>返回工具箱</Button>
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/enterprise/tools')}>返回工具</Button>
           {isEdit && tool && (
             <Button icon={<ExperimentOutlined />} onClick={() => navigate(`/enterprise/tools/${tool.id}/test`)}>
               打开测试页
@@ -361,8 +361,9 @@ export function ToolTestPage() {
   useEffect(() => {
     if (!toolId) return;
     setLoading(true);
+    const agentQuery = currentAgentQuery();
     api
-      .get<ToolRead>(`/api/enterprise/tools/${toolId}?tenant_id=${TENANT_ID}`)
+      .get<ToolRead>(`/api/enterprise/tools/${toolId}?tenant_id=${TENANT_ID}${agentQuery}`)
       .then(setTool)
       .catch((error) => message.error(error instanceof Error ? error.message : '加载工具失败'))
       .finally(() => setLoading(false));
@@ -378,7 +379,7 @@ export function ToolTestPage() {
           </Typography.Text>
         </div>
         <Space>
-          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/enterprise/tools')}>返回工具箱</Button>
+          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/enterprise/tools')}>返回工具</Button>
           {tool && <Button onClick={() => navigate(`/enterprise/tools/${tool.id}/edit`)}>编辑工具</Button>}
         </Space>
       </div>
@@ -459,8 +460,8 @@ function ToolFormFields({
       <Form.Item name="tool_type" label="工具类型" rules={[{ required: true }]}>
         <Select
           options={[
-            { value: 'http', label: 'HTTP 工具' },
-            { value: 'mcp', label: 'MCP 工具' },
+            { value: 'http', label: 'HTTP 接口' },
+            { value: 'mcp', label: 'MCP 服务' },
           ]}
         />
       </Form.Item>
@@ -540,7 +541,7 @@ function ToolProbeCard({ form }: { form: FormInstance<ToolFormValues> }) {
       extra={<Button icon={<ExperimentOutlined />} loading={loading} onClick={() => void probe()}>探测</Button>}
     >
       <Typography.Paragraph type="secondary">
-        不保存工具，直接用当前表单配置发起一次探测。
+        无需保存，直接用当前配置测试连接。
       </Typography.Paragraph>
       <Input.TextArea rows={5} value={sampleJson} onChange={(event) => setSampleJson(event.target.value)} />
       <Input.TextArea rows={8} value={result} readOnly style={{ marginTop: 12 }} />
@@ -568,7 +569,8 @@ function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; stand
     }
     setLoading(true);
     try {
-      const response = await api.post(`/api/enterprise/tools/${tool.id}/test`, {
+      const agentQuery = currentAgentQuery();
+      const response = await api.post(`/api/enterprise/tools/${tool.id}/test${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, {
         tenant_id: TENANT_ID,
         arguments: argumentsJson,
       });
@@ -622,9 +624,14 @@ function SavedToolTestCard({ tool, standalone = false }: { tool: ToolRead; stand
 }
 
 async function loadBucketOptions() {
-  const rows = await api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}`);
+  const rows = await api.get<ToolRead[]>(`/api/enterprise/tools?tenant_id=${TENANT_ID}${currentAgentQuery()}`);
   return Array.from(new Set(['未分桶', ...rows.map((row) => row.bucket || '未分桶')]))
     .map((value) => ({ value, label: value }));
+}
+
+function currentAgentQuery() {
+  const agentId = window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '';
+  return agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
 }
 
 function toolToFormValues(row: ToolRead): ToolFormValues {
@@ -697,7 +704,7 @@ function schemaPropertyCount(schema: Record<string, unknown>): string {
 }
 
 function toolTypeLabel(tool: ToolRead): string {
-  return tool.tool_type === 'mcp' ? 'MCP 工具' : 'HTTP 工具';
+  return tool.tool_type === 'mcp' ? 'MCP 服务' : 'HTTP 接口';
 }
 
 function formatDateTime(value: string): string {

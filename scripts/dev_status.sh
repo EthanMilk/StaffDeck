@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="$ROOT_DIR/.dev"
 
+SINGLE_PORT="${SINGLE_PORT:-1}"
+APP_PORT="${APP_PORT:-5173}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 ENTERPRISE_PORT="${ENTERPRISE_PORT:-5173}"
 CHAT_PORT="${CHAT_PORT:-5174}"
@@ -47,19 +49,36 @@ print_port() {
 }
 
 echo "Processes:"
-for name in supervisor backend enterprise chat; do
-  print_service "$name"
-done
+if [[ "$SINGLE_PORT" == "1" ]]; then
+  for name in supervisor app; do
+    print_service "$name"
+  done
+else
+  for name in supervisor backend enterprise chat; do
+    print_service "$name"
+  done
+fi
 echo
 
 echo "Ports:"
-print_port "$BACKEND_PORT"
-print_port "$ENTERPRISE_PORT"
-print_port "$CHAT_PORT"
+if [[ "$SINGLE_PORT" == "1" ]]; then
+  print_port "$APP_PORT"
+else
+  print_port "$BACKEND_PORT"
+  print_port "$ENTERPRISE_PORT"
+  print_port "$CHAT_PORT"
+fi
 echo
 
 echo "Health:"
-curl -fsS "http://127.0.0.1:$BACKEND_PORT/api/health" || true
-echo
-curl -fsSI "http://127.0.0.1:$ENTERPRISE_PORT/enterprise/dashboard" >/dev/null && echo "enterprise ok" || echo "enterprise unavailable"
-curl -fsSI "http://127.0.0.1:$CHAT_PORT/chat" >/dev/null && echo "chat ok" || echo "chat unavailable"
+if [[ "$SINGLE_PORT" == "1" ]]; then
+  curl -fsS "http://127.0.0.1:$APP_PORT/api/health" || true
+  echo
+  curl -fsS "http://127.0.0.1:$APP_PORT/enterprise/dashboard" >/dev/null && echo "enterprise ok" || echo "enterprise unavailable"
+  curl -fsS "http://127.0.0.1:$APP_PORT/chat/" >/dev/null && echo "chat ok" || echo "chat unavailable"
+else
+  curl -fsS "http://127.0.0.1:$BACKEND_PORT/api/health" || true
+  echo
+  curl -fsSI "http://127.0.0.1:$ENTERPRISE_PORT/enterprise/dashboard" >/dev/null && echo "enterprise ok" || echo "enterprise unavailable"
+  curl -fsSI "http://127.0.0.1:$CHAT_PORT/chat" >/dev/null && echo "chat ok" || echo "chat unavailable"
+fi

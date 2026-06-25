@@ -1,4 +1,12 @@
-import { EyeOutlined, MessageOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  BranchesOutlined,
+  CloudSyncOutlined,
+  EyeOutlined,
+  FileSearchOutlined,
+  MessageOutlined,
+  ReloadOutlined,
+  ToolOutlined,
+} from '@ant-design/icons';
 import { Button, Card, Descriptions, Drawer, Empty, Segmented, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useMemo, useState } from 'react';
@@ -12,6 +20,8 @@ import type {
   FeedbackSessionDetailRead,
   FeedbackSessionRead,
   FeedbackSummaryRead,
+  TraceLineRead,
+  TurnTraceRead,
 } from '../types';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
@@ -28,6 +38,7 @@ type ConversationDetail = {
   messages: FeedbackMessageRead[];
   feedback: Array<Record<string, unknown>>;
   events: EnterpriseSessionDetailRead['events'];
+  traces: TurnTraceRead[];
 };
 
 const FILTER_OPTIONS = [
@@ -35,10 +46,10 @@ const FILTER_OPTIONS = [
   { label: '好评', value: 'up' },
   { label: '差评', value: 'down' },
   { label: '未评价', value: 'unrated' },
-  { label: '能力缺口', value: 'ability' },
-  { label: '工具缺口', value: 'tool' },
-  { label: '资料缺口', value: 'knowledge' },
-  { label: 'SOP 缺口', value: 'sop' },
+  { label: '能力不足', value: 'ability' },
+  { label: '工具问题', value: 'tool' },
+  { label: '知识缺失', value: 'knowledge' },
+  { label: 'SOP 问题', value: 'sop' },
 ];
 
 export default function FeedbackPage() {
@@ -117,9 +128,13 @@ export default function FeedbackPage() {
   const openDetail = async (row: ConversationLogRow) => {
     setDetailLoading(true);
     try {
-      const sessionDetail = await api.get<EnterpriseSessionDetailRead>(
-        `/api/enterprise/sessions/${row.id}?tenant_id=${TENANT_ID}`,
-      );
+      const [sessionDetail, traces] = await Promise.all([
+        api.get<EnterpriseSessionDetailRead>(
+          `/api/enterprise/sessions/${row.id}?tenant_id=${TENANT_ID}`,
+        ),
+        api.get<TurnTraceRead[]>(`/api/chat/sessions/${row.id}/trace?tenant_id=${TENANT_ID}`)
+          .catch(() => [] as TurnTraceRead[]),
+      ]);
       let feedbackDetail: FeedbackSessionDetailRead | null = null;
       if (row.downFeedback || row.upFeedback) {
         try {
@@ -135,6 +150,7 @@ export default function FeedbackPage() {
         messages: feedbackDetail?.messages || sessionDetail.messages,
         feedback: feedbackDetail?.feedback || [],
         events: sessionDetail.events || [],
+        traces,
       });
     } catch (error) {
       message.error(error instanceof Error ? error.message : '加载对话详情失败');
@@ -173,7 +189,7 @@ export default function FeedbackPage() {
       render: (_, row) => row.title || row.summary || row.last_agent_question || row.id,
     },
     {
-      title: '接单员工',
+      title: '数字员工',
       dataIndex: 'agent_id',
       width: 180,
       ellipsis: true,
@@ -191,7 +207,7 @@ export default function FeedbackPage() {
       ),
     },
     {
-      title: '质检归因',
+      title: '问题归因',
       width: 160,
       render: (_, row) => row.downFeedback
         ? <FeedbackBucketTag label={row.downFeedback.primary_bucket_label} bucket={row.downFeedback.primary_bucket} />
@@ -231,7 +247,7 @@ export default function FeedbackPage() {
       </div>
       <Card
         className="conversation-log-card"
-        title={<><MessageOutlined /> 对话任务与质检复盘</>}
+        title={<><MessageOutlined /> 对话记录与质量分析</>}
         extra={<Button icon={<ReloadOutlined />} onClick={() => void load()} loading={loading}>刷新</Button>}
       >
         {summary && (
@@ -279,7 +295,7 @@ export default function FeedbackPage() {
           <div className="feedback-detail">
             <Descriptions bordered size="small" column={1}>
               <Descriptions.Item label="任务 ID">{String(detail.session.session_id || detail.session.id || '-')}</Descriptions.Item>
-              <Descriptions.Item label="接单员工">{String(detail.session.agent_id || '-')}</Descriptions.Item>
+              <Descriptions.Item label="数字员工">{String(detail.session.agent_id || '-')}</Descriptions.Item>
               <Descriptions.Item label="用户">{displayUser(detail.session)}</Descriptions.Item>
               <Descriptions.Item label="状态">{String(detail.session.status || '-')}</Descriptions.Item>
               <Descriptions.Item label="反馈">
@@ -301,26 +317,25 @@ export default function FeedbackPage() {
               </Descriptions.Item>
             </Descriptions>
             <div className="feedback-conversation">
-              {detail.messages.map((item) => (
+              {conversationItems(detail).map(({ message: item, trace }) => (
                 <FeedbackMessage
                   key={item.id}
                   item={item}
+                  trace={trace}
                   onReanalyze={reanalyzeFeedback}
                   reanalyzing={Boolean(item.feedback_id && item.feedback_id === reanalyzingId)}
                 />
               ))}
-            </div>
-            {detail.events.length > 0 && (
-              <div className="conversation-event-log">
-                <Typography.Title level={5}>执行记录</Typography.Title>
-                {detail.events.slice(-12).map((event) => (
-                  <div key={event.id} className="conversation-event-item">
-                    <strong>{event.event_type}</strong>
-                    <span>{new Date(event.created_at).toLocaleString()}</span>
+              {detail.messages.length === 0 && detail.traces.length > 0 ? (
+                detail.traces.map((trace) => (
+                  <div key={trace.turn_id} className="feedback-message-row assistant">
+                    <div className="feedback-message-bubble trace-only">
+                      <FeedbackTraceBlock trace={trace} />
+                    </div>
                   </div>
-                ))}
-              </div>
-            )}
+                ))
+              ) : null}
+            </div>
           </div>
         ) : null}
       </Drawer>
@@ -330,10 +345,12 @@ export default function FeedbackPage() {
 
 function FeedbackMessage({
   item,
+  trace,
   onReanalyze,
   reanalyzing,
 }: {
   item: FeedbackMessageRead;
+  trace?: TurnTraceRead;
   onReanalyze: (feedbackId: string) => void;
   reanalyzing: boolean;
 }) {
@@ -354,13 +371,14 @@ function FeedbackMessage({
               : <FeedbackBucketTag label={item.feedback_analysis.bucket_label} bucket={item.feedback_analysis.bucket} />
           )}
         </div>
+        {trace && <FeedbackTraceBlock trace={trace} />}
         <Typography.Paragraph className="feedback-message-content">
           {item.content}
         </Typography.Paragraph>
         {item.feedback_analysis && item.feedback_rating === 'down' && (
           <div className="feedback-analysis-box">
             <div>
-              <strong>质检状态：</strong>{analysisStatusLabel(item.feedback_analysis.status)}
+              <strong>状态：</strong>{analysisStatusLabel(item.feedback_analysis.status)}
               {item.feedback_analysis.status !== 'failed' && typeof item.feedback_analysis.confidence === 'number' && (
                 <span> · 置信度 {(item.feedback_analysis.confidence * 100).toFixed(0)}%</span>
               )}
@@ -384,6 +402,80 @@ function FeedbackMessage({
   );
 }
 
+function conversationItems(detail: ConversationDetail): Array<{ message: FeedbackMessageRead; trace?: TurnTraceRead }> {
+  const tracesByUserMessage = new Map<string, TurnTraceRead>();
+  const tracesByTurn = new Map<string, TurnTraceRead>();
+  detail.traces.forEach((trace) => {
+    if (trace.user_message_id) tracesByUserMessage.set(trace.user_message_id, trace);
+    tracesByTurn.set(trace.turn_id, trace);
+  });
+
+  let currentUserMessageId = '';
+  return detail.messages.map((messageItem) => {
+    if (messageItem.role === 'user') {
+      currentUserMessageId = messageItem.id;
+      return { message: messageItem };
+    }
+    const trace = messageItem.role === 'assistant'
+      ? tracesByUserMessage.get(currentUserMessageId) || tracesByTurn.get(currentUserMessageId)
+      : undefined;
+    return { message: messageItem, trace };
+  });
+}
+
+function FeedbackTraceBlock({ trace }: { trace: TurnTraceRead }) {
+  const lines = traceDetails(trace.lines);
+  if (lines.length === 0) return null;
+  return (
+    <div className="feedback-trace-block">
+      <div className="feedback-trace-header">
+        <CloudSyncOutlined />
+        <span>执行记录</span>
+        <span>{trace.completed_at ? '已完成' : '执行中'}</span>
+      </div>
+      <div className="feedback-trace-lines">
+        {lines.map((line) => (
+          <div key={line.id} className={`feedback-trace-line ${line.kind} ${line.state}`}>
+            <span className="feedback-trace-icon">{traceLineIcon(line.kind)}</span>
+            <span className="feedback-trace-content">
+              <span className="feedback-trace-text">{line.text}</span>
+              {line.detail && <span className="feedback-trace-detail">{line.detail}</span>}
+              {line.code && (
+                <details className="feedback-trace-code">
+                  <summary>查看代码</summary>
+                  <pre>{line.code}</pre>
+                </details>
+              )}
+              {line.output && (
+                <details className="feedback-trace-code">
+                  <summary>{line.outputTitle || '查看输出'}</summary>
+                  <pre>{line.output}</pre>
+                </details>
+              )}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function traceDetails(lines: TraceLineRead[]): TraceLineRead[] {
+  const hiddenPlaceholders = new Set(['正在思考', '已完成思考', '正在执行', '执行记录']);
+  return lines.filter((line) => {
+    if (line.kind === 'thinking') return false;
+    if (hiddenPlaceholders.has(line.text) && !line.detail && !line.code && !line.output) return false;
+    return true;
+  });
+}
+
+function traceLineIcon(kind: TraceLineRead['kind']) {
+  if (kind === 'skill') return <BranchesOutlined />;
+  if (kind === 'tool') return <ToolOutlined />;
+  if (kind === 'knowledge') return <FileSearchOutlined />;
+  return <CloudSyncOutlined />;
+}
+
 function displayUser(session: Record<string, unknown>): string {
   return String(session.display_name || session.username || session.user_id || '-');
 }
@@ -405,8 +497,8 @@ function bucketColor(bucket?: string): string {
 
 function analysisStatusLabel(status?: string): string {
   if (status === 'pending') return '等待分析';
-  if (status === 'analyzed') return '已分析';
+  if (status === 'analyzed') return '已完成';
   if (status === 'failed') return '分析失败';
-  if (status === 'needs_model') return '待配置模型';
+  if (status === 'needs_model') return '未配置模型';
   return status || '未知';
 }

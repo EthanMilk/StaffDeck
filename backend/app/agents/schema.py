@@ -4,6 +4,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+AgentResourceType = Literal["skill", "general_skill", "knowledge_base", "tool"]
+
 
 class AgentProfileCreateRequest(BaseModel):
     tenant_id: str
@@ -29,7 +31,7 @@ class AgentResourceBindingRead(BaseModel):
     id: str
     tenant_id: str
     agent_id: str
-    resource_type: Literal["skill", "general_skill", "knowledge_base"]
+    resource_type: AgentResourceType
     resource_id: str
     status: str
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -61,7 +63,7 @@ class AgentScopeRead(BaseModel):
 
 
 class AgentResourceBindingInput(BaseModel):
-    resource_type: Literal["skill", "general_skill", "knowledge_base"]
+    resource_type: AgentResourceType
     resource_id: str
     status: Literal["active", "inactive"] = "active"
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -75,7 +77,7 @@ class AgentResourcesUpdateRequest(BaseModel):
 class AgentResourceImportRequest(BaseModel):
     tenant_id: str
     source_agent_id: str
-    resource_type: Literal["skill", "general_skill", "knowledge_base"]
+    resource_type: AgentResourceType
     resource_ids: list[str] = Field(default_factory=list)
 
 

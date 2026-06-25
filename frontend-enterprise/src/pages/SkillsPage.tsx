@@ -105,7 +105,7 @@ export default function SkillsPage() {
     if (agents.length === 0) return;
     const resourceId = searchParams.get('resourceId') || undefined;
     if (isOverallAgent) {
-      message.warning('请先切换到具体数字员工，再从 SOP 广场新增 SOP');
+      message.warning('请先选择一个数字员工，再从广场复制 SOP');
     } else {
       void openImport('plaza', resourceId);
     }
@@ -148,13 +148,13 @@ export default function SkillsPage() {
       { title: '业务域', dataIndex: 'business_domain', width: 140, ellipsis: true },
       { title: '版本', dataIndex: 'version', width: 90 },
       {
-        title: '员工版本',
+        title: '本地版本',
         width: 120,
         render: (_, row) => {
-          if (isOverallAgent) return <Tag>组织版</Tag>;
+          if (isOverallAgent) return <Tag>广场版</Tag>;
           if (row.branch_status === 'inactive') return <Tag>已停用</Tag>;
           const state = row.branch_sync_state || 'synced';
-          return <Tag color={state === 'diverged' ? 'gold' : 'green'}>{state === 'diverged' ? '专属版本' : '已同步'}</Tag>;
+          return <Tag color={state === 'diverged' ? 'gold' : 'green'}>{state === 'diverged' ? '本地版本' : '已同步'}</Tag>;
         },
       },
       {
@@ -188,16 +188,16 @@ export default function SkillsPage() {
             trigger={['click']}
             menu={{
               items: [
-                { key: 'edit', icon: <EditOutlined />, label: isOverallAgent ? '编辑' : '编辑员工版本' },
+                { key: 'edit', icon: <EditOutlined />, label: isOverallAgent ? '编辑' : '编辑本地版本' },
                 { key: 'versions', icon: <HistoryOutlined />, label: '版本管理' },
                 row.status === 'published'
-                  ? { key: 'archive', icon: <StopOutlined />, label: isOverallAgent ? '停用' : '停用学习结果' }
-                  : { key: 'publish', icon: <CheckCircleOutlined />, label: isOverallAgent ? '启用' : '启用学习结果' },
+                  ? { key: 'archive', icon: <StopOutlined />, label: isOverallAgent ? '停用' : '停用本地版本' }
+                  : { key: 'publish', icon: <CheckCircleOutlined />, label: isOverallAgent ? '启用' : '启用本地版本' },
                 ...(!isOverallAgent
                   ? [
-                      { key: 'sync', icon: <SyncOutlined />, label: '从开放广场平台同步' },
-                      { key: 'promote', icon: <UploadOutlined />, label: '分享到开放广场平台' },
-                      { key: 'delete', icon: <DeleteOutlined />, label: '从当前员工移除', danger: true },
+                      { key: 'sync', icon: <SyncOutlined />, label: '从广场同步' },
+                      { key: 'promote', icon: <UploadOutlined />, label: '发布到广场' },
+                      { key: 'delete', icon: <DeleteOutlined />, label: '移除', danger: true },
                     ]
                   : [{ key: 'delete', icon: <DeleteOutlined />, label: '删除', danger: true }]),
               ] as any,
@@ -313,15 +313,15 @@ export default function SkillsPage() {
 
   async function submitImportSkills() {
     if (!agentId) {
-      message.warning('请先选择目标员工');
+      message.warning('请先选择一个数字员工');
       return;
     }
     if (!importSourceAgentId) {
-      message.warning(importMode === 'plaza' ? '请选择 SOP 广场' : '请选择学习来源员工');
+      message.warning(importMode === 'plaza' ? '请选择 SOP 广场' : '请选择复制来源员工');
       return;
     }
     if (importSelectedSkillIds.length === 0) {
-      message.warning('请选择要学习的 SOP');
+      message.warning('请选择要复制的 SOP');
       return;
     }
     setImportLoading(true);
@@ -337,11 +337,11 @@ export default function SkillsPage() {
       );
       const importedCount = result.imported?.length || 0;
       const missingCount = result.missing?.length || 0;
-      message.success(`已学习 ${importedCount} 个 SOP${missingCount ? `，${missingCount} 个未学习` : ''}`);
+      message.success(`已复制 ${importedCount} 个 SOP${missingCount ? `，${missingCount} 个未复制` : ''}`);
       setImportOpen(false);
       await load();
     } catch (error) {
-      message.error(error instanceof Error ? error.message : '学习失败');
+      message.error(error instanceof Error ? error.message : '复制失败');
     } finally {
       setImportLoading(false);
     }
@@ -423,16 +423,16 @@ export default function SkillsPage() {
   function remove(row: SkillRead) {
     const branchMode = !isOverallAgent;
     Modal.confirm({
-      title: branchMode ? `从当前员工移除 SOP「${row.name}」？` : `删除 SOP「${row.name}」？`,
+      title: branchMode ? `移除 SOP「${row.name}」？` : `删除 SOP「${row.name}」？`,
       content: branchMode
-        ? '这只会在当前员工的工作域中隐藏该 SOP；开放广场平台和其他员工仍然保留。'
+        ? '这只会在当前数字员工中隐藏该 SOP；开放广场和其他数字员工仍然保留。'
         : '删除后不会移除历史对话记录，但组织 SOP 列表中将不再显示该流程。',
       okText: branchMode ? '移除' : '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
       onOk: async () => {
         await api.delete(`/api/enterprise/skills/${row.skill_id}?tenant_id=${TENANT_ID}${agentQuery()}`);
-        message.success(branchMode ? '已从当前员工移除' : '已删除');
+        message.success(branchMode ? '已移除' : '已删除');
         load();
       },
     });
@@ -451,20 +451,20 @@ export default function SkillsPage() {
   async function syncFromOverall(row: SkillRead) {
     if (!agentId) return;
     await api.post(`/api/enterprise/agents/${agentId}/skills/${encodeURIComponent(row.skill_id)}/sync-from-overall?tenant_id=${TENANT_ID}`);
-    message.success('已从开放广场平台同步');
+    message.success('已从广场同步');
     load();
   }
 
   async function promoteToOverall(row: SkillRead) {
     if (!agentId) return;
     Modal.confirm({
-      title: `将「${row.name}」分享到开放广场平台？`,
-      content: '这会把当前员工的学习结果发布为广场可复用的 SOP 新版本。',
-      okText: '分享',
+      title: `将「${row.name}」发布到广场？`,
+      content: '这会把当前数字员工的本地版本发布为广场可复用的 SOP 新版本。',
+      okText: '发布',
       cancelText: '取消',
       onOk: async () => {
         await api.post(`/api/enterprise/agents/${agentId}/skills/${encodeURIComponent(row.skill_id)}/promote-to-overall?tenant_id=${TENANT_ID}`);
-        message.success('已分享到开放广场平台');
+        message.success('已发布到广场');
         load();
       },
     });
@@ -478,25 +478,20 @@ export default function SkillsPage() {
     <>
       <div className="page-title">
         <div>
-          <Typography.Title level={3}>SOP管理</Typography.Title>
-          <Typography.Text type="secondary">
-            {isOverallAgent
-              ? '管理可开放给员工学习和复用的业务 SOP。'
-              : '管理员工已学习的业务 SOP，新建和编辑会进入 SOP 管理子页面。'}
-          </Typography.Text>
+          <Typography.Title level={3}>SOP</Typography.Title>
         </div>
       </div>
       <Card
         className="data-card"
-        title={isOverallAgent ? 'SOP 广场列表' : '员工已学习的业务 SOP'}
+        title={isOverallAgent ? 'SOP 广场列表' : '本地 SOP'}
         extra={(
           <Dropdown
             trigger={['click']}
             menu={{
               items: [
                 { key: 'blank', icon: <PlusOutlined />, label: '新建空白 SOP' },
-                ...(!isOverallAgent ? [{ key: 'plaza', icon: <UploadOutlined />, label: '从 SOP 广场新增' }] : []),
-                ...(!isOverallAgent ? [{ key: 'employee', icon: <TeamOutlined />, label: '向其他员工学习 SOP' }] : []),
+                ...(!isOverallAgent ? [{ key: 'plaza', icon: <UploadOutlined />, label: '从广场复制' }] : []),
+                ...(!isOverallAgent ? [{ key: 'employee', icon: <TeamOutlined />, label: '从数字员工复制 SOP' }] : []),
               ],
               onClick: ({ key }) => handleCreateAction(key),
             }}
@@ -521,9 +516,9 @@ export default function SkillsPage() {
               onChange={setStatusFilter}
               className="skill-filter-select skill-filter-select-status"
               options={[
-                { label: '全部状态', value: 'all' },
+                { label: '全部', value: 'all' },
                 { label: '已启用', value: 'published' },
-                { label: '学习中', value: 'draft' },
+                { label: '草稿', value: 'draft' },
                 { label: '已停用', value: 'archived' },
               ]}
             />
@@ -533,9 +528,9 @@ export default function SkillsPage() {
                 onChange={setBranchFilter}
                 className="skill-filter-select skill-filter-select-branch"
                 options={[
-                  { label: '全部员工版本', value: 'all' },
+                  { label: '全部版本', value: 'all' },
                   { label: '已同步', value: 'synced' },
-                  { label: '员工版本', value: 'diverged' },
+                  { label: '本地版本', value: 'diverged' },
                   { label: '已停用', value: 'inactive' },
                 ]}
               />
@@ -555,7 +550,7 @@ export default function SkillsPage() {
       <Row gutter={[16, 16]} className="skill-rank-row">
         <Col xs={24} lg={8}>
           <RankingCard
-            title="执行排行榜"
+            title="调用排行"
             rows={rankingRows.calls.slice(0, 5)}
             value={(row) => `${row.total_call_count || 0} 次`}
             onMore={() => setRankingModal({ mode: 'calls', scope: 'total' })}
@@ -586,9 +581,9 @@ export default function SkillsPage() {
       </Row>
       <Modal
         open={importOpen}
-        title={importMode === 'plaza' ? '从 SOP 广场新增 SOP' : '向其他员工学习 SOP'}
+        title={importMode === 'plaza' ? '从广场复制 SOP' : '从数字员工复制 SOP'}
         width={720}
-        okText="学习"
+        okText="复制"
         cancelText="取消"
         confirmLoading={importLoading}
         onOk={() => void submitImportSkills()}
@@ -597,7 +592,7 @@ export default function SkillsPage() {
         <Space direction="vertical" size={16} style={{ width: '100%' }}>
           <Select
             value={importSourceAgentId || undefined}
-            placeholder={importMode === 'plaza' ? '选择 SOP 广场' : '选择学习来源员工'}
+            placeholder={importMode === 'plaza' ? '选择 SOP 广场' : '选择复制来源'}
             onChange={(value) => {
               setImportSourceAgentId(value);
               void loadImportSourceSkills(value);
@@ -617,16 +612,16 @@ export default function SkillsPage() {
             onChange={setImportSelectedSkillIds}
             options={importSourceSkills.map((item) => ({
               value: item.id,
-              label: `${item.name} · ${item.skill_id} · ${statusText(item.status)}`,
+              label: `${item.name} · ${item.skill_id}`,
             }))}
             optionFilterProp="label"
-            notFoundContent={importSourceAgentId ? '没有可学习的已启用 SOP' : '请先选择来源员工'}
+            notFoundContent={importSourceAgentId ? '没有可复制的 SOP' : '请先选择复制来源'}
             style={{ width: '100%' }}
           />
           <Typography.Text type="secondary">
             {importMode === 'plaza'
-              ? '仅可从 SOP 广场新增已启用的 SOP；已停用的广场 SOP 不会出现在可学习列表。'
-              : '仅可向其他员工学习已启用的 SOP；员工未启用或不可见的 SOP 不会出现在可学习列表。'}
+              ? '从广场复制可用 SOP；不可复制内容不会出现在列表。'
+              : '从数字员工复制可用 SOP；不可见内容不会出现在列表。'}
           </Typography.Text>
         </Space>
       </Modal>

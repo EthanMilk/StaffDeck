@@ -8,9 +8,14 @@ from sqlmodel import Session, select
 
 from app.db import get_session
 from app.agents.branching import (
+    ensure_agent_private_knowledge_branch,
     ensure_knowledge_base_version,
+    ensure_open_gallery_binding,
     get_agent,
+    is_open_gallery_resource,
     knowledge_version_for_upload,
+    mark_resource_open_gallery,
+    mark_resource_private_for_agent,
     promote_knowledge_branch_to_overall,
     rollback_knowledge_branch,
     sync_knowledge_branch_from_overall,
@@ -143,17 +148,11 @@ def create_knowledge_base(
     db.flush()
     agent = get_agent(db, request.tenant_id, agent_id)
     if agent and not agent.is_overall:
-        db.add(
-            AgentResourceBinding(
-                tenant_id=request.tenant_id,
-                agent_id=agent.id,
-                resource_type="knowledge_base",
-                resource_id=row.id,
-                status="active",
-                metadata_json={"created_from_agent": True},
-            )
-        )
-        sync_knowledge_branch_from_overall(db, request.tenant_id, agent.id, row.id)
+        mark_resource_private_for_agent(row, agent.id)
+        ensure_agent_private_knowledge_branch(db, request.tenant_id, agent.id, row)
+    else:
+        mark_resource_open_gallery(row)
+        ensure_open_gallery_binding(db, request.tenant_id, "knowledge_base", row.id, "active")
     db.commit()
     db.refresh(row)
     return knowledge_base_read(row, {}, version_row=ensure_knowledge_base_version(db, row))
@@ -763,6 +762,7 @@ def _management_knowledge_base_versions(
                 result[kb.id] = ensure_knowledge_base_version(db, kb, branch.head_version)
         return result
     rows = db.exec(select(KnowledgeBase).where(KnowledgeBase.tenant_id == tenant_id)).all()
+    rows = [row for row in rows if is_open_gallery_resource(db, tenant_id, "knowledge_base", row)]
     return {row.id: ensure_knowledge_base_version(db, row) for row in rows}
 
 

@@ -157,7 +157,7 @@ export type KnowledgeSearchResponse = {
   evidence_pack: KnowledgeSearchEvidence[];
 };
 
-export type AgentResourceType = 'skill' | 'general_skill' | 'knowledge_base';
+export type AgentResourceType = 'skill' | 'general_skill' | 'knowledge_base' | 'tool';
 
 export type AgentResourceBindingRead = {
   id: string;
@@ -435,6 +435,28 @@ export type EnterpriseSessionDetailRead = {
     payload: Record<string, unknown>;
     created_at: string;
   }>;
+};
+
+export type TraceLineRead = {
+  id: string;
+  kind: 'thinking' | 'decision' | 'skill' | 'tool' | 'code' | 'knowledge';
+  text: string;
+  detail?: string | null;
+  code?: string | null;
+  language?: string | null;
+  output?: string | null;
+  outputLanguage?: string | null;
+  outputTitle?: string | null;
+  state: 'running' | 'completed' | 'failed';
+  collapsible?: boolean | null;
+};
+
+export type TurnTraceRead = {
+  turn_id: string;
+  user_message_id?: string | null;
+  started_at: string;
+  completed_at?: string | null;
+  lines: TraceLineRead[];
 };
 
 export type TraceSummary = {

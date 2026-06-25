@@ -81,16 +81,20 @@ GENERIC_SEARCH_TERMS = {
     "相关",
     "基于",
 }
+SEARCH_MIN_DOCUMENT_SCORE = 2.0
+SEARCH_MIN_BUCKET_SCORE = 2.0
+SEARCH_MIN_CHUNK_SCORE = 2.0
+SEARCH_MIN_EVIDENCE_SCORE = 2.0
 
 INGEST_STAGES: list[dict[str, Any]] = [
     {"key": "queued", "label": "排队中", "progress": 0.0},
     {"key": "parsing", "label": "解析原始资料", "progress": 0.08},
     {"key": "normalizing", "label": "规范化 Source", "progress": 0.16},
     {"key": "documenting", "label": "写入 Source Document", "progress": 0.24},
-    {"key": "bucketing", "label": "规划 Wiki 概念", "progress": 0.36},
+    {"key": "bucketing", "label": "规划 Wiki 页面", "progress": 0.36},
     {"key": "bucket_writing", "label": "写入 OKF Wiki", "progress": 0.48},
-    {"key": "chunking", "label": "生成证据层", "progress": 0.62},
-    {"key": "summarizing", "label": "刷新知识桶", "progress": 0.74},
+    {"key": "chunking", "label": "生成引用来源", "progress": 0.62},
+    {"key": "summarizing", "label": "刷新 PageIndex", "progress": 0.74},
     {"key": "discovering", "label": "发现 SOP/工具", "progress": 0.88},
     {"key": "done", "label": "完成入库", "progress": 1.0},
 ]
@@ -203,7 +207,7 @@ class KnowledgeService:
             self._update_ingest_stage(
                 job,
                 "bucketing",
-                detail="正在按目录结构、章节语义和任务用途规划 OKF Wiki 概念",
+                detail="正在按目录结构、章节语义和任务用途规划 OKF Wiki 页面",
                 document_id=document.id,
                 stats={"section_count": len(section_nodes)},
             )
@@ -219,13 +223,13 @@ class KnowledgeService:
             self._update_ingest_stage(
                 job,
                 "bucket_writing",
-                detail=f"已规划 {len(buckets)} 个知识主题，正在写入 OKF Wiki 与知识桶",
+                detail=f"已规划 {len(buckets)} 个知识主题，正在写入 OKF Wiki 与内部索引",
                 stats={"bucket_count": len(buckets), "section_count": len(section_nodes)},
             )
             self._update_ingest_stage(
                 job,
                 "chunking",
-                detail="正在从 OKF Wiki 与原始资料回填证据片段",
+                detail="正在从 OKF Wiki 与原始资料回填引用来源",
                 stats={"bucket_count": len(buckets)},
             )
             chunk_count = self._build_chunks(job.tenant_id, job.knowledge_base_id, document, buckets, section_nodes)
@@ -268,13 +272,13 @@ class KnowledgeService:
             self._update_ingest_stage(
                 job,
                 "summarizing",
-                detail=f"已生成 {chunk_count} 个证据片段，正在刷新知识桶与片段摘要",
+                detail=f"已生成 {chunk_count} 个引用来源，正在刷新 PageIndex 与来源摘要",
                 stats={"concept_count": len(concept_rows), "bucket_count": len(buckets), "chunk_count": chunk_count},
             )
             self._update_ingest_stage(
                 job,
                 "discovering",
-                detail="正在从 OKF Wiki 和证据层发现可确认的 SOP/工具建议",
+                detail="正在从 OKF Wiki 和引用来源发现可确认的 SOP/工具建议",
                 stats={"bucket_count": len(buckets), "chunk_count": chunk_count},
             )
 
@@ -284,7 +288,7 @@ class KnowledgeService:
                 "done",
                 status="succeeded",
                 finished_at=utc_now(),
-                detail=f"完成入库：{len(concept_rows)} 个 Wiki 概念，{len(buckets)} 个知识桶，{chunk_count} 个证据片段",
+                detail=f"完成入库：{len(concept_rows)} 个 Wiki 页面，{len(buckets)} 个内部索引，{chunk_count} 个引用来源",
                 stats={
                     "concept_count": len(concept_rows),
                     "bucket_count": len(buckets),
@@ -327,7 +331,7 @@ class KnowledgeService:
             route_trace.append(
                 {
                     "phase": "okf_concept_route",
-                    "message": "正在选择 OKF Wiki 概念",
+                    "message": "正在选择 OKF Wiki 页面",
                     "candidate_count": len(concepts),
                     "selected_count": len(selected_concepts),
                 }
@@ -338,7 +342,7 @@ class KnowledgeService:
             route_trace.append({"phase": "no_documents", "message": "没有可检索的知识文档或 OKF 概念"})
             return KnowledgeSearchResponse(trace=route_trace, route_trace=route_trace)
         if not documents:
-            route_trace.append({"phase": "okf_only", "message": "仅命中 OKF Wiki 概念"})
+            route_trace.append({"phase": "okf_only", "message": "仅命中 OKF Wiki 页面"})
             return KnowledgeSearchResponse(
                 trace=route_trace,
                 route_trace=route_trace,
@@ -358,8 +362,15 @@ class KnowledgeService:
         if model_config:
             selected_document_ids = self._select_documents_with_llm(query, documents, 5, model_config, route_trace)
         if not selected_document_ids:
-            selected_document_ids = [row.id for row in _score_documents(query, documents)[:5]]
-            route_trace.append({"phase": "document_route_fallback", "message": "按文档卡相关性选择知识文档"})
+            fallback_documents = _score_documents(query, documents)[:5]
+            selected_document_ids = [row.id for row in fallback_documents]
+            route_trace.append(
+                {
+                    "phase": "document_route_fallback",
+                    "message": "按文档卡相关性补选知识文档",
+                    "selected_count": len(selected_document_ids),
+                }
+            )
         concept_document_ids = [
             str(ref.get("document_id"))
             for concept in selected_concepts
@@ -370,10 +381,13 @@ class KnowledgeService:
 
         selected_documents = [row for row in documents if row.id in set(selected_document_ids)]
         selected_document_cards = [_document_card_for_search(row) for row in selected_documents]
+        if not selected_documents and not selected_concepts:
+            route_trace.append({"phase": "document_route_no_match", "message": "没有足够相关的知识文档"})
+            return KnowledgeSearchResponse(trace=route_trace, route_trace=route_trace)
 
         buckets = self._load_buckets_for_search(request, selected_document_ids)
         if not buckets:
-            route_trace.append({"phase": "no_buckets", "message": "所选文档没有可展开的知识桶"})
+            route_trace.append({"phase": "no_buckets", "message": "所选文档没有可展开的内部索引"})
             return KnowledgeSearchResponse(
                 trace=route_trace,
                 route_trace=route_trace,
@@ -386,7 +400,7 @@ class KnowledgeService:
         route_trace.append(
             {
                 "phase": "bucket_route",
-                "message": "正在选择知识桶",
+                    "message": "正在选择内部索引",
                 "candidate_count": len(buckets),
                 "selected_document_ids": selected_document_ids,
             }
@@ -394,11 +408,34 @@ class KnowledgeService:
         if model_config:
             selected_ids = self._select_buckets_with_llm(query, buckets, request.max_buckets, model_config, route_trace)
         if not selected_ids:
-            selected_ids = [bucket.id for bucket in _score_buckets(query, buckets)[: request.max_buckets]]
-            route_trace.append({"phase": "bucket_route_fallback", "message": "按桶摘要相关性选择知识桶"})
+            fallback_buckets = _score_buckets(query, buckets)
+            selected_ids = [bucket.id for bucket in fallback_buckets[: request.max_buckets]]
+            if len(selected_ids) < request.max_buckets:
+                selected_set = set(selected_ids)
+                for bucket in buckets:
+                    if bucket.id in selected_set:
+                        continue
+                    selected_ids.append(bucket.id)
+                    selected_set.add(bucket.id)
+                    if len(selected_ids) >= request.max_buckets:
+                        break
+            route_trace.append(
+                {
+                    "phase": "bucket_route_fallback",
+                    "message": "按内部索引摘要相关性补选",
+                    "selected_count": len(selected_ids),
+                }
+            )
 
         bucket_by_id = {bucket.id: bucket for bucket in buckets}
         selected_buckets = [bucket_by_id[bucket_id] for bucket_id in selected_ids if bucket_id in bucket_by_id]
+        if not selected_buckets and not selected_concepts:
+            route_trace.append({"phase": "bucket_route_no_match", "message": "没有足够相关的内部索引"})
+            return KnowledgeSearchResponse(
+                trace=route_trace,
+                route_trace=route_trace,
+                selected_documents=selected_document_cards,
+            )
         expanded_sections = _expand_sections(selected_documents, selected_buckets, request.max_depth)
         route_trace.append(
             {
@@ -412,8 +449,8 @@ class KnowledgeService:
         evidence_pack = _build_evidence_pack(query, ranked_chunks) if request.need_evidence_pack else []
         route_trace.extend(
             [
-                {"phase": "read_chunks", "message": "读取知识片段", "chunk_count": len(ranked_chunks)},
-                {"phase": "evidence_pack", "message": "整理证据包", "evidence_count": len(evidence_pack)},
+                {"phase": "read_chunks", "message": "读取引用来源", "chunk_count": len(ranked_chunks)},
+                {"phase": "evidence_pack", "message": "整理引用来源包", "evidence_count": len(evidence_pack)},
             ]
         )
         return KnowledgeSearchResponse(
@@ -485,7 +522,7 @@ class KnowledgeService:
                 knowledge_base_version_id=document.knowledge_base_version_id,
                 document_id=document.id,
                 bucket_key=str(spec.get("bucket_key") or f"bucket_{index + 1}"),
-                title=str(spec.get("title") or f"知识桶 {index + 1}"),
+                title=str(spec.get("title") or f"知识主题 {index + 1}"),
                 summary=str(spec.get("summary") or content[:300]),
                 token_estimate=max(1, len(content) // 2),
                 metadata_json={
@@ -1411,9 +1448,9 @@ def _document_card_for_search(row: KnowledgeDocument) -> dict[str, Any]:
 
 
 def _score_documents(query: str, documents: list[KnowledgeDocument]) -> list[KnowledgeDocument]:
-    return sorted(
-        documents,
-        key=lambda row: _score_text(
+    scored: list[tuple[float, KnowledgeDocument]] = []
+    for row in documents:
+        score = _score_text(
             query,
             " ".join(
                 [
@@ -1422,15 +1459,17 @@ def _score_documents(query: str, documents: list[KnowledgeDocument]) -> list[Kno
                     json.dumps((row.metadata_json or {}).get("document_card", {}), ensure_ascii=False)[:4000],
                 ]
             ),
-        ),
-        reverse=True,
-    )
+        )
+        if score >= SEARCH_MIN_DOCUMENT_SCORE:
+            scored.append((score, row))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [row for _score, row in scored]
 
 
 def _score_buckets(query: str, buckets: list[KnowledgeBucket]) -> list[KnowledgeBucket]:
-    return sorted(
-        buckets,
-        key=lambda row: _score_text(
+    scored: list[tuple[float, KnowledgeBucket]] = []
+    for row in buckets:
+        score = _score_text(
             query,
             " ".join(
                 [
@@ -1439,9 +1478,11 @@ def _score_buckets(query: str, buckets: list[KnowledgeBucket]) -> list[Knowledge
                     json.dumps(row.metadata_json or {}, ensure_ascii=False)[:3000],
                 ]
             ),
-        ),
-        reverse=True,
-    )
+        )
+        if score >= SEARCH_MIN_BUCKET_SCORE:
+            scored.append((score, row))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [row for _score, row in scored]
 
 
 def _rank_chunks(
@@ -1453,31 +1494,38 @@ def _rank_chunks(
     bucket_rank = {bucket.id: index for index, bucket in enumerate(selected_buckets)}
     section_ids = {str(item.get("section_id")) for item in expanded_sections if item.get("section_id")}
 
-    def score(chunk: KnowledgeChunk) -> tuple[float, int, int]:
+    scored: list[tuple[tuple[float, int, int], KnowledgeChunk]] = []
+    for chunk in chunks:
         metadata = chunk.metadata_json or {}
         section_bonus = 2 if str(metadata.get("section_id")) in section_ids else 0
         text_score = _score_text(query, f"{chunk.summary or ''} {chunk.content}")
-        return (text_score + section_bonus, -bucket_rank.get(chunk.bucket_id, 999), -chunk.chunk_index)
-
-    return sorted(chunks, key=score, reverse=True)
+        if text_score < SEARCH_MIN_CHUNK_SCORE:
+            continue
+        scored.append(((text_score + section_bonus, -bucket_rank.get(chunk.bucket_id, 999), -chunk.chunk_index), chunk))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [chunk for _score, chunk in scored]
 
 
 def _build_evidence_pack(query: str, chunks: list[KnowledgeChunk]) -> list[dict[str, Any]]:
-    return [
-        {
-            "chunk_id": chunk.id,
-            "document_id": chunk.document_id,
-            "bucket_id": chunk.bucket_id,
-            "source_path": chunk.source_ref,
-            "section_path": (chunk.metadata_json or {}).get("section_path"),
-            "summary": chunk.summary,
-            "excerpt": chunk.content[:1200],
-            "confidence_reason": "片段摘要、章节路径或正文与查询相关"
-            if _score_text(query, f"{chunk.summary or ''} {chunk.content}") > 0
-            else "来自已选知识桶的候选证据",
-        }
-        for chunk in chunks
-    ]
+    evidence: list[dict[str, Any]] = []
+    for chunk in chunks:
+        score = _score_text(query, f"{chunk.summary or ''} {chunk.content}")
+        if score < SEARCH_MIN_EVIDENCE_SCORE:
+            continue
+        evidence.append(
+            {
+                "chunk_id": chunk.id,
+                "document_id": chunk.document_id,
+                "bucket_id": chunk.bucket_id,
+                "source_path": chunk.source_ref,
+                "section_path": (chunk.metadata_json or {}).get("section_path"),
+                "summary": chunk.summary,
+                "excerpt": chunk.content[:1200],
+                "relevance_score": round(score, 2),
+                "confidence_reason": "引用来源摘要、章节路径或正文与查询相关",
+            }
+        )
+    return evidence
 
 
 def _expand_sections(
@@ -1523,7 +1571,7 @@ def _collect_section_with_children(
         "summary": node.get("summary"),
         "level": node.get("level"),
         "source_span": node.get("source_span") or {},
-        "reason": f"命中知识桶：{reason}",
+        "reason": f"命中内部索引：{reason}",
     }
     if max_depth <= 0:
         return
@@ -1591,7 +1639,7 @@ def _score_text(query: str, text: str) -> float:
 
 def _guess_title(section: str, index: int) -> str:
     first_line = next((line.strip("# ").strip() for line in section.splitlines() if line.strip()), "")
-    return first_line[:60] if first_line else f"知识桶 {index + 1}"
+    return first_line[:60] if first_line else f"知识主题 {index + 1}"
 
 
 def _optional_str(value: Any) -> str | None:

@@ -1,3 +1,5 @@
+import { getEnterpriseAuthSession } from '../auth';
+
 const resolveApiBase = () => {
   if (import.meta.env.VITE_API_BASE_URL) {
     return import.meta.env.VITE_API_BASE_URL;
@@ -7,7 +9,6 @@ const resolveApiBase = () => {
 };
 
 const API_BASE = resolveApiBase();
-const AUTH_STORAGE_KEY = 'ultrarag_enterprise_auth';
 
 export const TENANT_ID = import.meta.env.VITE_TENANT_ID || 'tenant_demo';
 
@@ -28,14 +29,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 function authHeader(): Record<string, string> {
-  const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as { token?: string };
-    return parsed.token ? { Authorization: `Bearer ${parsed.token}` } : {};
-  } catch {
-    return {};
-  }
+  const session = getEnterpriseAuthSession();
+  return session?.token ? { Authorization: `Bearer ${session.token}` } : {};
 }
 
 export const api = {
@@ -73,7 +68,7 @@ export async function streamPost(
 ): Promise<void> {
   const response = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeader() },
     body: JSON.stringify(body),
     signal,
   });
@@ -111,7 +106,7 @@ export async function streamGet(
   onEvent: (item: StreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}${path}`, { signal });
+  const response = await fetch(`${API_BASE}${path}`, { headers: { ...authHeader() }, signal });
   if (!response.ok) {
     const text = await response.text();
     throw new Error(parseErrorMessage(text) || response.statusText);

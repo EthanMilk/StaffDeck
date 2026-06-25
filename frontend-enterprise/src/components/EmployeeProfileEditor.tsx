@@ -93,13 +93,13 @@ export default function EmployeeProfileEditor({
         status: values.status,
         metadata,
       });
-      message.success('员工信息已更新');
+      message.success('数字员工档案已更新');
       onSaved?.(saved);
       onClose();
       window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
     } catch (error) {
       if (error && typeof error === 'object' && 'errorFields' in error) return;
-      message.error(error instanceof Error ? error.message : '保存员工信息失败');
+      message.error(error instanceof Error ? error.message : '保存数字员工档案失败');
     } finally {
       setSaving(false);
     }
@@ -108,7 +108,7 @@ export default function EmployeeProfileEditor({
   return (
     <Modal
       className="employee-profile-modal"
-      title={agent ? `编辑员工信息：${employeeDisplayName(agent)}` : '编辑员工信息'}
+      title={agent ? `编辑数字员工档案：${employeeDisplayName(agent)}` : '编辑数字员工档案'}
       open={open}
       onCancel={onClose}
       onOk={() => void save()}
@@ -122,22 +122,20 @@ export default function EmployeeProfileEditor({
         <div className="employee-profile-preview">
           <EmployeeAvatar agent={agent} size={92} />
           <div>
-            <Typography.Text type="secondary">员工入职资料</Typography.Text>
+            <Typography.Text type="secondary">数字员工档案</Typography.Text>
             <Typography.Title level={4}>{agent ? employeeDisplayName(agent) : '数字员工'}</Typography.Title>
-            <Typography.Paragraph type="secondary">
-              这里会同步影响员工信息页、员工名册和任务派发台里的员工展示。
-            </Typography.Paragraph>
+            <Typography.Text type="secondary">{profile.roleName}</Typography.Text>
           </div>
           <span className="employee-profile-preview-icon"><IdcardOutlined /></span>
         </div>
 
         <Form form={form} layout="vertical" className="employee-profile-form">
           <div className="employee-profile-form-grid">
-            <Form.Item name="name" label="员工姓名" rules={[{ required: true, message: '请输入员工姓名' }]}>
+            <Form.Item name="name" label="数字员工姓名" rules={[{ required: true, message: '请输入数字员工姓名' }]}>
               <Input placeholder="例如：默认员工" />
             </Form.Item>
             <Form.Item name="roleName" label="岗位">
-              <Input placeholder="例如：在线客服员工" />
+              <Input placeholder="例如：在线客服" />
             </Form.Item>
             <Form.Item name="onboardedAt" label="入职时间">
               <Input type="date" />
@@ -152,11 +150,11 @@ export default function EmployeeProfileEditor({
             </Form.Item>
           </div>
 
-          <Form.Item name="description" label="岗位人设摘要">
-            <Input.TextArea rows={3} placeholder="概括这个员工的岗位边界、服务风格和执行重点" />
+          <Form.Item name="description" label="岗位描述">
+            <Input.TextArea rows={3} placeholder="概括这个数字员工的岗位边界、服务风格和执行重点" />
           </Form.Item>
           <Form.Item name="systemPromptSummary" label="看板摘要">
-            <Input.TextArea rows={2} placeholder="用于员工信息页顶部展示的 system prompt 摘要" />
+            <Input.TextArea rows={2} placeholder="用于数字员工档案页顶部展示的 system prompt 摘要" />
           </Form.Item>
           <Form.Item name="personaPrompt" label="岗位执行约束">
             <Input.TextArea rows={4} placeholder="员工在对话中的角色、人设、回复风格和执行边界" />
@@ -176,9 +174,9 @@ export default function EmployeeProfileEditor({
 
           <div className="employee-profile-publish">
             <div>
-              <Typography.Text strong>发布到员工广场</Typography.Text>
+              <Typography.Text strong>发布到广场</Typography.Text>
               <Typography.Paragraph type="secondary">
-                开启后，其他员工账号可以在任务派发台和员工广场中选择这个员工。
+                开启后，其他账号可以在聊天端和数字员工广场中选择这个员工。
               </Typography.Paragraph>
             </div>
             <Form.Item name="publishedToGallery" valuePropName="checked" noStyle>

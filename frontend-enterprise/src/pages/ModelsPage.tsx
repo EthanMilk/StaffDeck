@@ -111,17 +111,17 @@ export default function ModelsPage() {
     <div className="page model-config-page">
       <div className="page-title">
         <div>
-          <Typography.Title level={3}>模型配置</Typography.Title>
-          <Typography.Text type="secondary">管理员工执行 SOP、通用技能和质检分析时可用的模型连接。</Typography.Text>
+          <Typography.Title level={3}>模型</Typography.Title>
+          <Typography.Text type="secondary">配置平台使用的 AI 模型，支持接入任何 OpenAI 兼容接口。</Typography.Text>
         </div>
         <Space className="page-actions">
           <Button icon={<ReloadOutlined />} onClick={() => load()}>刷新</Button>
-          <Button type="primary" icon={<PlusOutlined />} onClick={createBlank}>新建空白模型</Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={createBlank}>新建模型</Button>
         </Space>
       </div>
 
       <div className="compact-metric-strip model-config-stats">
-        <MetricItem label="模型配置" value={rows.length} />
+        <MetricItem label="模型" value={rows.length} />
         <MetricItem label="已启用" value={enabledCount} />
         <MetricItem label="默认模型" value={defaultRow?.name || '-'} />
         <MetricItem label="Provider" value={providerCount} />
@@ -139,14 +139,14 @@ export default function ModelsPage() {
         />
       </Card>
 
-      <Card className="editor-card model-editor-card" title={selected ? `编辑模型：${selected.name}` : '新建空白模型'}>
+      <Card className="editor-card model-editor-card" title={selected ? `编辑模型：${selected.name}` : '新建模型'}>
         <Form form={form} layout="vertical" initialValues={{ provider: 'openai_compatible', temperature: 0.2, max_output_tokens: 2048, enabled: true }}>
           <div className="model-form-grid">
-            <Form.Item name="name" label="配置名称" rules={[{ required: true }]}><Input prefix={<ApiOutlined />} /></Form.Item>
+            <Form.Item name="name" label="名称" rules={[{ required: true }]}><Input prefix={<ApiOutlined />} /></Form.Item>
             <Form.Item name="provider" label="Provider" rules={[{ required: true }]}><Input /></Form.Item>
             <Form.Item name="base_url" label="Base URL"><Input /></Form.Item>
             <Form.Item name="model" label="Model" rules={[{ required: true }]}><Input /></Form.Item>
-            <Form.Item name="api_key" label="API Key"><Input.Password placeholder={selected ? '留空则保持原值' : undefined} /></Form.Item>
+            <Form.Item name="api_key" label="API Key"><Input.Password placeholder={selected ? '不修改请留空' : undefined} /></Form.Item>
             <div className="form-number-row model-number-row">
               <Form.Item name="temperature" label="Temperature"><InputNumber min={0} max={2} step={0.1} /></Form.Item>
               <Form.Item name="max_output_tokens" label="Max Tokens"><InputNumber min={128} max={32000} /></Form.Item>

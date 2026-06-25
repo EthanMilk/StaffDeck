@@ -19,7 +19,7 @@
   "display_name": "会员权益核对",
   "description": "...",
   "method": "POST",
-  "url": "http://127.0.0.1:8000/api/...",
+  "url": "http://127.0.0.1:5173/api/...",
   "headers": {},
   "auth": {},
   "input_schema": {},

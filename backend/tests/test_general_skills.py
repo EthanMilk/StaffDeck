@@ -1,3 +1,5 @@
+import base64
+
 from fastapi import HTTPException
 from io import BytesIO
 from pathlib import Path
@@ -12,6 +14,7 @@ from app.api.general_skills import (
     get_general_skill,
     import_clawhub_skill,
     import_general_skill,
+    import_general_skill_package,
     list_general_skills,
     publish_general_skill,
     run_general_skill,
@@ -23,6 +26,7 @@ from app.general_skills.runner import GeneralSkillRunner, GeneralSkillSelector
 from app.general_skills.schema import (
     GeneralSkillClawHubImportRequest,
     GeneralSkillImportRequest,
+    GeneralSkillPackageUploadRequest,
     GeneralSkillRunRequest,
     GeneralSkillRunResponse,
     GeneralSkillSelection,
@@ -184,6 +188,53 @@ def test_import_clawhub_skill_reads_zip_package_without_overwriting(monkeypatch)
         assert second.slug == "weather-pack-2"
         assert [file.path for file in first.skill_files] == ["SKILL.md", "scripts/run.py", "data/cities.json"]
         assert first.skill_markdown.startswith("---\nname: 天气包")
+
+
+def test_import_general_skill_package_upload_keeps_full_zip_folder() -> None:
+    package = BytesIO()
+    with ZipFile(package, "w") as archive:
+        archive.writestr(
+            "nuwa-skill-main/skill/SKILL.md",
+            "---\nname: Nuwa Skill\nslug: nuwa-skill\n---\n\n# Nuwa Skill\n",
+        )
+        archive.writestr("nuwa-skill-main/skill/scripts/run.py", "print('nuwa')\n")
+        archive.writestr("nuwa-skill-main/skill/assets/config.json", "{\"mode\":\"demo\"}")
+
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        row = import_general_skill_package(
+            GeneralSkillPackageUploadRequest(
+                tenant_id="tenant_demo",
+                filename="nuwa-skill.zip",
+                content_base64=base64.b64encode(package.getvalue()).decode("ascii"),
+                status="published",
+            ),
+            db,
+        )
+
+        assert row.slug == "nuwa-skill"
+        assert row.name == "Nuwa Skill"
+        assert [file.path for file in row.skill_files] == ["SKILL.md", "scripts/run.py", "assets/config.json"]
+        assert row.skill_markdown.startswith("---\nname: Nuwa Skill")
+
+
+def test_import_general_skill_package_upload_treats_single_markdown_as_skill_md() -> None:
+    markdown = "---\nname: 单文件技能\nslug: single-file-skill\n---\n\n# 单文件技能\n"
+
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        row = import_general_skill_package(
+            GeneralSkillPackageUploadRequest(
+                tenant_id="tenant_demo",
+                filename="readme.md",
+                content_base64=base64.b64encode(markdown.encode("utf-8")).decode("ascii"),
+                status="published",
+            ),
+            db,
+        )
+
+        assert row.slug == "single-file-skill"
+        assert [file.path for file in row.skill_files] == ["SKILL.md"]
 
 
 def test_import_clawhub_skill_reads_github_directory_package(monkeypatch) -> None:
@@ -359,7 +410,7 @@ def test_import_clawhub_skill_rejects_plain_html_page(monkeypatch) -> None:
             )
         except HTTPException as error:
             assert error.status_code == 400
-            assert "HTML pages are not imported" in str(error.detail)
+            assert "HTML 页面不会被当作 SKILL.md 导入" in str(error.detail)
         else:
             raise AssertionError("plain HTML page must not be imported as SKILL.md")
 

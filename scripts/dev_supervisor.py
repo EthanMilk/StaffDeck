@@ -22,6 +22,9 @@ def env_value(name: str, default: str) -> str:
     return os.environ.get(name) or default
 
 
+SINGLE_PORT = env_value("SINGLE_PORT", "1") != "0"
+APP_HOST = env_value("APP_HOST", "127.0.0.1")
+APP_PORT = env_value("APP_PORT", "5173")
 BACKEND_HOST = env_value("BACKEND_HOST", "127.0.0.1")
 BACKEND_PORT = env_value("BACKEND_PORT", "8000")
 ENTERPRISE_HOST = env_value("ENTERPRISE_HOST", "127.0.0.1")
@@ -30,16 +33,25 @@ CHAT_HOST = env_value("CHAT_HOST", "127.0.0.1")
 CHAT_PORT = env_value("CHAT_PORT", "5174")
 
 api_host = "127.0.0.1" if BACKEND_HOST == "0.0.0.0" else BACKEND_HOST
-API_BASE_URL = env_value("VITE_API_BASE_URL", env_value("API_BASE_URL", f"http://{api_host}:{BACKEND_PORT}"))
+API_BASE_URL = env_value("VITE_API_BASE_URL", env_value("API_BASE_URL", "" if SINGLE_PORT else f"http://{api_host}:{BACKEND_PORT}"))
+TOOL_BASE_URL = env_value("TOOL_BASE_URL", f"http://localhost:{APP_PORT if SINGLE_PORT else BACKEND_PORT}")
 
-default_cors_origins = ",".join(
-    [
-        f"http://localhost:{ENTERPRISE_PORT}",
-        f"http://localhost:{CHAT_PORT}",
-        f"http://127.0.0.1:{ENTERPRISE_PORT}",
-        f"http://127.0.0.1:{CHAT_PORT}",
-    ]
-)
+if SINGLE_PORT:
+    default_cors_origins = ",".join(
+        [
+            f"http://localhost:{APP_PORT}",
+            f"http://127.0.0.1:{APP_PORT}",
+        ]
+    )
+else:
+    default_cors_origins = ",".join(
+        [
+            f"http://localhost:{ENTERPRISE_PORT}",
+            f"http://localhost:{CHAT_PORT}",
+            f"http://127.0.0.1:{ENTERPRISE_PORT}",
+            f"http://127.0.0.1:{CHAT_PORT}",
+        ]
+    )
 CORS_ORIGINS = env_value("CORS_ORIGINS", default_cors_origins)
 
 
@@ -191,6 +203,24 @@ class Service:
 
 
 def build_services() -> list[Service]:
+    if SINGLE_PORT:
+        return [
+            Service(
+                name="app",
+                cwd=ROOT_DIR / "backend",
+                command=[
+                    ".venv/bin/uvicorn",
+                    "single_port_app:app",
+                    "--host",
+                    APP_HOST,
+                    "--port",
+                    APP_PORT,
+                ],
+                env={"CORS_ORIGINS": CORS_ORIGINS, "TOOL_BASE_URL": TOOL_BASE_URL},
+                health_url=f"http://{url_host(APP_HOST)}:{APP_PORT}/api/health",
+            )
+        ]
+
     return [
         Service(
             name="backend",
@@ -203,7 +233,7 @@ def build_services() -> list[Service]:
                 "--port",
                 BACKEND_PORT,
             ],
-            env={"CORS_ORIGINS": CORS_ORIGINS},
+            env={"CORS_ORIGINS": CORS_ORIGINS, "TOOL_BASE_URL": TOOL_BASE_URL},
             health_url=f"http://{url_host(BACKEND_HOST)}:{BACKEND_PORT}/api/health",
         ),
         Service(
