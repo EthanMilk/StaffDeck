@@ -2527,7 +2527,7 @@ function SkillFlowNodeCard({
               <ActionList actions={actionList.slice(0, 4)} toolDescriptions={toolDescriptions} toolStatuses={toolStatuses} />
             </div>
           )}
-          {outgoingEdges.length > 0 && <span className="skill-flow-route-count">{outgoingEdges.length} 条流转</span>}
+          {outgoingEdges.length > 0 && <span className="skill-flow-route-count">{outgoingRouteCountLabel(outgoingEdges)}</span>}
         </div>
       </SelectableTarget>
     </div>
@@ -2602,7 +2602,7 @@ type SkillFlowCanvasNode = {
 type SkillFlowCanvasEdge = {
   id: string;
   kind: 'root' | 'edge';
-  labelTone?: 'root' | 'branch' | 'return';
+  labelTone?: 'root' | 'branch' | 'parallel' | 'return';
   label: string;
   title: string;
   path: string;
@@ -2712,6 +2712,7 @@ function buildSkillFlowCanvasLayout(
     const siblingCount = edgeSiblingCounts[sourceId] || 1;
     const baseLabel = normalizedEdgeLabel(edge, nodeNameMap);
     const hasDuplicateSourceLabel = (sourceEdgeLabelCounts[sourceId]?.[baseLabel] || 0) > 1;
+    const isParallelFlow = hasDuplicateSourceLabel;
     const label = flowEdgeDisplayLabel(edge, nodeNameMap, siblingCount, hasDuplicateSourceLabel);
     const title = incomingEdgeLabel(edge, nodeNameMap);
     const siblingIndex = edgeSiblingIndexes[sourceId] || 0;
@@ -2745,7 +2746,7 @@ function buildSkillFlowCanvasLayout(
       path,
       labelX: safeLabelAnchor.x,
       labelY: safeLabelAnchor.y,
-      labelTone: isReturn ? 'return' : (siblingCount > 1 ? 'branch' : 'root'),
+      labelTone: isReturn ? 'return' : (isParallelFlow ? 'parallel' : (siblingCount > 1 ? 'branch' : 'root')),
     });
   });
 
@@ -3140,6 +3141,23 @@ function hasDuplicateSiblingEdgeLabel(
   )).length > 1;
 }
 
+function hasDuplicateOutgoingEdgeLabel(
+  edges: Array<Record<string, unknown>>,
+  nodeNameMap: Record<string, string> = {},
+): boolean {
+  if (edges.length <= 1) return false;
+  const labelCounts = edges.reduce<Record<string, number>>((acc, edge) => {
+    const label = normalizedEdgeLabel(edge, nodeNameMap);
+    acc[label] = (acc[label] || 0) + 1;
+    return acc;
+  }, {});
+  return Object.values(labelCounts).some((count) => count > 1);
+}
+
+function outgoingRouteCountLabel(edges: Array<Record<string, unknown>>): string {
+  return `${edges.length} 条${hasDuplicateOutgoingEdgeLabel(edges) ? '并行' : ''}流转`;
+}
+
 function flowEdgeDisplayLabel(
   edge: Record<string, unknown>,
   nodeNameMap: Record<string, string> = {},
@@ -3148,6 +3166,9 @@ function flowEdgeDisplayLabel(
 ): string {
   const label = normalizedEdgeLabel(edge, nodeNameMap);
   const targetName = edgeTargetName(edge, nodeNameMap);
+  if (hasDuplicateSourceLabel && targetName) {
+    return `并行执行 · ${targetName}`;
+  }
   const genericLabel = label === '流转' || label.startsWith('来自 ');
   if (siblingCount > 1 && targetName && (hasDuplicateSourceLabel || genericLabel)) {
     return `${label} · 到${targetName}`;
@@ -3167,9 +3188,9 @@ function sourceEdgeSummary(
   const hasPriority = edge.priority !== undefined && edge.priority !== null && String(edge.priority).trim() !== '';
   const priority = hasPriority && typeof edge.priority === 'number' ? edge.priority : hasPriority && Number.isFinite(Number(edge.priority)) ? Number(edge.priority) : index;
   const prefix = label || condition;
-  const branchText = hasDuplicateSiblingEdgeLabel(edge, siblingEdges, nodeNameMap) ? '并行分叉 · ' : '';
+  const parallelText = hasDuplicateSiblingEdgeLabel(edge, siblingEdges, nodeNameMap) ? '并行执行 · ' : '';
   const priorityText = hasPriority && Number.isFinite(priority) ? ` · 优先级 ${priority}` : '';
-  return `${branchText}${prefix ? `${prefix} -> ` : ''}${targetName}${priorityText}`;
+  return `${parallelText}${prefix ? `${prefix} -> ` : ''}${targetName}${priorityText}`;
 }
 
 function compactEdgeLabel(value: string): string {

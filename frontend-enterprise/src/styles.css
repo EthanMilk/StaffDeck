@@ -5949,6 +5949,13 @@ textarea.skill-source-edit-input.ant-input,
   opacity: 0.94;
 }
 
+.skill-flow-edge-label.parallel {
+  max-width: 232px;
+  color: #0f766e;
+  background: rgba(236, 253, 245, 0.96);
+  border-color: rgba(15, 118, 110, 0.24);
+}
+
 .skill-flow-edge-label.return {
   border-style: dashed;
   opacity: 0.88;
