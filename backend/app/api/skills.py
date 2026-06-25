@@ -24,7 +24,6 @@ from app.agents.branching import (
     require_overall_agent,
     rollback_branch,
     update_branch_skill,
-    visible_skill,
     visible_skill_rows,
 )
 from app.async_jobs import enqueue_async_job
@@ -276,9 +275,7 @@ def update_skill(
             "技能分支改写",
         )
         db.commit()
-        projected = visible_skill(db, request.tenant_id, skill_id, agent.id)
-        if not projected:
-            raise HTTPException(status_code=500, detail="Branch update failed")
+        projected = project_skill_with_branch(row, branch)
         stats = _skill_stats(db, request.tenant_id)
         return skill_read(projected, stats, _recent_skill_stats(db, request.tenant_id, stats))
     row.version = normalized_content.version

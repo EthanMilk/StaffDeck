@@ -323,12 +323,13 @@ def update_branch_skill(
     change_summary: str = "分支改写",
 ) -> AgentSkillBranch:
     branch = ensure_agent_skill_branch(db, tenant_id, agent_id, skill)
+    previous_status = branch.status
     next_version = next_unique_branch_version(db, branch, str(content.get("version") or ""))
     next_content = dict(content)
     next_content["version"] = next_version
     branch.content_json = next_content
     branch.head_version = next_version
-    branch.status = "active"
+    branch.status = previous_status
     branch.sync_state = "diverged"
     branch.updated_at = utc_now()
     _ensure_branch_version(db, branch, change_summary)

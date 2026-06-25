@@ -168,6 +168,54 @@ def test_management_rows_keep_archived_global_and_inactive_branch_skills() -> No
         assert branch_by_id["branch_inactive"].status == "archived"
 
 
+def test_updating_inactive_branch_skill_keeps_it_inactive() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        agent = AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="客服分支", is_overall=False)
+        skill = Skill(
+            tenant_id="tenant_demo",
+            skill_id="branch_inactive_edit",
+            version="1.0.0",
+            name="停用分支技能",
+            business_domain="电商",
+            description="停用后仍应支持编辑",
+            status="published",
+            content_json=_graph("停用分支技能", "1.0.0"),
+        )
+        db.add(agent)
+        db.add(skill)
+        db.commit()
+
+        copy_overall_scope_to_agent(db, "tenant_demo", agent)
+        branch = db.exec(
+            select(AgentSkillBranch).where(
+                AgentSkillBranch.tenant_id == "tenant_demo",
+                AgentSkillBranch.agent_id == agent.id,
+                AgentSkillBranch.skill_id == skill.skill_id,
+            )
+        ).one()
+        branch.status = "inactive"
+        db.add(branch)
+        db.commit()
+
+        updated = update_branch_skill(
+            db,
+            "tenant_demo",
+            agent.id,
+            skill,
+            _graph("停用分支技能已编辑", "1.0.1"),
+        )
+        db.commit()
+
+        assert updated.status == "inactive"
+        assert updated.sync_state == "diverged"
+        visible = visible_skill_rows(db, "tenant_demo", agent.id)
+        branch_read = _skill_branch_read(next(row for row in visible if row.skill_id == skill.skill_id))
+        assert branch_read["status"] == "archived"
+        assert branch_read["branch_status"] == "inactive"
+        assert branch_read["name"] == "停用分支技能已编辑"
+
+
 def test_disabled_open_gallery_resources_cannot_be_learned() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
