@@ -63,6 +63,7 @@ MAX_TOOL_ACTIONS_PER_TURN = 6
 ROUTER_CONTEXT_MESSAGES = 8
 TOOL_CALL_HISTORY_SLOT = "_tool_call_history"
 TOOL_RESULTS_SLOT = "_tool_results"
+GRAPH_PENDING_STEPS_SLOT = "_graph_pending_steps"
 GENERAL_SKILL_TOOL_PREFIX = "general_skill."
 PROFILE_NAME_PREFIX = "用户姓名/称呼："
 TASK_CONFIRMATION_MARKERS = ("确认下单", "确认购买", "请确认", "是否确认")
@@ -850,6 +851,30 @@ class AgentLoop:
                 for event_name, payload in reflection_stream_events:
                     yield self._stream_event(event_name, chat_session, payload)
 
+                graph_stream_events: list[tuple[str, dict[str, object]]] = []
+                (
+                    active_skill,
+                    router_decision,
+                    step_result,
+                    tool_result,
+                ) = self._auto_progress_skill_graph(
+                    request,
+                    chat_session,
+                    skills,
+                    tools,
+                    model_config,
+                    active_skill,
+                    router_decision,
+                    step_result,
+                    tool_result,
+                    memory_context,
+                    conversation_context,
+                    graph_stream_events,
+                    completed_skill_ids_this_turn,
+                )
+                for event_name, payload in graph_stream_events:
+                    yield self._stream_event(event_name, chat_session, payload)
+
                 yield self._stream_status(chat_session, "responding", "正在生成回复")
                 chunks: list[str] = []
                 for chunk in self._generate_reply_stream_segment(
@@ -1343,6 +1368,29 @@ class AgentLoop:
             for event_name, payload in reflection_stream_events:
                 yield self._stream_event(event_name, chat_session, payload)
 
+            graph_stream_events: list[tuple[str, dict[str, object]]] = []
+            (
+                active_skill,
+                router_decision,
+                step_result,
+                tool_result,
+            ) = self._auto_progress_skill_graph(
+                request,
+                chat_session,
+                skills,
+                tools,
+                model_config,
+                active_skill,
+                router_decision,
+                step_result,
+                tool_result,
+                memory_context,
+                conversation_context,
+                graph_stream_events,
+            )
+            for event_name, payload in graph_stream_events:
+                yield self._stream_event(event_name, chat_session, payload)
+
             yield self._stream_status(chat_session, "responding", "正在生成回复")
             chunks: list[str] = []
             for chunk in self._generate_reply_stream_segment(
@@ -1780,6 +1828,24 @@ class AgentLoop:
             self._get_reflection_max_rounds(request.tenant_id),
             conversation_context,
         )
+        (
+            active_skill,
+            router_decision,
+            step_result,
+            tool_result,
+        ) = self._auto_progress_skill_graph(
+            request,
+            chat_session,
+            skills,
+            tools,
+            model_config,
+            active_skill,
+            router_decision,
+            step_result,
+            tool_result,
+            memory_context,
+            conversation_context,
+        )
 
         return PreparedTurn(
             chat_session=chat_session,
@@ -2098,6 +2164,25 @@ class AgentLoop:
                     conversation_context,
                     completed_skill_ids_this_turn=completed_skill_ids_this_turn,
                 )
+                (
+                    active_skill,
+                    router_decision,
+                    step_result,
+                    tool_result,
+                ) = self._auto_progress_skill_graph(
+                    request,
+                    chat_session,
+                    skills,
+                    tools,
+                    model_config,
+                    active_skill,
+                    router_decision,
+                    step_result,
+                    tool_result,
+                    memory_context,
+                    conversation_context,
+                    completed_skill_ids_this_turn=completed_skill_ids_this_turn,
+                )
                 segment = self._generate_reply_segment(
                     request.message,
                     chat_session,
@@ -2355,6 +2440,149 @@ class AgentLoop:
                 completed_skill_ids_this_turn,
             )
             if not retried:
+                break
+        return active_skill, router_decision, step_result, tool_result
+
+    def _auto_progress_skill_graph(
+        self,
+        request: ChatTurnRequest,
+        chat_session: ChatSession,
+        skills: list[Skill],
+        tools: list[Tool],
+        model_config: ModelConfig,
+        active_skill: Skill | None,
+        router_decision: RouterDecision,
+        step_result: StepAgentResult,
+        tool_result: ToolResult | None,
+        memory_context: list[dict[str, object]] | None = None,
+        conversation_context: dict[str, object] | None = None,
+        stream_events: list[tuple[str, dict[str, object]]] | None = None,
+        completed_skill_ids_this_turn: set[str] | None = None,
+    ) -> tuple[Skill | None, RouterDecision, StepAgentResult, ToolResult | None]:
+        conversation_context = conversation_context or self._conversation_context(chat_session)
+        completed_skill_ids_this_turn = completed_skill_ids_this_turn or set()
+        max_actions = max(1, self._get_agent_loop_max_actions(request.tenant_id))
+        for iteration in range(max_actions):
+            active_skill = self._get_active_skill(
+                request.tenant_id, chat_session.active_skill_id, chat_session.agent_id
+            )
+            if not active_skill or not step_result.is_step_completed:
+                break
+            if step_result.tool_call or step_result.handoff:
+                break
+            if not self._graph_flow_has_unfinished_work(active_skill, chat_session, step_result):
+                break
+            if not self._current_step_expected_info_satisfied(active_skill, chat_session):
+                break
+
+            payload = {
+                "phase": "skill",
+                "text": "继续推进 SOP 分支",
+                "active_skill_id": chat_session.active_skill_id,
+                "active_step_id": chat_session.active_step_id,
+                "pending_step_ids": self._graph_pending_steps(chat_session),
+                "iteration": iteration + 1,
+                "max_iterations": max_actions,
+            }
+            self.events.record(request.tenant_id, chat_session.id, "graph_auto_progress_started", payload)
+            if stream_events is not None:
+                stream_events.append(("status", payload))
+
+            before_state = (
+                chat_session.active_step_id,
+                tuple(self._graph_pending_steps(chat_session)),
+            )
+            router_decision = RouterDecision(
+                decision="continue_current_skill",
+                target_skill_id=active_skill.skill_id,
+                target_step_id=chat_session.active_step_id,
+                confidence=max(router_decision.confidence, 0.7),
+                user_intent=router_decision.user_intent or "继续执行 SOP 图",
+                reason="SOP 图还有可自动执行的后续节点。",
+                source_message=router_decision.source_message or request.message,
+                slot_hints={},
+            )
+            repair_events: list[tuple[str, dict[str, object]]] | None = [] if stream_events is not None else None
+            step_result = self._run_step_agent_with_context_repair(
+                request,
+                chat_session,
+                active_skill,
+                tools,
+                model_config,
+                router_decision,
+                memory_context,
+                conversation_context,
+                repair_events,
+            )
+            self.db.commit()
+            self.db.refresh(chat_session)
+            if repair_events:
+                stream_events.extend(repair_events)
+
+            if step_result.knowledge_query:
+                knowledge_events: list[tuple[str, dict[str, object]]] | None = (
+                    [] if stream_events is not None else None
+                )
+                step_result = self._execute_knowledge_query_cycle(
+                    request,
+                    chat_session,
+                    active_skill,
+                    tools,
+                    model_config,
+                    step_result,
+                    memory_context,
+                    conversation_context,
+                    knowledge_events,
+                )
+                self.db.commit()
+                self.db.refresh(chat_session)
+                if knowledge_events:
+                    stream_events.extend(knowledge_events)
+
+            if step_result.tool_call:
+                tool_events: list[tuple[str, dict[str, object]]] | None = (
+                    [] if stream_events is not None else None
+                )
+                step_result, tool_result = self._execute_tool_action_cycle(
+                    request,
+                    chat_session,
+                    active_skill,
+                    tools,
+                    model_config,
+                    step_result,
+                    tool_events,
+                )
+                self.db.commit()
+                self.db.refresh(chat_session)
+                if tool_events:
+                    stream_events.extend(tool_events)
+
+            reflection_events: list[tuple[str, dict[str, object]]] | None = (
+                [] if stream_events is not None else None
+            )
+            active_skill, router_decision, step_result, tool_result = self._run_reflection_rounds(
+                request,
+                chat_session,
+                skills,
+                tools,
+                model_config,
+                active_skill,
+                router_decision,
+                step_result,
+                tool_result,
+                self._get_reflection_max_rounds(request.tenant_id),
+                conversation_context,
+                reflection_events,
+                completed_skill_ids_this_turn,
+            )
+            if reflection_events:
+                stream_events.extend(reflection_events)
+
+            after_state = (
+                chat_session.active_step_id,
+                tuple(self._graph_pending_steps(chat_session)),
+            )
+            if after_state == before_state and not step_result.tool_call and not step_result.knowledge_query:
                 break
         return active_skill, router_decision, step_result, tool_result
 
@@ -3431,36 +3659,183 @@ class AgentLoop:
                 {"slot_updates": step_result.slot_updates, "slots": chat_session.slots_json},
             )
 
-        if step_result.next_step_id and chat_session.active_skill_id:
-            if active_skill and active_skill.skill_id == chat_session.active_skill_id:
-                if not self._skill_has_step(active_skill, step_result.next_step_id):
-                    self.events.record(
-                        tenant_id,
-                        chat_session.id,
-                        "step_agent_result_repaired",
-                        {
-                            "mode": "invalid_next_step_ignored",
-                            "active_skill_id": chat_session.active_skill_id,
-                            "active_step_id": chat_session.active_step_id,
-                            "invalid_next_step_id": step_result.next_step_id,
-                        },
-                    )
-                    step_result.next_step_id = None
-                    return
-            previous_step = chat_session.active_step_id
-            chat_session.active_step_id = step_result.next_step_id
-            if previous_step != step_result.next_step_id:
+        if not chat_session.active_skill_id:
+            return
+
+        active_skill_matches = bool(active_skill and active_skill.skill_id == chat_session.active_skill_id)
+        if active_skill_matches and step_result.next_step_id:
+            next_step_id = str(step_result.next_step_id).strip()
+            if not self._skill_has_step(active_skill, next_step_id):
                 self.events.record(
                     tenant_id,
                     chat_session.id,
-                    "skill_step_changed",
+                    "step_agent_result_repaired",
                     {
-                        "from_skill_id": chat_session.active_skill_id,
-                        "to_skill_id": chat_session.active_skill_id,
-                        "from_step_id": previous_step,
-                        "to_step_id": step_result.next_step_id,
+                        "mode": "invalid_next_step_ignored",
+                        "active_skill_id": chat_session.active_skill_id,
+                        "active_step_id": chat_session.active_step_id,
+                        "invalid_next_step_id": step_result.next_step_id,
                     },
                 )
+                step_result.next_step_id = None
+                return
+
+            source_step_id = chat_session.active_step_id
+            pending_steps = self._graph_pending_steps(chat_session)
+            if pending_steps:
+                if next_step_id in pending_steps:
+                    pending_steps = [item for item in pending_steps if item != next_step_id]
+                    self._store_graph_pending_steps(tenant_id, chat_session, pending_steps)
+                    self._change_active_step(
+                        tenant_id,
+                        chat_session,
+                        next_step_id,
+                        reason="graph_merge_step",
+                    )
+                    return
+
+                if next_step_id not in pending_steps:
+                    pending_steps.append(next_step_id)
+                    self._store_graph_pending_steps(tenant_id, chat_session, pending_steps)
+                if self._activate_next_pending_graph_step(
+                    tenant_id,
+                    chat_session,
+                    active_skill,
+                    reason="graph_sibling_step",
+                ):
+                    step_result.next_step_id = chat_session.active_step_id
+                return
+
+            self._queue_graph_sibling_steps(
+                tenant_id,
+                chat_session,
+                active_skill,
+                source_step_id,
+                next_step_id,
+            )
+
+        if step_result.next_step_id:
+            self._change_active_step(tenant_id, chat_session, str(step_result.next_step_id).strip())
+            return
+
+        if active_skill_matches and step_result.is_step_completed:
+            if self._activate_next_pending_graph_step(
+                tenant_id,
+                chat_session,
+                active_skill,
+                reason="graph_pending_step",
+            ):
+                step_result.next_step_id = chat_session.active_step_id
+
+    def _change_active_step(
+        self,
+        tenant_id: str,
+        chat_session: ChatSession,
+        next_step_id: str,
+        *,
+        reason: str | None = None,
+    ) -> None:
+        previous_step = chat_session.active_step_id
+        chat_session.active_step_id = next_step_id
+        if previous_step == next_step_id:
+            return
+        payload: dict[str, Any] = {
+            "from_skill_id": chat_session.active_skill_id,
+            "to_skill_id": chat_session.active_skill_id,
+            "from_step_id": previous_step,
+            "to_step_id": next_step_id,
+        }
+        if reason:
+            payload["reason"] = reason
+        self.events.record(tenant_id, chat_session.id, "skill_step_changed", payload)
+
+    def _graph_pending_steps(self, chat_session: ChatSession) -> list[str]:
+        value = (chat_session.slots_json or {}).get(GRAPH_PENDING_STEPS_SLOT)
+        if not isinstance(value, list):
+            return []
+        pending: list[str] = []
+        for item in value:
+            step_id = str(item or "").strip()
+            if step_id and step_id not in pending:
+                pending.append(step_id)
+        return pending
+
+    def _store_graph_pending_steps(
+        self,
+        tenant_id: str,
+        chat_session: ChatSession,
+        pending_steps: list[str],
+    ) -> None:
+        slots = dict(chat_session.slots_json or {})
+        normalized = []
+        for item in pending_steps:
+            step_id = str(item or "").strip()
+            if step_id and step_id not in normalized:
+                normalized.append(step_id)
+        if normalized:
+            slots[GRAPH_PENDING_STEPS_SLOT] = normalized
+        else:
+            slots.pop(GRAPH_PENDING_STEPS_SLOT, None)
+        chat_session.slots_json = slots
+        self.events.record(
+            tenant_id,
+            chat_session.id,
+            "graph_pending_steps_updated",
+            {"pending_step_ids": normalized},
+        )
+
+    def _queue_graph_sibling_steps(
+        self,
+        tenant_id: str,
+        chat_session: ChatSession,
+        active_skill: Skill,
+        source_step_id: str | None,
+        selected_step_id: str,
+    ) -> None:
+        if not source_step_id:
+            return
+        outgoing = self._graph_outgoing_edges(active_skill).get(source_step_id) or []
+        selected_conditions = {
+            self._edge_condition(edge)
+            for edge in outgoing
+            if str(edge.get("next_node_id") or "").strip() == selected_step_id
+        }
+        sibling_steps = [
+            str(edge.get("next_node_id") or "").strip()
+            for edge in outgoing
+            if str(edge.get("next_node_id") or "").strip()
+            and str(edge.get("next_node_id") or "").strip() != selected_step_id
+            and self._edge_condition(edge) in selected_conditions
+        ]
+        if not sibling_steps:
+            return
+        pending_steps = self._graph_pending_steps(chat_session)
+        for step_id in sibling_steps:
+            if step_id not in pending_steps:
+                pending_steps.append(step_id)
+        self._store_graph_pending_steps(tenant_id, chat_session, pending_steps)
+
+    def _edge_condition(self, edge: dict[str, Any]) -> str:
+        return str(edge.get("condition") or "").strip().lower()
+
+    def _activate_next_pending_graph_step(
+        self,
+        tenant_id: str,
+        chat_session: ChatSession,
+        active_skill: Skill,
+        *,
+        reason: str,
+    ) -> bool:
+        pending_steps = self._graph_pending_steps(chat_session)
+        while pending_steps:
+            next_step_id = pending_steps.pop(0)
+            if not self._skill_has_step(active_skill, next_step_id):
+                continue
+            self._store_graph_pending_steps(tenant_id, chat_session, pending_steps)
+            self._change_active_step(tenant_id, chat_session, next_step_id, reason=reason)
+            return True
+        self._store_graph_pending_steps(tenant_id, chat_session, [])
+        return False
 
     def _skill_has_step(self, skill: Skill, step_id: str | None) -> bool:
         if not step_id:
@@ -4108,6 +4483,8 @@ class AgentLoop:
             skill, chat_session
         ):
             return True
+        if self._graph_flow_has_unfinished_work(skill, chat_session, step_result):
+            return False
         if self._is_answer_ready_skill_state(skill, chat_session):
             return True
         if not step_result.next_step_id and not step_result.tool_call:
@@ -4130,6 +4507,37 @@ class AgentLoop:
         return all(
             self._skill_slot_satisfied(chat_session.slots_json or {}, field) for field in required
         )
+
+    def _current_step_expected_info_satisfied(
+        self, skill: Skill, chat_session: ChatSession
+    ) -> bool:
+        step = self._current_skill_step(skill, chat_session.active_step_id)
+        if not step:
+            return False
+        expected = [str(field) for field in step.get("expected_user_info", [])]
+        return all(
+            self._skill_slot_satisfied(chat_session.slots_json or {}, field) for field in expected
+        )
+
+    def _graph_flow_has_unfinished_work(
+        self,
+        skill: Skill | None,
+        chat_session: ChatSession,
+        step_result: StepAgentResult | None = None,
+    ) -> bool:
+        if not skill or chat_session.active_skill_id != skill.skill_id:
+            return False
+        if self._graph_pending_steps(chat_session):
+            return True
+        if (
+            step_result
+            and step_result.next_step_id
+            and str(step_result.next_step_id) == str(chat_session.active_step_id)
+        ):
+            return True
+        if not chat_session.active_step_id:
+            return False
+        return bool(self._graph_outgoing_edges(skill).get(chat_session.active_step_id))
 
     def _is_terminal_skill_frame(self, skill: Skill, frame: dict[str, Any]) -> bool:
         return self._is_terminal_skill_position(

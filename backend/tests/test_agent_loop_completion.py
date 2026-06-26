@@ -1,4 +1,4 @@
-from app.core.agent_loop import AgentLoop
+from app.core.agent_loop import GRAPH_PENDING_STEPS_SLOT, AgentLoop
 from app.core.skill_runtime import SkillRuntime
 from app.db.models import ChatSession, Message, Skill, Tool
 from app.session.session_schema import AwaitingInput, PendingTask, RouterDecision, StepAgentResult
@@ -428,6 +428,82 @@ def test_apply_step_result_does_not_create_step_without_active_skill() -> None:
     assert session.active_skill_id is None
     assert session.active_step_id is None
     assert loop.events.records == []
+
+
+def test_apply_step_result_queues_parallel_sibling_steps_and_merges() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.events = FakeEvents()
+    skill = _parallel_audit_skill(
+        [
+            {"source_node_id": "start", "next_node_id": "check_payee", "condition": "报文已获取"},
+            {"source_node_id": "start", "next_node_id": "check_sensitive", "condition": "报文已获取"},
+            {"source_node_id": "check_payee", "next_node_id": "report", "condition": "一致性检查完成"},
+            {"source_node_id": "check_sensitive", "next_node_id": "report", "condition": "敏感词检查完成"},
+        ]
+    )
+    session = ChatSession(
+        id="session_parallel",
+        tenant_id="tenant_demo",
+        active_skill_id=skill.skill_id,
+        active_step_id="start",
+        slots_json={},
+    )
+
+    loop._apply_step_result(
+        "tenant_demo",
+        session,
+        StepAgentResult(next_step_id="check_payee", is_step_completed=True),
+        skill,
+    )
+
+    assert session.active_step_id == "check_payee"
+    assert session.slots_json == {GRAPH_PENDING_STEPS_SLOT: ["check_sensitive"]}
+
+    first_branch_result = StepAgentResult(next_step_id="report", is_step_completed=True)
+    loop._apply_step_result("tenant_demo", session, first_branch_result, skill)
+
+    assert session.active_step_id == "check_sensitive"
+    assert first_branch_result.next_step_id == "check_sensitive"
+    assert session.slots_json == {GRAPH_PENDING_STEPS_SLOT: ["report"]}
+
+    loop._apply_step_result(
+        "tenant_demo",
+        session,
+        StepAgentResult(next_step_id="report", is_step_completed=True),
+        skill,
+    )
+
+    assert session.active_step_id == "report"
+    assert session.slots_json == {}
+    assert [record[2] for record in loop.events.records].count("skill_step_changed") == 3
+
+
+def test_apply_step_result_does_not_queue_exclusive_sibling_conditions() -> None:
+    loop = object.__new__(AgentLoop)
+    loop.events = FakeEvents()
+    skill = _parallel_audit_skill(
+        [
+            {"source_node_id": "start", "next_node_id": "approve", "condition": "审核通过"},
+            {"source_node_id": "start", "next_node_id": "reject", "condition": "审核拒绝"},
+        ]
+    )
+    session = ChatSession(
+        id="session_exclusive",
+        tenant_id="tenant_demo",
+        active_skill_id=skill.skill_id,
+        active_step_id="start",
+        slots_json={},
+    )
+
+    loop._apply_step_result(
+        "tenant_demo",
+        session,
+        StepAgentResult(next_step_id="approve", is_step_completed=True),
+        skill,
+    )
+
+    assert session.active_step_id == "approve"
+    assert session.slots_json == {}
 
 
 def test_terminal_skill_completion_when_required_slots_are_complete() -> None:
@@ -1211,6 +1287,81 @@ def _refund_skill() -> Skill:
             ],
             required_info=["order_id", "refund_reason"],
         ),
+        status="published",
+    )
+
+
+def _parallel_audit_skill(edges: list[dict[str, object]]) -> Skill:
+    return Skill(
+        tenant_id="tenant_demo",
+        skill_id="skill_parallel_audit",
+        name="并行审核",
+        content_json={
+            "skill_id": "skill_parallel_audit",
+            "name": "并行审核",
+            "required_info": ["message_content"],
+            "nodes": [
+                {
+                    "node_id": "start",
+                    "type": "collect_info",
+                    "name": "收集信息",
+                    "instruction": "收集用户报文。",
+                    "expected_user_info": ["message_content"],
+                    "allowed_actions": ["ask_user"],
+                },
+                {
+                    "node_id": "check_payee",
+                    "type": "condition",
+                    "name": "收款方一致性检查",
+                    "instruction": "检查收款方是否一致。",
+                    "expected_user_info": [],
+                    "allowed_actions": ["continue_flow"],
+                },
+                {
+                    "node_id": "check_sensitive",
+                    "type": "condition",
+                    "name": "敏感词检查",
+                    "instruction": "检查敏感词。",
+                    "expected_user_info": [],
+                    "allowed_actions": ["continue_flow"],
+                },
+                {
+                    "node_id": "approve",
+                    "type": "reply",
+                    "name": "通过",
+                    "instruction": "反馈通过。",
+                    "expected_user_info": [],
+                    "allowed_actions": ["answer_user"],
+                },
+                {
+                    "node_id": "reject",
+                    "type": "reply",
+                    "name": "拒绝",
+                    "instruction": "反馈拒绝。",
+                    "expected_user_info": [],
+                    "allowed_actions": ["answer_user"],
+                },
+                {
+                    "node_id": "report",
+                    "type": "reply",
+                    "name": "生成报告",
+                    "instruction": "汇总检查结果。",
+                    "expected_user_info": [],
+                    "allowed_actions": ["answer_user"],
+                },
+            ],
+            "edges": [
+                {
+                    "source_node_id": str(edge["source_node_id"]),
+                    "next_node_id": str(edge["next_node_id"]),
+                    "condition": str(edge.get("condition") or ""),
+                    "priority": index,
+                }
+                for index, edge in enumerate(edges)
+            ],
+            "start_node_id": "start",
+            "terminal_node_ids": ["report", "approve", "reject"],
+        },
         status="published",
     )
 

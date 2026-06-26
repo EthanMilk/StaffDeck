@@ -8,6 +8,7 @@ from app.session.session_schema import RouterDecision, StepAgentResult
 
 
 PROMPT_PATH = Path(__file__).resolve().parents[1] / "llm" / "prompts" / "step_agent_prompt.md"
+INTERNAL_SCHEDULER_SLOT_KEYS = {"_graph_pending_steps"}
 
 
 class StepAgent:
@@ -33,7 +34,7 @@ class StepAgent:
             "active_step": _active_step(skill, session.active_step_id),
             "knowledge_context": session.knowledge_context_json or [],
             "router_decision": router_decision.model_dump() if router_decision else None,
-            "slots": session.slots_json or {},
+            "slots": _step_agent_slots(session.slots_json),
             "awaiting_input": session.awaiting_input_json,
             "skill_stack": session.skill_stack_json or [],
             "pending_tasks": session.pending_tasks_json or [],
@@ -68,6 +69,16 @@ def _active_step(skill: Skill | None, active_step_id: str | None) -> dict[str, o
         if isinstance(node, dict) and node.get("node_id") == active_step_id:
             return _node_as_step(node)
     return None
+
+
+def _step_agent_slots(slots: dict[str, object] | None) -> dict[str, object]:
+    if not isinstance(slots, dict):
+        return {}
+    return {
+        key: value
+        for key, value in slots.items()
+        if str(key) not in INTERNAL_SCHEDULER_SLOT_KEYS
+    }
 
 
 def _node_as_step(node: dict[str, object]) -> dict[str, object]:
