@@ -405,7 +405,7 @@ function Shell({
             <Button icon={<StaffdeckIcon name="logout" />} onClick={onLogout} aria-label="退出登录" />
           </div>
         </Header>
-        <Content className="content">
+        <Content className={`content ${selected === '/enterprise/dashboard' ? 'sd1-dashboard-content' : ''}`}>
           <div className={isDistillRoute ? 'persistent-distill active' : 'persistent-distill hidden'}>
             <DistillPage active={isDistillRoute} searchParamsOverride={distillSearchParams} />
           </div>
