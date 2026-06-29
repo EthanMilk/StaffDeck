@@ -5935,11 +5935,11 @@ body,
 
 .chat-composer-avatar {
   position: absolute;
-  left: 34px;
-  bottom: calc(100% - 6px);
+  left: 30px;
+  bottom: 100%;
   z-index: 8;
-  width: 52px !important;
-  height: 52px !important;
+  width: 48px !important;
+  height: 48px !important;
   overflow: visible !important;
   pointer-events: none;
 }
