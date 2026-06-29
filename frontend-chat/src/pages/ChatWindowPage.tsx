@@ -1796,7 +1796,7 @@ export default function ChatWindowPage() {
 
   useEffect(() => {
     if (!currentStream.loading) return;
-    scrollChatToBottom({ preserveShortContentTop: true });
+    scrollChatToBottom();
   }, [currentStream.loading, currentStream.phase, scrollChatToBottom, storeTick, streamTick, traceTick]);
 
   useEffect(() => {
