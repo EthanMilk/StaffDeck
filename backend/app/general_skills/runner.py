@@ -11,7 +11,7 @@ from tempfile import mkdtemp
 from types import SimpleNamespace
 from typing import Any
 
-from app.db.models import GeneralSkill, ModelConfig, new_id
+from app.db.models import GeneralSkill, ModelConfig
 from app.general_skills.schema import (
     GeneralSkillExecutionPlan,
     GeneralSkillExecutionReview,

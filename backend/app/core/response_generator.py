@@ -5,7 +5,7 @@ from pathlib import Path
 
 from app.db.models import ChatSession, ModelConfig, Skill
 from app.knowledge.citations import knowledge_citations_from_results
-from app.llm import LLMClient, LLMError
+from app.llm import LLMClient
 from app.session.session_schema import RouterDecision, StepAgentResult
 from app.tools.tool_schema import ToolResult
 

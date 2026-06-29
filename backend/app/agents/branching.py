@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime
 from typing import Any, Iterable
 
 from sqlmodel import Session, select
@@ -24,7 +23,6 @@ from app.db.models import (
     ModelConfig,
     Skill,
     SkillVersion,
-    Tool,
     utc_now,
 )
 

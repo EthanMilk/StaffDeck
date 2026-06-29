@@ -4661,12 +4661,16 @@ class AgentLoop:
             skill, chat_session
         ):
             return True
-        if self._graph_flow_has_unfinished_work(skill, chat_session, step_result):
+        if self._graph_pending_steps(chat_session):
             return False
         if self._is_answer_ready_skill_state(skill, chat_session):
             return True
+        if self._is_terminal_skill_state(skill, chat_session):
+            return True
         if not step_result.next_step_id and not step_result.tool_call:
             return True
+        if self._graph_flow_has_unfinished_work(skill, chat_session, step_result):
+            return False
         return self._is_terminal_skill_state(skill, chat_session)
 
     def _is_terminal_skill_state(self, skill: Skill, chat_session: ChatSession) -> bool:

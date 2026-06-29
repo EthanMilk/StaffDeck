@@ -27,6 +27,22 @@ def test_fallback_draft_extracts_basic_weekly_keyword() -> None:
     assert draft.schedule == {"time": "18:00", "weekdays": [4]}
 
 
+def test_fallback_draft_extracts_basic_monthly_keyword() -> None:
+    draft = _fallback_draft("每月15号晚上8点汇总服务投诉趋势")
+
+    assert draft is not None
+    assert draft.schedule_type == "monthly"
+    assert draft.schedule == {"time": "20:00", "day_of_month": 15}
+
+
+def test_fallback_draft_ignores_invalid_basic_time() -> None:
+    draft = _fallback_draft("每天25点汇总服务投诉趋势")
+
+    assert draft is not None
+    assert draft.schedule_type == "daily"
+    assert draft.schedule == {"time": "09:00"}
+
+
 def test_fallback_draft_strips_configuration_prefix_only() -> None:
     draft = _fallback_draft("创建定时任务：复盘差评对话并给出 SOP 优化建议")
 

@@ -12,7 +12,25 @@ import {
   ReloadOutlined,
   SaveOutlined,
 } from '@ant-design/icons';
-import { Button, Card, Checkbox, Dropdown, Empty, Form, Input, InputNumber, Modal, Segmented, Select, Space, Switch, Table, Tag, Typography, message } from 'antd';
+import {
+  Button,
+  Card,
+  Checkbox,
+  Dropdown,
+  Empty,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Segmented,
+  Select,
+  Space,
+  Switch,
+  Table,
+  Tag,
+  Typography,
+  message,
+} from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
@@ -46,6 +64,10 @@ type TaskFormValues = {
 
 type TaskListFilter = 'all' | 'pending' | 'completed' | 'paused';
 type RunListFilter = 'all' | 'pending' | 'completed' | 'failed';
+type StatusPresentation = {
+  color: string;
+  text: string;
+};
 
 const INITIAL_VALUES: TaskFormValues = {
   title: '',
@@ -58,6 +80,70 @@ const INITIAL_VALUES: TaskFormValues = {
   day_of_month: 1,
   status: 'active',
   max_runs: undefined,
+};
+const TASK_STATUS_PRESENTATION: Record<string, StatusPresentation> = {
+  active: { color: 'green', text: '启用' },
+  paused: { color: 'gold', text: '暂停' },
+  completed: { color: 'blue', text: '已完成' },
+  archived: { color: 'default', text: '已删除' },
+};
+const RUN_STATUS_PRESENTATION: Record<string, StatusPresentation> = {
+  succeeded: { color: 'green', text: '成功' },
+  failed: { color: 'red', text: '失败' },
+  running: { color: 'blue', text: '执行中' },
+  skipped: { color: 'default', text: '已跳过' },
+};
+const TASK_FILTERS: Record<TaskListFilter, (row: ScheduledTaskRead) => boolean> = {
+  all: () => true,
+  pending: (row) => row.status === 'active',
+  paused: (row) => row.status === 'paused',
+  completed: (row) => row.status === 'completed',
+};
+const RUN_FILTERS: Record<RunListFilter, (row: ScheduledTaskRunRead) => boolean> = {
+  all: () => true,
+  pending: (row) => row.status === 'queued' || row.status === 'running',
+  failed: (row) => row.status === 'failed' || row.status === 'skipped',
+  completed: (row) => row.status === 'succeeded',
+};
+const SCHEDULE_TYPES = new Set<TaskFormValues['schedule_type']>([
+  'once',
+  'daily',
+  'weekly',
+  'monthly',
+]);
+const SCHEDULE_BUILDERS: Record<
+  TaskFormValues['schedule_type'],
+  (values: TaskFormValues) => Record<string, unknown>
+> = {
+  once: (values) => ({ run_at: values.run_at }),
+  weekly: (values) => ({
+    time: values.time || '09:00',
+    weekdays: values.weekdays?.length ? values.weekdays : [0],
+  }),
+  monthly: (values) => ({
+    time: values.time || '09:00',
+    day_of_month: values.day_of_month || 1,
+  }),
+  daily: (values) => ({ time: values.time || '09:00' }),
+};
+const SCHEDULE_FORMATTERS: Record<
+  TaskFormValues['schedule_type'],
+  (row: ScheduledTaskRead, schedule: Record<string, unknown>) => string
+> = {
+  once: (row, schedule) =>
+    `一次性 · ${formatTime(String(schedule.run_at || row.next_run_at || ''))}`,
+  weekly: (_row, schedule) => {
+    const days = Array.isArray(schedule.weekdays)
+      ? schedule.weekdays
+          .map((item) => WEEKDAY_OPTIONS[Number(item)]?.label)
+          .filter(Boolean)
+          .join('、')
+      : '周一';
+    return `每周 ${days} ${schedule.time || '09:00'}`;
+  },
+  monthly: (_row, schedule) =>
+    `每月 ${schedule.day_of_month || 1} 号 ${schedule.time || '09:00'}`,
+  daily: (_row, schedule) => `每天 ${schedule.time || '09:00'}`,
 };
 
 export default function ScheduledTasksPage() {
@@ -673,44 +759,28 @@ function TaskStat({ title, value }: { title: string; value: string | number }) {
 }
 
 function TaskStatusTag({ status }: { status: string }) {
-  const color = status === 'active' ? 'green' : status === 'paused' ? 'gold' : status === 'completed' ? 'blue' : 'default';
-  const text = status === 'active' ? '启用' : status === 'paused' ? '暂停' : status === 'completed' ? '已完成' : '已删除';
+  const { color, text } = TASK_STATUS_PRESENTATION[status] || TASK_STATUS_PRESENTATION.archived;
   return <Tag color={color}>{text}</Tag>;
 }
 
 function TaskRunStatusTag({ status }: { status: string }) {
-  const color = status === 'succeeded' ? 'green' : status === 'failed' ? 'red' : status === 'running' ? 'blue' : 'default';
-  const text = status === 'succeeded' ? '成功' : status === 'failed' ? '失败' : status === 'running' ? '执行中' : status === 'skipped' ? '已跳过' : status || '暂无';
+  const { color, text } = RUN_STATUS_PRESENTATION[status] || {
+    color: 'default',
+    text: status || '暂无',
+  };
   return <Tag color={color}>{text}</Tag>;
 }
 
 function matchesTaskFilter(row: ScheduledTaskRead, filter: TaskListFilter): boolean {
-  if (filter === 'all') return true;
-  if (filter === 'pending') return row.status === 'active';
-  if (filter === 'paused') return row.status === 'paused';
-  if (filter === 'completed') return row.status === 'completed';
-  return true;
+  return TASK_FILTERS[filter](row);
 }
 
 function matchesRunFilter(row: ScheduledTaskRunRead, filter: RunListFilter): boolean {
-  if (filter === 'all') return true;
-  if (filter === 'pending') return row.status === 'queued' || row.status === 'running';
-  if (filter === 'failed') return row.status === 'failed' || row.status === 'skipped';
-  if (filter === 'completed') return row.status === 'succeeded';
-  return true;
+  return RUN_FILTERS[filter](row);
 }
 
 function buildSchedule(values: TaskFormValues): Record<string, unknown> {
-  if (values.schedule_type === 'once') {
-    return { run_at: values.run_at };
-  }
-  if (values.schedule_type === 'weekly') {
-    return { time: values.time || '09:00', weekdays: values.weekdays?.length ? values.weekdays : [0] };
-  }
-  if (values.schedule_type === 'monthly') {
-    return { time: values.time || '09:00', day_of_month: values.day_of_month || 1 };
-  }
-  return { time: values.time || '09:00' };
+  return SCHEDULE_BUILDERS[values.schedule_type](values);
 }
 
 function taskToFormValues(row: ScheduledTaskRead): TaskFormValues {
@@ -730,8 +800,8 @@ function taskToFormValues(row: ScheduledTaskRead): TaskFormValues {
 }
 
 function normalizeScheduleType(value: string): TaskFormValues['schedule_type'] {
-  if (value === 'once' || value === 'daily' || value === 'weekly' || value === 'monthly') return value;
-  return 'daily';
+  const scheduleType = value as TaskFormValues['schedule_type'];
+  return SCHEDULE_TYPES.has(scheduleType) ? scheduleType : 'daily';
 }
 
 function toDatetimeLocal(value: string): string {
@@ -745,13 +815,7 @@ function toDatetimeLocal(value: string): string {
 
 function formatSchedule(row: ScheduledTaskRead): string {
   const schedule = row.schedule || {};
-  if (row.schedule_type === 'once') return `一次性 · ${formatTime(String(schedule.run_at || row.next_run_at || ''))}`;
-  if (row.schedule_type === 'weekly') {
-    const days = Array.isArray(schedule.weekdays) ? schedule.weekdays.map((item) => WEEKDAY_OPTIONS[Number(item)]?.label).filter(Boolean).join('、') : '周一';
-    return `每周 ${days} ${schedule.time || '09:00'}`;
-  }
-  if (row.schedule_type === 'monthly') return `每月 ${schedule.day_of_month || 1} 号 ${schedule.time || '09:00'}`;
-  return `每天 ${schedule.time || '09:00'}`;
+  return SCHEDULE_FORMATTERS[normalizeScheduleType(row.schedule_type)](row, schedule);
 }
 
 function formatTime(value?: string): string {
