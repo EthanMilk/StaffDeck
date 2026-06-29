@@ -14055,6 +14055,37 @@ body:has(.sd1-scheduled-page) .topbar {
   height: 14px;
 }
 
+.sd1-rail-agent-empty-mark {
+  width: 32px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  color: #8f98aa;
+  border: 0.5px solid #e3e7f1;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.sd1-rail-agent-empty-mark .sd1-icon {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.6;
+}
+
+.sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-empty-mark {
+  position: absolute;
+  left: 14px;
+  top: -32px;
+  width: 58px;
+  height: 70px;
+}
+
+.sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-label {
+  left: 74px !important;
+  top: 3px !important;
+  width: 42px !important;
+}
+
 .sd1-sidebar.is-expanded .sd1-rail-divider {
   width: 112px !important;
   margin: 8px 0 8px 20px !important;
@@ -14072,6 +14103,12 @@ body:has(.sd1-scheduled-page) .topbar {
 
 :root[data-theme='dark'] .sd1-sidebar.is-expanded .sd1-rail-agent-role {
   color: #f0f2f6 !important;
+}
+
+:root[data-theme='dark'] .sd1-rail-agent-empty-mark {
+  color: #8f98aa;
+  border-color: #303846;
+  background: #111827;
 }
 
 :root[data-theme='dark'] .employee-home-meta .ant-tag,

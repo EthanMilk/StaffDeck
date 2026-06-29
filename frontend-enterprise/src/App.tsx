@@ -131,9 +131,7 @@ function Shell({
       const nextAgentId = (event as CustomEvent<{ agentId?: string }>).detail?.agentId
         || window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY)
         || '';
-      if (nextAgentId) {
-        setSelectedAgentId(nextAgentId);
-      }
+      setSelectedAgentId(nextAgentId);
     };
     window.addEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
     return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', onScopeChange);
@@ -147,6 +145,9 @@ function Shell({
         const selectableRows = rows.filter((item) => canUseAgentScope(item));
         setSelectedAgentId((current) => {
           if (current && selectableRows.some((item) => item.id === current)) return current;
+          const hasStoredScope = Boolean(window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY));
+          const canShowUnselectedRoster = isAdmin && location.pathname.startsWith('/enterprise/agents') && !hasStoredScope;
+          if (!current && canShowUnselectedRoster) return '';
           const ownedRows = selectableRows.filter((item) => !item.is_overall && isEmployeeOwnedBy(item, auth.user));
           const next = isAdmin
             ? selectableRows.find((item) => item.is_overall)?.id || preferredEmployeeAgent(selectableRows)?.id || ''
@@ -189,10 +190,12 @@ function Shell({
   const scopeAgents = agents.filter(canUseAgentScope);
   const sourceAgents = isAdmin ? scopeAgents : scopeAgents.filter((item) => !item.is_overall);
   const isOverallScope = Boolean(selectedAgent?.is_overall);
-  const selectedAgentName = employeeDisplayName(selectedAgent);
-  const selectedAgentCaption = selectedAgent?.is_overall
-    ? '开放广场'
-    : employeeProfile(selectedAgent).roleName;
+  const selectedAgentName = selectedAgent ? employeeDisplayName(selectedAgent) : '未选择';
+  const selectedAgentCaption = selectedAgent
+    ? selectedAgent.is_overall
+      ? '开放广场'
+      : employeeProfile(selectedAgent).roleName
+    : '-';
   const sidebarWidth = sidebarExpanded ? ENTERPRISE_SIDEBAR_EXPANDED_WIDTH : ENTERPRISE_SIDEBAR_COLLAPSED_WIDTH;
   const navItems = [
     { key: '/enterprise/platform', icon: <StaffdeckIcon name="globe" />, label: '开放广场' },
@@ -332,15 +335,21 @@ function Shell({
           <div className="sd1-rail-employee">
             <button
               type="button"
-              className={`sd1-rail-agent ${selected === '/enterprise/dashboard' ? 'active' : ''}`}
+              className={`sd1-rail-agent ${selected === '/enterprise/dashboard' ? 'active' : ''}${selectedAgent ? '' : ' is-empty'}`}
               title={selectedAgentName}
-              onClick={() => navigate('/enterprise/dashboard')}
+              onClick={() => (selectedAgent ? navigate('/enterprise/dashboard') : openCreateAgentModal())}
             >
-              <EmployeeAvatar agent={selectedAgent} size={32} />
+              {selectedAgent ? (
+                <EmployeeAvatar agent={selectedAgent} size={32} />
+              ) : (
+                <span className="sd1-rail-agent-empty-mark" aria-hidden="true">
+                  <StaffdeckIcon name="plus" />
+                </span>
+              )}
               <span className="sd1-rail-agent-label">
-                <span className="sd1-rail-agent-short">{selectedAgent?.is_overall ? '广场' : employeeProfile(selectedAgent).roleName.slice(0, 2)}</span>
-                <span className="sd1-rail-agent-name">当前员工</span>
-                <span className="sd1-rail-agent-role">{selectedAgent?.is_overall ? '平台' : employeeProfile(selectedAgent).roleName}</span>
+                <span className="sd1-rail-agent-short">{selectedAgent ? (selectedAgent.is_overall ? '广场' : employeeProfile(selectedAgent).roleName.slice(0, 2)) : '+'}</span>
+                <span className="sd1-rail-agent-name">{selectedAgent ? '当前员工' : '未选择'}</span>
+                <span className="sd1-rail-agent-role">{selectedAgent ? (selectedAgent.is_overall ? '平台' : employeeProfile(selectedAgent).roleName) : '-'}</span>
               </span>
               <span className="sd1-rail-agent-chevron" aria-hidden="true">
                 <StaffdeckIcon name="arrow" style={{ transform: 'rotate(90deg)' }} />
