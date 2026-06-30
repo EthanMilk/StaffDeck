@@ -92,7 +92,6 @@ type TurnTrace = {
   completedAt?: number;
 };
 
-type ComposerIntent = 'normal' | 'scheduled_task';
 type ComposerAttachment = ChatAttachmentRead & {
   uploadStatus: 'uploading' | 'ready' | 'error';
   uploadKey: string;
@@ -1168,7 +1167,6 @@ export default function ChatWindowPage() {
   const [input, setInput] = useState('');
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]);
   const [composerDragActive, setComposerDragActive] = useState(false);
-  const [composerIntent, setComposerIntent] = useState<ComposerIntent>('normal');
   const [lastTurn, setLastTurn] = useState<ChatTurnResponse | null>(null);
   const [renameSession, setRenameSession] = useState<ChatSession | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
@@ -2611,12 +2609,10 @@ export default function ChatWindowPage() {
     if (stream.loading) return;
     const userText = input.trim();
     const outgoingAttachments = readyComposerAttachments.map(toRequestAttachment);
-    const requestIntent = composerIntent;
     const turnId = `turn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     locallyCancelledSessionIdsRef.current.delete(currentSessionId);
     setInput('');
     setComposerAttachments([]);
-    setComposerIntent('normal');
     stream.accumulated = '';
     stream.cancelledTurnId = null;
     stream.turnId = turnId;
@@ -2625,11 +2621,7 @@ export default function ChatWindowPage() {
       turnId,
       role: 'user',
       content: userText,
-      metadata: requestIntent === 'scheduled_task'
-        ? { interaction_mode: 'scheduled_task', attachments: outgoingAttachments }
-        : outgoingAttachments.length
-          ? { attachments: outgoingAttachments }
-          : {},
+      metadata: outgoingAttachments.length ? { attachments: outgoingAttachments } : {},
       created_at: new Date().toISOString(),
     });
     upsertTraceLine(turnId, { id: 'thinking', kind: 'thinking', text: '正在思考', state: 'running' });
@@ -2651,7 +2643,7 @@ export default function ChatWindowPage() {
         message: userText,
         attachments: outgoingAttachments,
         channel: 'web',
-        interaction_mode: requestIntent,
+        interaction_mode: 'normal',
         model_config_id: selectedModelConfig?.id,
       }, (item) => {
         const eventSessionId = String(item.data.sessionId || currentSessionId);
@@ -3450,37 +3442,16 @@ export default function ChatWindowPage() {
             />
             <div className="composer-toolbar">
               <div className="composer-context-row">
-                <Dropdown
-                  trigger={['click']}
-                  placement="topLeft"
-                  menu={{
-                    items: [
-                      {
-                        key: 'upload_file',
-                        icon: <StaffdeckIcon name="file" />,
-                        label: '上传文件',
-                      },
-                      {
-                        key: 'scheduled_task',
-                        icon: <StaffdeckIcon name="clock" />,
-                        label: '创建定时任务',
-                      },
-                    ],
-                    onClick: ({ key }) => {
-                      if (key === 'upload_file') fileInputRef.current?.click();
-                      if (key === 'scheduled_task') setComposerIntent('scheduled_task');
-                    },
-                  }}
-                >
-                  <Button
-                    type="text"
-                    htmlType="button"
-                    className="composer-plus-button"
-                    icon={<StaffdeckIcon name="plus" />}
-                    disabled={currentSessionRunning}
-                    aria-label="添加对话项目"
-                  />
-                </Dropdown>
+                <Button
+                  type="text"
+                  htmlType="button"
+                  className="composer-plus-button"
+                  icon={<StaffdeckIcon name="plus" />}
+                  disabled={currentSessionRunning}
+                  aria-label="上传文件"
+                  title="上传文件"
+                  onClick={() => fileInputRef.current?.click()}
+                />
                 <div className="composer-hint">Enter 发送 / Shift+Enter 换行</div>
               </div>
               <div className="composer-actions-row">

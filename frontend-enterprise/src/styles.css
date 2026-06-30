@@ -13705,18 +13705,18 @@ body:has(.sd1-scheduled-page) .topbar {
   }
 
   .employee-home-page {
-    min-height: 1030px;
-    padding-bottom: 48px;
+    min-height: 900px;
+    padding-bottom: 0;
   }
 
   .employee-work-card {
-    height: auto;
-    min-height: 785px;
-    overflow: visible;
+    height: 665px;
+    min-height: 665px;
+    overflow: hidden;
   }
 
   .employee-capability-grid {
-    top: 440px;
+    top: 403px;
     height: auto;
     min-height: 230px;
   }
@@ -13754,21 +13754,21 @@ body:has(.sd1-scheduled-page) .topbar {
 
 .employee-capability-title {
   position: absolute;
-  left: 24px;
-  top: 38px;
-  width: calc(100% - 72px);
+  left: 44px;
+  top: 20px;
+  width: calc(100% - 68px);
   margin: 0 !important;
 }
 
 .employee-capability-head em {
   left: 24px !important;
-  top: 70px !important;
+  top: 51px !important;
   font-size: 34px !important;
   line-height: 38px !important;
 }
 
 .employee-capability-card .ant-typography {
-  margin-top: 92px !important;
+  margin-top: 47px !important;
 }
 
 .employee-capability-card::after {
@@ -13776,7 +13776,7 @@ body:has(.sd1-scheduled-page) .topbar {
   position: absolute;
   left: 24px;
   right: 24px;
-  top: 116px;
+  top: 89px;
   height: 4px;
   border-radius: 999px;
   background: #e5e5e7;
@@ -13786,7 +13786,7 @@ body:has(.sd1-scheduled-page) .topbar {
   content: '';
   position: absolute;
   left: 24px;
-  top: 116px;
+  top: 89px;
   z-index: 1;
   width: 24px;
   height: 4px;
@@ -13872,6 +13872,13 @@ body:has(.sd1-scheduled-page) .topbar {
 :root[data-theme='dark'] .sd1-rail-primary,
 :root[data-theme='dark'] .sd1-rail-divider {
   border-color: #30333b !important;
+}
+
+:root[data-theme='dark'] .sd1-rail-primary {
+  background-color: transparent !important;
+}
+
+:root[data-theme='dark'] .sd1-rail-divider {
   background-color: #30333b !important;
 }
 
@@ -13897,6 +13904,10 @@ body:has(.sd1-scheduled-page) .topbar {
 :root[data-theme='dark'] .sd1-sidebar.is-expanded .sd1-rail-chat {
   color: #111827 !important;
   background: #f0f2f6 !important;
+}
+
+:root[data-theme='dark'] .sd1-rail-chat .sd1-rail-menu-text {
+  color: #111827 !important;
 }
 
 :root[data-theme='dark'] .sd1-agents-search .ant-input-affix-wrapper,
@@ -14387,6 +14398,101 @@ body:has(.sd1-scheduled-page) .topbar {
   background: #37d681 !important;
 }
 
+/* SD1 profile sidebar: selected employee stays compact; only the roster empty state uses the taller plus card. */
+.sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty) {
+  width: 144px !important;
+  height: 43px !important;
+  min-height: 43px !important;
+  margin: 6px 4px 0 !important;
+  border: 0 !important;
+  border-radius: 10px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+}
+
+.sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty).active,
+.sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty):hover,
+.sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty):focus-visible {
+  border-color: transparent !important;
+  background: #ffffff !important;
+  box-shadow: none !important;
+}
+
+.sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty) .employee-avatar {
+  left: 8px !important;
+  top: -31.5px !important;
+  width: 60px !important;
+  height: 70.5px !important;
+  transform: none !important;
+}
+
+.sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty) .employee-avatar img {
+  width: 66px !important;
+  height: 77px !important;
+  transform: translate(-3px, -6px) !important;
+}
+
+.sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty) .sd1-rail-agent-label {
+  left: 70px !important;
+  top: 4px !important;
+  width: 42px !important;
+  height: 35px !important;
+  gap: 4px !important;
+  justify-items: start !important;
+  text-align: left !important;
+}
+
+.sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty) .sd1-rail-agent-name,
+.sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty) .sd1-rail-agent-role {
+  max-width: 42px !important;
+  text-align: left !important;
+}
+
+.sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty) .sd1-rail-agent-name {
+  color: #757f9c !important;
+  font-size: 10px !important;
+  line-height: 13px !important;
+  font-weight: 400 !important;
+}
+
+.sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty) .sd1-rail-agent-role {
+  color: #464c5e !important;
+  font-size: 12px !important;
+  line-height: 16px !important;
+  font-weight: 560 !important;
+}
+
+.sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty) .sd1-rail-agent-chevron {
+  right: auto !important;
+  left: 122px !important;
+  top: 17px !important;
+  color: #9aa3b5 !important;
+}
+
+.sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty) + .sd1-rail-divider {
+  width: 112px !important;
+  margin: 8px 0 8px 20px !important;
+}
+
+:root[data-theme='dark'] .sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty),
+:root[data-theme='dark'] .sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty).active,
+:root[data-theme='dark'] .sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty):hover,
+:root[data-theme='dark'] .sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty):focus-visible {
+  border-color: transparent !important;
+  background: #111827 !important;
+  box-shadow: none !important;
+}
+
+:root[data-theme='dark'] .sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty) .sd1-rail-agent-name,
+:root[data-theme='dark'] .sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty) .sd1-rail-agent-chevron {
+  color: #8f98aa !important;
+}
+
+:root[data-theme='dark'] .sd1-sidebar.is-expanded .sd1-rail-agent:not(.is-empty) .sd1-rail-agent-role {
+  color: #f0f2f6 !important;
+}
+
 @media (max-width: 900px) {
   .app-shell.sidebar-expanded .sd1-agents-grid,
   .app-shell.sidebar-collapsed .sd1-agents-grid,
@@ -14535,27 +14641,27 @@ body:has(.sd1-scheduled-page) .topbar {
 }
 
 .employee-capability-card.has-illustration {
-  --capability-illustration-size: 76px;
+  --capability-illustration-size: 120px;
 }
 
 .employee-capability-card.has-illustration:not(.is-dark) .ant-typography {
   display: block !important;
-  width: calc(100% - 54px) !important;
-  max-width: calc(100% - 54px) !important;
-  max-height: 18px !important;
-  white-space: nowrap;
+  width: 100% !important;
+  max-width: 100% !important;
+  max-height: 36px !important;
+  white-space: normal;
   overflow: hidden !important;
   text-overflow: ellipsis;
 }
 
 .employee-capability-card.has-illustration:not(.is-dark) .employee-capability-illustration {
-  right: 12px !important;
-  bottom: 4px !important;
+  right: 10px !important;
+  bottom: 0 !important;
   z-index: 0 !important;
   width: var(--capability-illustration-size) !important;
-  height: 62px !important;
-  max-height: 62px !important;
-  opacity: 0.62 !important;
+  height: 84px !important;
+  max-height: 84px !important;
+  opacity: 0.82 !important;
 }
 
 .employee-capability-card.has-illustration:not(.is-dark) .ant-typography,
@@ -14569,25 +14675,25 @@ body:has(.sd1-scheduled-page) .topbar {
 }
 
 :root[data-theme='dark'] .employee-capability-card.has-illustration {
-  --capability-illustration-size: 76px;
+  --capability-illustration-size: 120px;
 }
 
 :root[data-theme='dark'] .employee-capability-card.has-illustration .ant-typography {
   display: block !important;
-  width: calc(100% - 54px) !important;
-  max-width: calc(100% - 54px) !important;
-  max-height: 18px !important;
-  white-space: nowrap;
+  width: 100% !important;
+  max-width: 100% !important;
+  max-height: 36px !important;
+  white-space: normal;
   overflow: hidden !important;
   text-overflow: ellipsis;
 }
 
 :root[data-theme='dark'] .employee-capability-card.has-illustration .employee-capability-illustration {
-  right: 12px !important;
-  bottom: 4px !important;
+  right: 10px !important;
+  bottom: 0 !important;
   width: var(--capability-illustration-size) !important;
-  height: 64px !important;
-  max-height: 64px !important;
+  height: 84px !important;
+  max-height: 84px !important;
   opacity: 0.86 !important;
 }
 
@@ -14614,11 +14720,11 @@ body:has(.sd1-scheduled-page) .topbar {
 
 @media (min-width: 1600px) {
   .employee-capability-card.has-illustration {
-    --capability-illustration-size: 92px;
+    --capability-illustration-size: 120px;
   }
 
   :root[data-theme='dark'] .employee-capability-card.has-illustration {
-    --capability-illustration-size: 92px;
+    --capability-illustration-size: 120px;
   }
 }
 

@@ -2914,14 +2914,15 @@ textarea,
 
 .composer-v2 .composer-plus-button {
   color: var(--muted);
-  background: transparent;
-  border: 1px solid transparent;
+  background: var(--surface);
+  border: 1px solid var(--muted);
+  border-radius: 14px;
 }
 
 .composer-v2 .composer-plus-button:hover,
 .composer-v2 .composer-plus-button:focus {
   color: var(--foreground);
-  background: color-mix(in srgb, var(--surface-muted) 74%, transparent);
+  background: color-mix(in srgb, var(--surface-muted) 42%, var(--surface));
   border-color: var(--border);
 }
 
@@ -5627,23 +5628,23 @@ body,
 }
 
 .composer-v2 .composer-plus-button.ant-btn {
-  width: 28px !important;
-  min-width: 28px !important;
-  height: 28px !important;
+  width: 40px !important;
+  min-width: 40px !important;
+  height: 40px !important;
   padding: 0 !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
   color: #858b9c !important;
-  border: 0.5px solid #757f9c !important;
-  border-radius: 10px !important;
-  background: #f6f6f6 !important;
+  border: 1px solid #757f9c !important;
+  border-radius: 14px !important;
+  background: #ffffff !important;
 }
 
 .composer-v2 .composer-plus-button.ant-btn .sd1-icon-plus {
   display: block !important;
-  width: 15px !important;
-  height: 15px !important;
+  width: 18px !important;
+  height: 18px !important;
 }
 
 .composer-v2 .composer-plus-button.ant-btn::after {
@@ -5944,6 +5945,11 @@ body,
 :root[data-theme='dark'] .composer-v2 .composer-plus-button.ant-btn {
   color: #d8dcef !important;
   background: #202126 !important;
+}
+
+:root[data-theme='dark'] .composer-v2 .composer-plus-button.ant-btn {
+  border-color: #5b6478 !important;
+  background: #15161a !important;
 }
 
 :root[data-theme='dark'] .composer-actions-row::before {
