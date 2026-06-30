@@ -105,6 +105,7 @@ function Shell({
               : isDistillRoute
                 ? '/enterprise/skills'
                 : location.pathname;
+  const isAgentRosterRoute = location.pathname.startsWith('/enterprise/agents');
   const [lastDistillSearch, setLastDistillSearch] = useState(() => (isDistillRoute ? location.search : ''));
   const distillSearch = isDistillRoute ? location.search : lastDistillSearch;
   const distillSearchParams = useMemo(() => new URLSearchParams(distillSearch), [distillSearch]);
@@ -188,6 +189,7 @@ function Shell({
   }
 
   const selectedAgent = agents.find((item) => item.id === selectedAgentId);
+  const sidebarAgent = isAgentRosterRoute ? undefined : selectedAgent;
   const scopeAgents = agents.filter(canUseAgentScope);
   const sourceAgents = isAdmin ? scopeAgents : scopeAgents.filter((item) => !item.is_overall);
   const isOverallScope = Boolean(selectedAgent?.is_overall);
@@ -320,7 +322,7 @@ function Shell({
   }
 
   return (
-    <Layout className={`app-shell ${sidebarExpanded ? 'sidebar-expanded' : 'sidebar-collapsed'}`}>
+    <Layout className={`app-shell ${sidebarExpanded ? 'sidebar-expanded' : 'sidebar-collapsed'} ${isAgentRosterRoute ? 'is-agent-roster' : ''}`}>
       <Sider width={sidebarWidth} theme={effectiveTheme} className={`sidebar sd1-sidebar ${sidebarExpanded ? 'is-expanded' : 'is-collapsed'}`}>
         <nav className="sd1-rail" aria-label="企业端导航">
           <button type="button" className="sd1-rail-logo" title="开放广场" onClick={() => navigate('/enterprise/platform')}>
@@ -356,7 +358,7 @@ function Shell({
         </div>
 
           <div className="sd1-rail-employee">
-            {selectedAgent ? (
+            {sidebarAgent ? (
               <Dropdown
                 trigger={['click']}
                 placement="bottomLeft"
@@ -373,11 +375,11 @@ function Shell({
                   title="切换当前员工"
                   aria-label="切换当前员工"
                 >
-                  <EmployeeAvatar agent={selectedAgent} size={32} />
+                  <EmployeeAvatar agent={sidebarAgent} size={32} />
                   <span className="sd1-rail-agent-label">
-                    <span className="sd1-rail-agent-short">{selectedAgent.is_overall ? '广场' : employeeProfile(selectedAgent).roleName.slice(0, 2)}</span>
-                    <span className="sd1-rail-agent-name">{selectedAgent.is_overall ? '开放广场' : employeeDisplayName(selectedAgent)}</span>
-                    <span className="sd1-rail-agent-role">{selectedAgent.is_overall ? '平台' : employeeProfile(selectedAgent).roleName}</span>
+                    <span className="sd1-rail-agent-short">{sidebarAgent.is_overall ? '广场' : employeeProfile(sidebarAgent).roleName.slice(0, 2)}</span>
+                    <span className="sd1-rail-agent-name">{sidebarAgent.is_overall ? '开放广场' : employeeDisplayName(sidebarAgent)}</span>
+                    <span className="sd1-rail-agent-role">{sidebarAgent.is_overall ? '平台' : employeeProfile(sidebarAgent).roleName}</span>
                   </span>
                   <span className="sd1-rail-agent-chevron" aria-hidden="true">
                     <StaffdeckIcon name="arrow" style={{ transform: 'rotate(90deg)' }} />
@@ -385,21 +387,35 @@ function Shell({
                 </button>
               </Dropdown>
             ) : (
-              <button
-                type="button"
-                className="sd1-rail-agent is-empty"
-                title="创建员工"
-                onClick={openCreateAgentModal}
+              <Dropdown
+                trigger={['click']}
+                placement="bottomLeft"
+                overlayClassName="sd1-agent-switcher-dropdown"
+                menu={{
+                  items: agentSwitcherItems,
+                  selectedKeys: selectedAgentId ? [selectedAgentId] : [],
+                  onClick: handleAgentSwitcherClick,
+                }}
               >
-                <span className="sd1-rail-agent-empty-mark" aria-hidden="true">
-                  <StaffdeckIcon name="plus" />
-                </span>
-                <span className="sd1-rail-agent-label">
-                  <span className="sd1-rail-agent-short">+</span>
-                  <span className="sd1-rail-agent-name">未选择</span>
-                  <span className="sd1-rail-agent-role">-</span>
-                </span>
-              </button>
+                <button
+                  type="button"
+                  className="sd1-rail-agent is-empty"
+                  title="切换当前员工"
+                  aria-label="切换当前员工"
+                >
+                  <span className="sd1-rail-agent-empty-mark" aria-hidden="true">
+                    <StaffdeckIcon name="plus" />
+                  </span>
+                  <span className="sd1-rail-agent-label">
+                    <span className="sd1-rail-agent-short">+</span>
+                    <span className="sd1-rail-agent-name">未选择</span>
+                    <span className="sd1-rail-agent-role">-</span>
+                  </span>
+                  <span className="sd1-rail-agent-chevron" aria-hidden="true">
+                    <StaffdeckIcon name="arrow" style={{ transform: 'rotate(90deg)' }} />
+                  </span>
+                </button>
+              </Dropdown>
             )}
             <div className="sd1-rail-divider" />
             <span className="sd1-rail-label">

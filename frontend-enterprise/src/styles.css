@@ -14080,6 +14080,70 @@ body:has(.sd1-scheduled-page) .topbar {
   height: 14px;
 }
 
+.app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty {
+  width: 144px !important;
+  height: 76px !important;
+  min-height: 76px !important;
+  margin: 18px 4px 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty:hover,
+.app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty:focus-visible {
+  background: transparent !important;
+}
+
+.app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-empty-mark {
+  left: 14px !important;
+  top: 0 !important;
+  width: 58px !important;
+  height: 70px !important;
+  border-color: #dfe5ee !important;
+  border-radius: 8px !important;
+  background: #ffffff !important;
+}
+
+.app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-label {
+  left: 78px !important;
+  top: 24px !important;
+  width: 44px !important;
+  gap: 3px !important;
+  justify-items: start !important;
+  text-align: left !important;
+}
+
+.app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-name,
+.app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-role {
+  max-width: 44px !important;
+  text-align: left !important;
+}
+
+.app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-name {
+  color: #8b94aa !important;
+  font-size: 10px !important;
+  line-height: 13px !important;
+  font-weight: 500 !important;
+}
+
+.app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-role {
+  color: #202226 !important;
+  font-size: 12px !important;
+  line-height: 16px !important;
+  font-weight: 650 !important;
+}
+
+.app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-chevron {
+  right: 10px !important;
+  top: 31px !important;
+}
+
+.app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty + .sd1-rail-divider {
+  margin-top: 10px !important;
+}
+
 .sd1-rail-agent-empty-mark {
   width: 32px;
   height: 38px;
@@ -14134,6 +14198,15 @@ body:has(.sd1-scheduled-page) .topbar {
   color: #8f98aa;
   border-color: #303846;
   background: #111827;
+}
+
+:root[data-theme='dark'] .app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-empty-mark {
+  border-color: #303846 !important;
+  background: #111827 !important;
+}
+
+:root[data-theme='dark'] .app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-role {
+  color: #f0f2f6 !important;
 }
 
 /* SD1 sidebar agent switcher: expanded card uses the same portrait-first layout as the staff profile card. */
