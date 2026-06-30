@@ -5694,28 +5694,28 @@ body,
   display: none !important;
 }
 
-.composer-v2 .composer-plus-button.ant-btn,
-.composer-intent-chip {
-  min-width: 90px !important;
+.composer-v2 .composer-plus-button.ant-btn {
+  width: 28px !important;
+  min-width: 28px !important;
   height: 28px !important;
-  padding: 0 10px !important;
+  padding: 0 !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
-  gap: 6px !important;
   color: #858b9c !important;
-  font-size: 12px !important;
   border: 0.5px solid #757f9c !important;
   border-radius: 10px !important;
   background: #f6f6f6 !important;
 }
 
 .composer-v2 .composer-plus-button.ant-btn .sd1-icon-plus {
-  display: none !important;
+  display: block !important;
+  width: 15px !important;
+  height: 15px !important;
 }
 
 .composer-v2 .composer-plus-button.ant-btn::after {
-  content: "定时任务";
+  content: none !important;
 }
 
 .composer-v2 .composer-model-button.ant-btn {

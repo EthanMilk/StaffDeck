@@ -3291,19 +3291,6 @@ export default function ChatWindowPage() {
                     aria-label="添加对话项目"
                   />
                 </Dropdown>
-                {composerIntent === 'scheduled_task' && (
-                  <button
-                    type="button"
-                    className="composer-intent-chip"
-                    title="取消定时任务"
-                    onClick={() => setComposerIntent('normal')}
-                  >
-                    <span className="composer-intent-icon" aria-hidden="true">
-                      <StaffdeckIcon name="clock" />
-                    </span>
-                    <span>定时任务</span>
-                  </button>
-                )}
                 <div className="composer-hint">Enter 发送 / Shift+Enter 换行</div>
               </div>
               <div className="composer-actions-row">
