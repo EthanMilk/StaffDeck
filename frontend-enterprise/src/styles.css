@@ -14717,6 +14717,68 @@ body:has(.sd1-scheduled-page) .topbar {
     width: 40px !important;
     margin: 4px 0 3px !important;
   }
+
+  .app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty {
+    position: relative !important;
+    width: 32px !important;
+    min-width: 32px !important;
+    max-width: 32px !important;
+    height: auto !important;
+    min-height: 51px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: grid !important;
+    justify-items: center !important;
+    gap: 2px !important;
+    overflow: hidden !important;
+  }
+
+  .app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-empty-mark {
+    position: static !important;
+    width: 32px !important;
+    height: 38px !important;
+    border-radius: 10px !important;
+  }
+
+  .app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-label {
+    position: static !important;
+    width: auto !important;
+    min-width: 0 !important;
+    display: grid !important;
+    justify-items: center !important;
+    text-align: center !important;
+  }
+
+  .app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-short {
+    display: block !important;
+  }
+
+  .app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-name,
+  .app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-role,
+  .app-shell.is-agent-roster .sd1-sidebar.is-expanded .sd1-rail-agent.is-empty .sd1-rail-agent-chevron {
+    display: none !important;
+  }
+
+  .sd1-sidebar.is-expanded .sd1-rail-chat {
+    left: 12px !important;
+    bottom: 30px !important;
+    width: 32px !important;
+    height: 32px !important;
+    padding: 0 !important;
+    display: grid !important;
+    place-items: center !important;
+    border-radius: 10px !important;
+  }
+
+  .sd1-sidebar.is-expanded .sd1-rail-chat .sd1-rail-menu-text,
+  .sd1-sidebar.is-expanded .sd1-rail-chat .sd1-icon-arrow {
+    display: none !important;
+  }
+
+  .app-shell.is-agent-roster .sd1-agents-page {
+    width: 100% !important;
+    margin: 0 !important;
+  }
 }
 
 :root[data-theme='dark'] .employee-capability-card.is-dark .employee-capability-head,
