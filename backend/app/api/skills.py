@@ -600,7 +600,7 @@ def rewrite_skill(
     if request.current_skill.skill_id != skill_id:
         raise HTTPException(status_code=400, detail="Path skill_id must match current_skill.skill_id")
     ensure_tenant(db, request.tenant_id)
-    model_config = _get_default_model(db, request.tenant_id)
+    model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
     request = _with_available_tools_for_rewrite(db, request)
     try:
         return SkillEditor().rewrite(request, model_config)
@@ -663,7 +663,7 @@ def _run_rewrite_stream_job(job_id: str, skill_id: str, request_data: dict[str, 
             raise ValueError("Path skill_id must match current_skill.skill_id")
         with Session(get_session_engine()) as db:
             ensure_tenant(db, request.tenant_id)
-            model_config = _get_default_model(db, request.tenant_id)
+            model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
             enriched_request = _with_available_tools_for_rewrite(db, request)
             stream_jobs.append(job_id, "status", {"text": "正在调用模型分析改写要求"})
             for item in SkillEditor().stream_text(enriched_request, model_config):
@@ -715,6 +715,15 @@ def _get_default_model(db: Session, tenant_id: str) -> ModelConfig:
     ).first()
     if not model_config:
         raise HTTPException(status_code=400, detail="No enabled default model config")
+    return model_config
+
+
+def _get_request_model(db: Session, tenant_id: str, model_config_id: str | None = None) -> ModelConfig:
+    if not model_config_id:
+        return _get_default_model(db, tenant_id)
+    model_config = db.get(ModelConfig, model_config_id)
+    if not model_config or model_config.tenant_id != tenant_id or not model_config.enabled:
+        raise HTTPException(status_code=404, detail="Model config not found")
     return model_config
 
 

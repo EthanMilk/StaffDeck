@@ -73,6 +73,26 @@ export const api = {
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
 };
 
+export async function uploadChatAttachments<T>(
+  tenantId: string,
+  files: File[],
+  signal?: AbortSignal,
+): Promise<T> {
+  const form = new FormData();
+  files.forEach((file) => form.append('files', file));
+  const response = await fetch(`${API_BASE}/api/chat/attachments?tenant_id=${encodeURIComponent(tenantId)}`, {
+    method: 'POST',
+    headers: { ...authHeader() },
+    body: form,
+    signal,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new ApiError(response.status, text, response.statusText);
+  }
+  return response.json() as Promise<T>;
+}
+
 export function getAuthSession(): AuthSession | null {
   const current = readStoredSession(AUTH_STORAGE_KEY);
   if (current) return current;

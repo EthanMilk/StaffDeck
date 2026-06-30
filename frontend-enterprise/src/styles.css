@@ -4684,6 +4684,18 @@ body.skill-distill-fixed .content {
   flex: 0 0 auto;
 }
 
+.skill-rewrite-model-select {
+  min-width: 180px;
+  max-width: 240px;
+}
+
+.skill-rewrite-model-meta {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .skill-workbench {
   display: grid;
   width: 100%;

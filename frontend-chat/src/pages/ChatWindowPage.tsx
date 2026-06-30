@@ -1,8 +1,17 @@
 import { Button, Dropdown, Empty, Input, Modal, Select, Typography, message } from 'antd';
-import type { MouseEvent, ReactNode } from 'react';
+import type { ChangeEvent, ClipboardEvent, DragEvent, MouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { SHOW_DEBUG, TENANT_ID, api, clearAuthSession, getAuthSession, isAuthError, streamChatTurn } from '../api/client';
+import {
+  SHOW_DEBUG,
+  TENANT_ID,
+  api,
+  clearAuthSession,
+  getAuthSession,
+  isAuthError,
+  streamChatTurn,
+  uploadChatAttachments,
+} from '../api/client';
 import type { ChatStreamEvent } from '../api/client';
 import CodeBlock from '../components/CodeBlock';
 import EmployeeAvatarMark from '../components/EmployeeAvatarMark';
@@ -17,6 +26,7 @@ import {
 import { ThemeToggleButton } from '../theme';
 import type {
   AgentProfileRead,
+  ChatAttachmentRead,
   ChatMessage,
   ChatSessionEventRead,
   ChatSession,
@@ -83,6 +93,10 @@ type TurnTrace = {
 };
 
 type ComposerIntent = 'normal' | 'scheduled_task';
+type ComposerAttachment = ChatAttachmentRead & {
+  uploadStatus: 'uploading' | 'ready' | 'error';
+  uploadKey: string;
+};
 const MODEL_CONFIG_STORAGE_PREFIX = 'skill_agent_selected_model_config';
 const SESSION_READ_STORAGE_PREFIX = 'skill_agent_session_read_at';
 
@@ -1152,6 +1166,8 @@ export default function ChatWindowPage() {
     () => window.localStorage.getItem(modelStorageKey(tenantId)) || '',
   );
   const [input, setInput] = useState('');
+  const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]);
+  const [composerDragActive, setComposerDragActive] = useState(false);
   const [composerIntent, setComposerIntent] = useState<ComposerIntent>('normal');
   const [lastTurn, setLastTurn] = useState<ChatTurnResponse | null>(null);
   const [renameSession, setRenameSession] = useState<ChatSession | null>(null);
@@ -1183,6 +1199,7 @@ export default function ChatWindowPage() {
     updated_at: '',
   });
   const chatMessagesRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const storeRef = useRef(new Map<string, SessionSlot>());
   const streamRef = useRef(new Map<string, StreamSlot>());
   const turnTraceRef = useRef(new Map<string, TurnTrace>());
@@ -1193,10 +1210,15 @@ export default function ChatWindowPage() {
   const sessionsInitializedRef = useRef(false);
   const autoOpenedSessionIdsRef = useRef(new Set<string>());
   const loadErrorNoticeRef = useRef<Record<string, number>>({});
+  const uploadControllersRef = useRef(new Map<string, AbortController>());
 
   const notifyStore = useCallback(() => setStoreTick((value) => value + 1), []);
   const notifyStream = useCallback(() => setStreamTick((value) => value + 1), []);
   const notifyTrace = useCallback(() => setTraceTick((value) => value + 1), []);
+  useEffect(() => () => {
+    uploadControllersRef.current.forEach((controller) => controller.abort());
+    uploadControllersRef.current.clear();
+  }, []);
   const keepRunningStatusInMessageArea = useCallback(() => {
     const element = chatMessagesRef.current;
     if (!element) return false;
@@ -1492,6 +1514,11 @@ export default function ChatWindowPage() {
     return sessionId ? getStreamSlot(sessionId) : createStreamSlot();
   }, [getStreamSlot, sessionId, streamTick]);
   const currentSessionRunning = Boolean(currentStream.loading || (sessionId && runningTurn?.sessionId === sessionId));
+  const readyComposerAttachments = useMemo(
+    () => composerAttachments.filter((item) => item.uploadStatus === 'ready'),
+    [composerAttachments],
+  );
+  const uploadingComposerAttachment = composerAttachments.some((item) => item.uploadStatus === 'uploading');
   const hasStreamingStatusPlaceholder = useMemo(() => (
     displayedMessages.some((item) => (
       item.role === 'assistant'
@@ -1500,7 +1527,12 @@ export default function ChatWindowPage() {
     ))
   ), [displayedMessages]);
   const showFallbackRunningStatus = currentSessionRunning && !hasStreamingStatusPlaceholder;
-  const composerActive = Boolean(input.trim() || displayedMessages.length > 0 || currentSessionRunning);
+  const composerActive = Boolean(
+    input.trim()
+    || composerAttachments.length > 0
+    || displayedMessages.length > 0
+    || currentSessionRunning,
+  );
   const showComposerAvatar = Boolean(sessionId && displayedProfile && composerActive);
   const modelMenuItems = useMemo(() => {
     if (!enabledModelConfigs.length) {
@@ -2442,6 +2474,104 @@ export default function ChatWindowPage() {
     updateStreaming,
   ]);
 
+  function uploadComposerFiles(files: File[]) {
+    const validFiles = files.filter((file) => file.size > 0);
+    if (!validFiles.length) return;
+    if (currentSessionRunning) {
+      message.warning('当前对话正在执行，结束后再上传文件');
+      return;
+    }
+    validFiles.forEach((file) => {
+      const uploadKey = `upload_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+      const controller = new AbortController();
+      uploadControllersRef.current.set(uploadKey, controller);
+      setComposerAttachments((current) => [
+        ...current,
+        {
+          id: uploadKey,
+          uploadKey,
+          filename: file.name || '剪贴板文件',
+          content_type: file.type || 'application/octet-stream',
+          size: file.size,
+          kind: file.type.startsWith('image/') ? 'image' : 'binary',
+          uploadStatus: 'uploading',
+        },
+      ]);
+      uploadChatAttachments<ChatAttachmentRead[]>(tenantId, [file], controller.signal)
+        .then((items) => {
+          const parsed = items[0];
+          if (!parsed) throw new Error('文件解析结果为空');
+          setComposerAttachments((current) =>
+            current.map((item) =>
+              item.uploadKey === uploadKey ? { ...parsed, uploadKey, uploadStatus: 'ready' } : item,
+            ),
+          );
+        })
+        .catch((error) => {
+          if (controller.signal.aborted) return;
+          setComposerAttachments((current) =>
+            current.map((item) =>
+              item.uploadKey === uploadKey
+                ? {
+                    ...item,
+                    uploadStatus: 'error',
+                    error: error instanceof Error ? error.message : '上传失败',
+                  }
+                : item,
+            ),
+          );
+        })
+        .finally(() => {
+          uploadControllersRef.current.delete(uploadKey);
+        });
+    });
+  }
+
+  function removeComposerAttachment(uploadKey: string) {
+    uploadControllersRef.current.get(uploadKey)?.abort();
+    uploadControllersRef.current.delete(uploadKey);
+    setComposerAttachments((current) => current.filter((item) => item.uploadKey !== uploadKey));
+  }
+
+  function handleComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.files || []);
+    if (!files.length) return;
+    event.preventDefault();
+    uploadComposerFiles(files);
+  }
+
+  function handleComposerFileChange(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files || []);
+    uploadComposerFiles(files);
+    event.target.value = '';
+  }
+
+  function handleComposerDragEnter(event: DragEvent<HTMLFormElement>) {
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    setComposerDragActive(true);
+  }
+
+  function handleComposerDragOver(event: DragEvent<HTMLFormElement>) {
+    if (!event.dataTransfer.types.includes('Files')) return;
+    event.preventDefault();
+    setComposerDragActive(true);
+  }
+
+  function handleComposerDragLeave(event: DragEvent<HTMLFormElement>) {
+    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      setComposerDragActive(false);
+    }
+  }
+
+  function handleComposerDrop(event: DragEvent<HTMLFormElement>) {
+    const files = Array.from(event.dataTransfer.files || []);
+    if (!files.length) return;
+    event.preventDefault();
+    setComposerDragActive(false);
+    uploadComposerFiles(files);
+  }
+
   useEffect(() => {
     if (!auth) return;
     const pollBackgroundSessions = () => {
@@ -2469,7 +2599,11 @@ export default function ChatWindowPage() {
   }, [auth, pollScheduledSessionEvents, sessionId, sessions, streamTick]);
 
   async function send() {
-    if (!input.trim() || !sessionId) return;
+    if ((!input.trim() && readyComposerAttachments.length === 0) || !sessionId) return;
+    if (uploadingComposerAttachment) {
+      message.warning('文件还在解析中，请稍后发送');
+      return;
+    }
     const currentSessionId = sessionId;
     const activeSession = sessions.find((item) => item.id === currentSessionId);
     if (!activeSession) {
@@ -2484,10 +2618,12 @@ export default function ChatWindowPage() {
     const stream = getStreamSlot(currentSessionId);
     if (stream.loading) return;
     const userText = input.trim();
+    const outgoingAttachments = readyComposerAttachments.map(toRequestAttachment);
     const requestIntent = composerIntent;
     const turnId = `turn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     locallyCancelledSessionIdsRef.current.delete(currentSessionId);
     setInput('');
+    setComposerAttachments([]);
     setComposerIntent('normal');
     stream.accumulated = '';
     stream.cancelledTurnId = null;
@@ -2498,8 +2634,10 @@ export default function ChatWindowPage() {
       role: 'user',
       content: userText,
       metadata: requestIntent === 'scheduled_task'
-        ? { interaction_mode: 'scheduled_task' }
-        : {},
+        ? { interaction_mode: 'scheduled_task', attachments: outgoingAttachments }
+        : outgoingAttachments.length
+          ? { attachments: outgoingAttachments }
+          : {},
       created_at: new Date().toISOString(),
     });
     upsertTraceLine(turnId, { id: 'thinking', kind: 'thinking', text: '正在思考', state: 'running' });
@@ -2519,6 +2657,7 @@ export default function ChatWindowPage() {
         user_id: userId,
         agent_id: sessionAgentId,
         message: userText,
+        attachments: outgoingAttachments,
         channel: 'web',
         interaction_mode: requestIntent,
         model_config_id: selectedModelConfig?.id,
@@ -3071,6 +3210,7 @@ export default function ChatWindowPage() {
                 && item.id.startsWith('local_interrupt_')
                 && visibleContent === '已停止生成'
               );
+              const attachments = messageAttachments(item);
               const statusOnly = runningStatusOnly || stoppedStatusOnly;
               const statusOnlyText = runningStatusOnly ? '正在执行...' : visibleContent;
               const showInlineTrace = Boolean(summary && !statusOnly);
@@ -3163,6 +3303,28 @@ export default function ChatWindowPage() {
                       ) : item.role === 'assistant' && item.isStreaming && !summary ? (
                         <span className="typing-caret" />
                       ) : null}
+                      {!statusOnly && attachments.length > 0 && (
+                        <div className="chat-attachment-list">
+                          {attachments.map((attachment) => (
+                            <div className={`chat-attachment-card ${attachment.kind}`} key={attachment.id}>
+                              {attachment.kind === 'image' && attachment.data_url ? (
+                                <img src={attachment.data_url} alt={attachment.filename} />
+                              ) : (
+                                <span className="chat-attachment-file-icon">
+                                  <StaffdeckIcon name={attachment.kind === 'pdf' ? 'file' : 'folder'} />
+                                </span>
+                              )}
+                              <span className="chat-attachment-copy">
+                                <span className="chat-attachment-name">{attachment.filename}</span>
+                                <span className="chat-attachment-meta">
+                                  {attachmentTypeLabel(attachment)}
+                                  {attachment.error ? ` · ${attachment.error}` : ''}
+                                </span>
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                       {item.role === 'assistant' && citations.length > 0 && (
                         <div className="message-citations" aria-label="知识引用">
                           <div className="citation-heading">
@@ -3243,15 +3405,57 @@ export default function ChatWindowPage() {
               <EmployeeAvatarMark profile={displayedProfile} fallback="SD" className="chat-composer-avatar" />
             )}
             <form
-              className={`composer-v2${composerActive ? ' composer-active' : ''}`}
+              className={`composer-v2${composerActive ? ' composer-active' : ''}${composerDragActive ? ' drag-active' : ''}`}
+              onDragEnter={handleComposerDragEnter}
+              onDragOver={handleComposerDragOver}
+              onDragLeave={handleComposerDragLeave}
+              onDrop={handleComposerDrop}
               onSubmit={(event) => {
                 event.preventDefault();
                 send();
               }}
             >
+            <input
+              ref={fileInputRef}
+              className="composer-file-input"
+              type="file"
+              multiple
+              onChange={handleComposerFileChange}
+            />
+            {composerDragActive && <div className="composer-drop-hint">松开上传文件</div>}
+            {composerAttachments.length > 0 && (
+              <div className="composer-attachment-list">
+                {composerAttachments.map((attachment) => (
+                  <div className={`composer-attachment-chip ${attachment.uploadStatus}`} key={attachment.uploadKey}>
+                    {attachment.kind === 'image' && attachment.data_url ? (
+                      <img src={attachment.data_url} alt={attachment.filename} />
+                    ) : (
+                      <StaffdeckIcon name={attachment.kind === 'pdf' ? 'file' : 'folder'} />
+                    )}
+                    <span className="composer-attachment-copy">
+                      <span className="composer-attachment-name">{attachment.filename}</span>
+                      <span className="composer-attachment-status">
+                        {attachment.uploadStatus === 'uploading' && '解析中'}
+                        {attachment.uploadStatus === 'ready' && attachmentTypeLabel(attachment)}
+                        {attachment.uploadStatus === 'error' && (attachment.error || '上传失败')}
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      className="composer-attachment-remove"
+                      onClick={() => removeComposerAttachment(attachment.uploadKey)}
+                      aria-label="移除附件"
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
             <Input.TextArea
               value={input}
               onChange={(event) => setInput(event.target.value)}
+              onPaste={handleComposerPaste}
               onPressEnter={(event) => {
                 const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
                 if (!event.shiftKey && !isComposing && !nativeEvent.isComposing && nativeEvent.keyCode !== 229) {
@@ -3272,12 +3476,18 @@ export default function ChatWindowPage() {
                   menu={{
                     items: [
                       {
+                        key: 'upload_file',
+                        icon: <StaffdeckIcon name="file" />,
+                        label: '上传文件',
+                      },
+                      {
                         key: 'scheduled_task',
                         icon: <StaffdeckIcon name="clock" />,
                         label: '创建定时任务',
                       },
                     ],
                     onClick: ({ key }) => {
+                      if (key === 'upload_file') fileInputRef.current?.click();
                       if (key === 'scheduled_task') setComposerIntent('scheduled_task');
                     },
                   }}
@@ -3323,6 +3533,7 @@ export default function ChatWindowPage() {
                   icon={<StaffdeckIcon name={currentSessionRunning ? 'stop' : 'send'} />}
                   onClick={currentSessionRunning ? abortStream : undefined}
                   className={`composer-send-button${currentSessionRunning ? ' stop-button' : ''}`}
+                  disabled={!currentSessionRunning && ((!input.trim() && readyComposerAttachments.length === 0) || uploadingComposerAttachment)}
                   aria-label={currentSessionRunning ? '停止生成' : '发送'}
                 />
               </div>
@@ -3458,6 +3669,42 @@ export default function ChatWindowPage() {
       </Modal>
     </div>
   );
+}
+
+function toRequestAttachment(attachment: ComposerAttachment): ChatAttachmentRead {
+  const { uploadStatus: _uploadStatus, uploadKey: _uploadKey, ...rest } = attachment;
+  return rest;
+}
+
+function messageAttachments(messageItem: ChatMessage): ChatAttachmentRead[] {
+  const attachments = messageItem.metadata?.attachments;
+  if (!Array.isArray(attachments)) return [];
+  return attachments.filter(isChatAttachment);
+}
+
+function isChatAttachment(value: unknown): value is ChatAttachmentRead {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Partial<ChatAttachmentRead>;
+  return typeof item.id === 'string' && typeof item.filename === 'string';
+}
+
+function attachmentTypeLabel(attachment: ChatAttachmentRead): string {
+  const size = formatAttachmentSize(attachment.size);
+  const type = attachment.kind === 'pdf'
+    ? 'PDF'
+    : attachment.kind === 'image'
+      ? '图片'
+      : attachment.kind === 'text'
+        ? '文本'
+        : '文件';
+  return `${type}${size ? ` · ${size}` : ''}`;
+}
+
+function formatAttachmentSize(size: number): string {
+  if (!Number.isFinite(size) || size <= 0) return '';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(size < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function formatDraftSchedule(draft: ScheduledTaskDraftRead): string {

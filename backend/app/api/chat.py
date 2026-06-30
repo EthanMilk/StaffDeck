@@ -5,7 +5,7 @@ import threading
 from datetime import timedelta
 from collections.abc import Iterator
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import or_
@@ -33,8 +33,10 @@ from app.security.auth import get_current_user
 from app.security.tenant import ensure_tenant
 from app.scheduled_tasks.schema import ScheduledTaskDraftRead
 from app.scheduled_tasks.service import detect_scheduled_task_draft
+from app.session.attachments import parse_chat_attachment
 from app.session.helpers import public_session
 from app.session.session_schema import (
+    ChatAttachmentRead,
     ChatSessionCreateRequest,
     ChatSessionRead,
     ChatSessionUpdateRequest,
@@ -46,6 +48,8 @@ from app.session.session_schema import (
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 STREAM_REPLY_CHUNK_SIZE = 96
+MAX_CHAT_ATTACHMENT_BYTES = 12 * 1024 * 1024
+MAX_CHAT_ATTACHMENTS = 8
 SESSION_TITLE_SUMMARY_EVENT = "session_title_summarized"
 EVENT_PAYLOAD_META_KEYS = {"id", "event", "type", "event_type", "created_at", "data"}
 SESSION_TITLE_PROMPT = """你是任务派发台的会话标题编辑器。
@@ -136,12 +140,14 @@ def human_handoff_read(row: HumanHandoffRequest) -> HumanHandoffRead:
     )
 
 
-def _user_message_metadata(request: ChatTurnRequest) -> dict[str, str]:
-    metadata: dict[str, str] = {}
+def _user_message_metadata(request: ChatTurnRequest) -> dict[str, object]:
+    metadata: dict[str, object] = {}
     if request.interaction_mode == "scheduled_task":
         metadata["interaction_mode"] = "scheduled_task"
     if request.model_config_id:
         metadata["model_config_id"] = request.model_config_id
+    if request.attachments:
+        metadata["attachments"] = [item.model_dump(mode="json") for item in request.attachments]
     return metadata
 
 
@@ -499,6 +505,28 @@ def _reply_chunks(reply: str) -> Iterator[str]:
         yield reply[index : index + STREAM_REPLY_CHUNK_SIZE]
 
 
+@router.post("/attachments", response_model=list[ChatAttachmentRead])
+async def upload_chat_attachments(
+    tenant_id: str = Query(...),
+    files: list[UploadFile] = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> list[ChatAttachmentRead]:
+    _ensure_request_tenant(tenant_id, current_user)
+    ensure_tenant(db, tenant_id)
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+    if len(files) > MAX_CHAT_ATTACHMENTS:
+        raise HTTPException(status_code=400, detail=f"最多一次上传 {MAX_CHAT_ATTACHMENTS} 个文件")
+    parsed: list[ChatAttachmentRead] = []
+    for file in files:
+        data = await file.read()
+        if len(data) > MAX_CHAT_ATTACHMENT_BYTES:
+            raise HTTPException(status_code=413, detail=f"{file.filename or '文件'} 超过上传大小限制")
+        parsed.append(parse_chat_attachment(file.filename or "uploaded-file", file.content_type, data))
+    return parsed
+
+
 @router.post("/turn", response_model=ChatTurnResponse)
 def chat_turn(
     request: ChatTurnRequest,
@@ -513,7 +541,7 @@ def chat_turn(
     else:
         _ensure_chat_agent_available(db, request.tenant_id, request.agent_id, current_user)
     ensure_tenant(db, request.tenant_id)
-    if not request.message.strip():
+    if not request.message.strip() and not request.attachments:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     if request.session_id:
         scheduled_response = _maybe_handle_scheduled_task_request(db, request, chat_session)
@@ -551,7 +579,7 @@ def chat_stream(
         request = _bind_request_to_session_agent(db, request, chat_session, current_user)
     else:
         _ensure_chat_agent_available(db, request.tenant_id, request.agent_id, current_user)
-    if not request.message.strip():
+    if not request.message.strip() and not request.attachments:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
     def stream_events() -> Iterator[str]:

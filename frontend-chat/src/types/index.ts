@@ -47,6 +47,7 @@ export type ChatMessage = {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   metadata?: {
+    attachments?: ChatAttachmentRead[];
     knowledge_citations?: KnowledgeCitation[];
     knowledge_query?: Record<string, unknown>;
     [key: string]: unknown;
@@ -56,6 +57,21 @@ export type ChatMessage = {
   turnId?: string;
   isStreaming?: boolean;
   isError?: boolean;
+};
+
+export type ChatAttachmentKind = 'text' | 'pdf' | 'image' | 'binary';
+
+export type ChatAttachmentRead = {
+  id: string;
+  filename: string;
+  content_type: string;
+  size: number;
+  kind: ChatAttachmentKind;
+  text?: string | null;
+  preview?: string | null;
+  data_url?: string | null;
+  python_summary?: string | null;
+  error?: string | null;
 };
 
 export type KnowledgeCitation = {

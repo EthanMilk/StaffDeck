@@ -228,6 +228,7 @@ class SkillRewriteRequest(BaseModel):
     tenant_id: str
     current_skill: SkillCard
     instruction: str
+    model_config_id: Optional[str] = None
     target_path: str = "all"
     target_paths: list[str] = Field(default_factory=list)
     target_label: Optional[str] = None

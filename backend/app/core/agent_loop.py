@@ -43,6 +43,7 @@ from app.llm import LLMError
 from app.memory.jobs import enqueue_memory_capture
 from app.memory.service import MemoryService, memory_read
 from app.observability import EventLog
+from app.session.attachments import message_content_with_attachment_context
 from app.session.helpers import public_session
 from app.session.session_schema import (
     ChatTurnRequest,
@@ -4983,7 +4984,13 @@ class AgentLoop:
             ).all()
         )
         rows.reverse()
-        return [{"role": row.role, "content": row.content} for row in rows]
+        return [
+            {
+                "role": row.role,
+                "content": message_content_with_attachment_context(row.content, row.metadata_json),
+            }
+            for row in rows
+        ]
 
     def _conversation_context(
         self, chat_session: ChatSession, max_messages: int | None = None
@@ -4999,7 +5006,15 @@ class AgentLoop:
         )
         if max_messages is not None and max_messages > 0:
             rows = rows[-max_messages:]
-        return build_conversation_context([{"role": row.role, "content": row.content} for row in rows])
+        return build_conversation_context(
+            [
+                {
+                    "role": row.role,
+                    "content": message_content_with_attachment_context(row.content, row.metadata_json),
+                }
+                for row in rows
+            ]
+        )
 
     def _assistant_message_metadata(
         self,
@@ -5071,12 +5086,14 @@ class AgentLoop:
             )
         )
 
-    def _user_message_metadata(self, request: ChatTurnRequest) -> dict[str, str]:
-        metadata: dict[str, str] = {}
+    def _user_message_metadata(self, request: ChatTurnRequest) -> dict[str, Any]:
+        metadata: dict[str, Any] = {}
         if request.interaction_mode == "scheduled_task":
             metadata["interaction_mode"] = "scheduled_task"
         if request.model_config_id:
             metadata["model_config_id"] = request.model_config_id
+        if request.attachments:
+            metadata["attachments"] = [item.model_dump(mode="json") for item in request.attachments]
         return metadata
 
     def _record_runtime_event(

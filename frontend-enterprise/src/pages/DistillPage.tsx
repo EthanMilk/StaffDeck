@@ -18,7 +18,7 @@ import {
   UploadOutlined,
   WarningOutlined,
 } from '../icons';
-import { Button, Card, Empty, Input, Modal, Space, Tag, Tooltip, Typography, Upload, message } from 'antd';
+import { Button, Card, Empty, Input, Modal, Select, Space, Tag, Tooltip, Typography, Upload, message } from 'antd';
 import {
   useEffect,
   useMemo,
@@ -34,7 +34,7 @@ import {
 } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api, streamGet, streamPost, TENANT_ID } from '../api/client';
-import type { SkillCard, SkillRead, ToolProbeResponse, ToolRead, ToolSuggestion } from '../types';
+import type { ModelConfigRead, SkillCard, SkillRead, ToolProbeResponse, ToolRead, ToolSuggestion } from '../types';
 
 type ChatItem = {
   id: string;
@@ -127,6 +127,7 @@ const DEFAULT_DISTILL_MESSAGES: ChatItem[] = [
   },
 ];
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
+const DISTILL_REWRITE_MODEL_STORAGE_KEY = 'skill-distill-rewrite-model';
 
 type DistillCacheSnapshot = {
   draft: SkillCard | null;
@@ -223,6 +224,10 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
   const [toolDetailMessageId, setToolDetailMessageId] = useState<string | null>(null);
   const [probeArgsText, setProbeArgsText] = useState('');
   const [tools, setTools] = useState<ToolRead[]>([]);
+  const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
+  const [selectedRewriteModelId, setSelectedRewriteModelId] = useState(
+    () => window.localStorage.getItem(`${DISTILL_REWRITE_MODEL_STORAGE_KEY}:${TENANT_ID}`) || '',
+  );
   const [streamStatus, setStreamStatus] = useState('');
   const [activeJob, setActiveJob] = useState<ActiveDistillJob | null>(null);
   const [manualSourceEdited, setManualSourceEdited] = useState(false);
@@ -428,6 +433,24 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
   }, [agentQuery]);
 
   useEffect(() => {
+    api
+      .get<ModelConfigRead[]>(`/api/enterprise/model-configs?tenant_id=${TENANT_ID}`)
+      .then((rows) => {
+        const enabled = rows.filter((item) => item.enabled);
+        setModelConfigs(enabled);
+        setSelectedRewriteModelId((current) => {
+          if (current && enabled.some((item) => item.id === current)) return current;
+          const fallback = enabled.find((item) => item.is_default)?.id || enabled[0]?.id || '';
+          if (fallback) {
+            window.localStorage.setItem(`${DISTILL_REWRITE_MODEL_STORAGE_KEY}:${TENANT_ID}`, fallback);
+          }
+          return fallback;
+        });
+      })
+      .catch(() => setModelConfigs([]));
+  }, []);
+
+  useEffect(() => {
     if (!chatMessagesRef.current) return;
     chatMessagesRef.current.scrollTop = chatMessagesRef.current.scrollHeight;
   }, [attachments, loading, messages]);
@@ -440,6 +463,11 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
   const allPaths = useMemo(() => (draft ? allTargetPaths(draft) : DEFAULT_TARGET_PATHS), [draft]);
   const uploadingFile = attachments.some((item) => item.status === 'uploading');
   const readyAttachments = attachments.filter((item) => item.status === 'ready' && item.text?.trim());
+  const selectedRewriteModel = modelConfigs.find((item) => item.id === selectedRewriteModelId) || null;
+  const rewriteModelOptions = modelConfigs.map((item) => ({
+    value: item.id,
+    label: `${item.name || item.model}${item.is_default ? '（默认）' : ''}`,
+  }));
   const allSelected = draft ? selectedPaths.length > 0 && allPaths.every((path) => selectedPaths.includes(path)) : false;
   const toolDescriptions = useMemo(() => buildToolDescriptionMap(tools, messages), [messages, tools]);
   const toolStatuses = useMemo(() => buildToolStatusMap(tools, messages), [messages, tools]);
@@ -643,6 +671,7 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
           tenant_id: TENANT_ID,
           current_skill: currentDraft,
           instruction: text,
+          model_config_id: selectedRewriteModelId || undefined,
           target_path: targets[0],
           target_paths: targets,
           target_label: scopeLabel,
@@ -1670,6 +1699,24 @@ export default function DistillPage({ active = true, searchParamsOverride }: Dis
           <Typography.Title level={3}>编辑 SOP</Typography.Title>
         </div>
         <Space>
+          <Select
+            className="skill-rewrite-model-select"
+            size="middle"
+            value={selectedRewriteModelId || undefined}
+            placeholder="改写模型"
+            options={rewriteModelOptions}
+            disabled={loading || modelConfigs.length === 0}
+            popupMatchSelectWidth={260}
+            onChange={(value) => {
+              setSelectedRewriteModelId(value);
+              window.localStorage.setItem(`${DISTILL_REWRITE_MODEL_STORAGE_KEY}:${TENANT_ID}`, value);
+            }}
+          />
+          {selectedRewriteModel && (
+            <Typography.Text type="secondary" className="skill-rewrite-model-meta">
+              {selectedRewriteModel.model}
+            </Typography.Text>
+          )}
           <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/enterprise/skills')}>
             返回
           </Button>

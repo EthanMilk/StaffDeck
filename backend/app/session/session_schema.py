@@ -150,9 +150,23 @@ class ChatTurnRequest(BaseModel):
     model_config_id: Optional[str] = None
     user_id: str = ""
     message: str
+    attachments: list["ChatAttachmentRead"] = Field(default_factory=list)
     channel: str = "web"
     interaction_mode: Literal["normal", "scheduled_task"] = "normal"
     debug: bool = False
+
+
+class ChatAttachmentRead(BaseModel):
+    id: str
+    filename: str
+    content_type: str
+    size: int
+    kind: Literal["text", "pdf", "image", "binary"] = "binary"
+    text: Optional[str] = None
+    preview: Optional[str] = None
+    data_url: Optional[str] = None
+    python_summary: Optional[str] = None
+    error: Optional[str] = None
 
 
 class ChatTurnResponse(BaseModel):
