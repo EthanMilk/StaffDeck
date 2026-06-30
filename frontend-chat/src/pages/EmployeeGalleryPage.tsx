@@ -18,7 +18,7 @@ import type { AgentProfileRead, ChatSession } from '../types';
 
 function tabForGalleryPath(pathname: string): 'all' | 'mine' | 'gallery' {
   if (pathname.includes('/gallery') || pathname.includes('/employees')) return 'all';
-  return 'mine';
+  return 'all';
 }
 
 export default function EmployeeGalleryPage() {
@@ -55,23 +55,12 @@ export default function EmployeeGalleryPage() {
     ].join(' ').toLowerCase().includes(query);
   });
   const sessionFilterOptions = useMemo(() => {
-    const sessionAgent = (session: ChatSession) => (
-      session.agent_id ? availableAgents.find((agent) => agent.id === session.agent_id) || null : null
-    );
-    const personalCount = sessions.filter((session) => {
-      const agent = sessionAgent(session);
-      return agent ? personalAgentIds.has(agent.id) : false;
-    }).length;
-    const galleryCount = sessions.filter((session) => {
-      const agent = sessionAgent(session);
-      return agent ? galleryAgents.some((item) => item.id === agent.id) : false;
-    }).length;
     return [
-      { value: 'all', label: `全部会话 · ${sessions.length}` },
-      { value: 'mine', label: `我的员工 · ${personalCount}` },
-      { value: 'gallery', label: `广场员工 · ${galleryCount}` },
+      { value: 'all', label: `全部员工 · ${availableAgents.length}` },
+      { value: 'mine', label: `我的员工 · ${personalAgents.length}` },
+      { value: 'gallery', label: `广场员工 · ${galleryAgents.length}` },
     ];
-  }, [availableAgents, galleryAgents, personalAgentIds, sessions]);
+  }, [availableAgents.length, galleryAgents.length, personalAgents.length]);
   const visibleSessions = useMemo(() => (
     employeeTab === 'all'
       ? sessions
