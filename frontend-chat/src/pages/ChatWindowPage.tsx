@@ -1220,7 +1220,7 @@ export default function ChatWindowPage() {
   const keepRunningStatusInMessageArea = useCallback(() => {
     const element = chatMessagesRef.current;
     if (!element) return false;
-    const status = element.querySelector<HTMLElement>('.message-item.status-only-item');
+    const status = element.querySelector<HTMLElement>('.message-item.status-only-item, .message-item.running-trace-item');
     if (!status) return false;
     if (element.scrollTop !== 0) {
       element.scrollTop = 0;
@@ -1524,6 +1524,78 @@ export default function ChatWindowPage() {
     || currentSessionRunning,
   );
   const showComposerAvatar = Boolean(sessionId && displayedProfile);
+  const renderAssistantTrace = (
+    traceTurnId: string,
+    summary: { text: string; state: TraceLine['state'] },
+    details: TraceLine[],
+    expanded: boolean,
+  ) => (
+    <div className="assistant-trace">
+      <button
+        type="button"
+        className={`turn-trace-summary ${summary.state}`}
+        onClick={() => toggleTrace(traceTurnId)}
+      >
+        <span className="trace-icon-slot"><StaffdeckIcon name="refresh" /></span>
+        <span className="trace-primary-text" data-text={summary.text}>{summary.text}</span>
+        {details.length > 0 && (
+          <span className="trace-chevron-slot">
+            <StaffdeckIcon name="arrow" style={expanded ? { transform: 'rotate(90deg)' } : undefined} />
+          </span>
+        )}
+      </button>
+      {expanded && details.length > 0 && (
+        <div className="turn-trace-details">
+          {details.map((line) => (
+            <div key={line.id} className={`turn-trace-line ${line.kind} ${line.state}`}>
+              <span className="trace-icon-slot">
+                {line.kind === 'skill' ? (
+                  <StaffdeckIcon name="branch" />
+                ) : line.kind === 'tool' ? (
+                  <StaffdeckIcon name="tool" />
+                ) : line.kind === 'knowledge' ? (
+                  <StaffdeckIcon name="file" />
+                ) : line.kind === 'code' ? (
+                  <TerminalTraceIcon />
+                ) : (
+                  <StaffdeckIcon name="refresh" />
+                )}
+              </span>
+              <span className="turn-trace-content">
+                <span className="trace-primary-text" data-text={line.text}>{line.text}</span>
+                {line.detail && <span className="turn-trace-detail">{line.detail}</span>}
+                {line.code && (
+                  <details className="turn-trace-code-wrap" open>
+                    <summary>查看代码</summary>
+                    <CodeBlock className="turn-trace-code" code={line.code} language={line.language || 'python'} />
+                  </details>
+                )}
+                {line.output && (
+                  <details className="turn-trace-code-wrap turn-trace-output-wrap" open>
+                    <summary>{line.outputTitle || '查看输出'}</summary>
+                    <CodeBlock className="turn-trace-code" code={line.output} language={line.outputLanguage || 'text'} />
+                  </details>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+  const fallbackRunningTraceId = currentStream.turnId || runningTurn?.turnId || '';
+  const fallbackRunningTrace = fallbackRunningTraceId ? turnTraceRef.current.get(fallbackRunningTraceId) : undefined;
+  const fallbackTraceLines = fallbackRunningTrace?.lines || [];
+  const fallbackAllowedTrace = fallbackTraceLines.filter((line) => traceLineAllowed(line, uiConfig));
+  const fallbackVisibleTrace = fallbackAllowedTrace.length > 0 ? fallbackAllowedTrace : fallbackTraceLines;
+  const fallbackTraceSummary = fallbackRunningTrace && fallbackVisibleTrace.length > 0
+    ? traceSummary(fallbackRunningTrace, fallbackVisibleTrace)
+    : null;
+  const fallbackTraceDetails = traceDetails(fallbackVisibleTrace);
+  const fallbackTraceExpanded = Boolean(
+    fallbackTraceSummary?.state === 'running'
+    || (fallbackRunningTraceId && expandedTraceIds.includes(fallbackRunningTraceId))
+  );
   const modelMenuItems = useMemo(() => {
     if (!enabledModelConfigs.length) {
       return [
@@ -3156,11 +3228,25 @@ export default function ChatWindowPage() {
           <div className="message-stack">
             {displayedMessages.map((item) => {
               const turnId = item.turnId || item.id;
-              const trace = item.role === 'assistant' ? turnTraceRef.current.get(turnId) : undefined;
-              const visibleTrace = trace?.lines.filter((line) => traceLineAllowed(line, uiConfig)) || [];
+              const fallbackTraceId = item.role === 'assistant' && item.isStreaming
+                ? (currentStream.turnId || runningTurn?.turnId || '')
+                : '';
+              const primaryTrace = item.role === 'assistant' ? turnTraceRef.current.get(turnId) : undefined;
+              const fallbackTrace = fallbackTraceId ? turnTraceRef.current.get(fallbackTraceId) : undefined;
+              const trace = primaryTrace || fallbackTrace;
+              const traceTurnId = primaryTrace ? turnId : (fallbackTrace ? fallbackTraceId : turnId);
+              const traceLines = trace?.lines || [];
+              const allowedTrace = traceLines.filter((line) => traceLineAllowed(line, uiConfig));
+              const forceRunningTrace = Boolean(
+                item.role === 'assistant'
+                && item.isStreaming
+                && allowedTrace.length === 0
+                && traceLines.some((line) => line.state === 'running')
+              );
+              const visibleTrace = forceRunningTrace ? traceLines : allowedTrace;
               const summary = trace && visibleTrace.length > 0 ? traceSummary(trace, visibleTrace) : null;
               const details = traceDetails(visibleTrace);
-              const expanded = expandedTraceIds.includes(turnId);
+              const expanded = expandedTraceIds.includes(traceTurnId) || summary?.state === 'running';
               const visibleContent = staffdeckDisplayText(item.role === 'assistant'
                 ? stripTrailingCitationSummary(item.content)
                 : item.content);
@@ -3190,9 +3276,9 @@ export default function ChatWindowPage() {
                 && visibleContent === '已停止生成'
               );
               const attachments = messageAttachments(item);
-              const statusOnly = runningStatusOnly || stoppedStatusOnly;
+              const statusOnly = stoppedStatusOnly || (runningStatusOnly && !summary);
               const statusOnlyText = runningStatusOnly ? '正在执行...' : visibleContent;
-              const showInlineTrace = Boolean(summary && !statusOnly);
+              const showInlineTrace = Boolean(summary && !stoppedStatusOnly);
               if (
                 item.role === 'assistant'
                 && !visibleContent
@@ -3212,58 +3298,7 @@ export default function ChatWindowPage() {
                       {statusOnly ? (
                         <div className="assistant-running-status">{statusOnlyText}</div>
                       ) : showInlineTrace && summary && (
-                        <div className="assistant-trace">
-                          <button
-                            type="button"
-                            className={`turn-trace-summary ${summary.state}`}
-                            onClick={() => toggleTrace(turnId)}
-                          >
-                            <span className="trace-icon-slot"><StaffdeckIcon name="refresh" /></span>
-                            <span className="trace-primary-text" data-text={summary.text}>{summary.text}</span>
-                            {details.length > 0 && (
-                              <span className="trace-chevron-slot">
-                                <StaffdeckIcon name="arrow" style={expanded ? { transform: 'rotate(90deg)' } : undefined} />
-                              </span>
-                            )}
-                          </button>
-                          {expanded && details.length > 0 && (
-                            <div className="turn-trace-details">
-                              {details.map((line) => (
-                                <div key={line.id} className={`turn-trace-line ${line.kind} ${line.state}`}>
-                                  <span className="trace-icon-slot">
-                                    {line.kind === 'skill' ? (
-                                      <StaffdeckIcon name="branch" />
-                                    ) : line.kind === 'tool' ? (
-                                      <StaffdeckIcon name="tool" />
-                                    ) : line.kind === 'knowledge' ? (
-                                      <StaffdeckIcon name="file" />
-                                    ) : line.kind === 'code' ? (
-                                      <TerminalTraceIcon />
-                                    ) : (
-                                      <StaffdeckIcon name="refresh" />
-                                    )}
-                                  </span>
-                                    <span className="turn-trace-content">
-                                      <span className="trace-primary-text" data-text={line.text}>{line.text}</span>
-                                      {line.detail && <span className="turn-trace-detail">{line.detail}</span>}
-                                      {line.code && (
-                                        <details className="turn-trace-code-wrap" open>
-                                          <summary>查看代码</summary>
-                                          <CodeBlock className="turn-trace-code" code={line.code} language={line.language || 'python'} />
-                                        </details>
-                                      )}
-                                      {line.output && (
-                                        <details className="turn-trace-code-wrap turn-trace-output-wrap" open>
-                                          <summary>{line.outputTitle || '查看输出'}</summary>
-                                          <CodeBlock className="turn-trace-code" code={line.output} language={line.outputLanguage || 'text'} />
-                                        </details>
-                                      )}
-                                    </span>
-                                  </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
+                        renderAssistantTrace(traceTurnId, summary, details, expanded)
                       )}
                       {!statusOnly && visibleContent ? (
                         item.role === 'assistant' ? (
@@ -3359,10 +3394,19 @@ export default function ChatWindowPage() {
               );
             })}
             {showFallbackRunningStatus && (
-              <div className="message-item assistant status-only-item">
+              <div className={`message-item assistant ${fallbackTraceSummary ? 'running-trace-item' : 'status-only-item'}`}>
                 <div className="message-row assistant">
-                  <div className="bubble status-only">
-                    <div className="assistant-running-status">正在执行...</div>
+                  <div className={`bubble ${fallbackTraceSummary ? 'has-trace' : 'status-only'}`}>
+                    {fallbackTraceSummary ? (
+                      renderAssistantTrace(
+                        fallbackRunningTraceId,
+                        fallbackTraceSummary,
+                        fallbackTraceDetails,
+                        fallbackTraceExpanded,
+                      )
+                    ) : (
+                      <div className="assistant-running-status">正在执行...</div>
+                    )}
                   </div>
                 </div>
               </div>

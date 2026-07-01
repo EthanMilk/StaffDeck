@@ -5632,23 +5632,34 @@ body,
 }
 
 .composer-v2 .composer-plus-button.ant-btn {
-  width: 40px !important;
-  min-width: 40px !important;
-  height: 40px !important;
+  box-sizing: border-box !important;
+  width: 24px !important;
+  min-width: 24px !important;
+  max-width: 24px !important;
+  inline-size: 24px !important;
+  flex: 0 0 24px !important;
+  height: 24px !important;
   padding: 0 !important;
   display: inline-flex !important;
   align-items: center !important;
   justify-content: center !important;
   color: #858b9c !important;
-  border: 1px solid #757f9c !important;
-  border-radius: 14px !important;
-  background: #ffffff !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  box-shadow: none !important;
 }
 
 .composer-v2 .composer-plus-button.ant-btn .sd1-icon-plus {
   display: block !important;
-  width: 14px !important;
-  height: 14px !important;
+  width: 16px !important;
+  height: 16px !important;
+}
+
+.composer-v2 .composer-plus-button.ant-btn:hover,
+.composer-v2 .composer-plus-button.ant-btn:focus-visible {
+  color: #464c5e !important;
+  background: #f6f6f6 !important;
 }
 
 .composer-plus-menu-item {
@@ -5989,20 +6000,24 @@ body,
 :root[data-theme='dark'] .staffdeck-empty-bio span,
 :root[data-theme='dark'] .staffdeck-empty-stats,
 :root[data-theme='dark'] .composer-v2,
-:root[data-theme='dark'] .composer-v2 .composer-plus-button.ant-btn,
 :root[data-theme='dark'] .composer-intent-chip {
   border-color: #363844 !important;
 }
 
-:root[data-theme='dark'] .composer-v2,
-:root[data-theme='dark'] .composer-v2 .composer-plus-button.ant-btn {
+:root[data-theme='dark'] .composer-v2 {
   color: #d8dcef !important;
   background: #202126 !important;
 }
 
 :root[data-theme='dark'] .composer-v2 .composer-plus-button.ant-btn {
-  border-color: #5b6478 !important;
-  background: #15161a !important;
+  color: #a8afbd !important;
+  background: transparent !important;
+}
+
+:root[data-theme='dark'] .composer-v2 .composer-plus-button.ant-btn:hover,
+:root[data-theme='dark'] .composer-v2 .composer-plus-button.ant-btn:focus-visible {
+  color: #f5f7ff !important;
+  background: #2b2d34 !important;
 }
 
 :root[data-theme='dark'] .composer-actions-row::before {
