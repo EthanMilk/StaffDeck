@@ -44,6 +44,7 @@ export default function App() {
           <Route path="/" element={<RequireAuth><EmployeeGalleryPage /></RequireAuth>} />
           <Route path="/employees" element={<RequireAuth><EmployeeGalleryPage /></RequireAuth>} />
           <Route path="/gallery" element={<RequireAuth><EmployeeGalleryPage /></RequireAuth>} />
+          <Route path="/draft/:draftAgentId" element={<RequireAuth><ChatWindowPage /></RequireAuth>} />
           <Route path="/:sessionId" element={<RequireAuth><ChatWindowPage /></RequireAuth>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

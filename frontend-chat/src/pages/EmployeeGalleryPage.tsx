@@ -119,27 +119,14 @@ export default function EmployeeGalleryPage() {
     });
   }
 
-  async function openSessionForAgent(agentId: string) {
+  function openSessionForAgent(agentId: string) {
     if (!agentId) {
       message.warning('请先选择数字员工');
       return;
     }
     setSelectedAgentId(agentId);
-    try {
-      const session = await api.post<ChatSession>('/api/chat/sessions', {
-        tenant_id: tenantId,
-        agent_id: agentId,
-      });
-      setSessions((items) => [session, ...items.filter((item) => item.id !== session.id)]);
-      navigate(`/${session.id}`);
-    } catch (error) {
-      if (isAuthError(error)) {
-        clearAuthSession();
-        navigate('/login', { replace: true });
-        return;
-      }
-      message.error(error instanceof Error ? error.message : '打开会话失败');
-    }
+    window.localStorage.setItem('skill_agent_selected_agent', agentId);
+    navigate(`/draft/${encodeURIComponent(agentId)}`);
   }
 
   const renderEmployeeCards = (rows: AgentProfileRead[], emptyText: string) => {

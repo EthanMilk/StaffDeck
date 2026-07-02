@@ -133,6 +133,14 @@ function sessionHasUnreadReply(session: ChatSession, readTimes: Record<string, s
   return Number.isFinite(updatedAt) && (!Number.isFinite(readAt) || updatedAt > readAt + 1000);
 }
 
+function draftConversationKey(agentId: string): string {
+  return `draft:${agentId}`;
+}
+
+function isDraftConversationKey(id: string): boolean {
+  return id.startsWith('draft:');
+}
+
 function modelStorageKey(tenantId: string): string {
   return `${MODEL_CONFIG_STORAGE_PREFIX}:${tenantId}`;
 }
@@ -1151,7 +1159,7 @@ function citationSectionLabel(citation: KnowledgeCitation): string {
 }
 
 export default function ChatWindowPage() {
-  const { sessionId } = useParams();
+  const { sessionId, draftAgentId } = useParams<{ sessionId?: string; draftAgentId?: string }>();
   const navigate = useNavigate();
   const [auth] = useState(() => getAuthSession());
   const tenantId = auth?.user.tenant_id || TENANT_ID;
@@ -1303,13 +1311,19 @@ export default function ChatWindowPage() {
     return next;
   }, []);
 
-  const currentSession = sessions.find((item) => item.id === sessionId) || null;
+  const activeDraftAgentId = draftAgentId || '';
+  const activeConversationId = sessionId || (activeDraftAgentId ? draftConversationKey(activeDraftAgentId) : '');
+  const isDraftConversation = Boolean(activeDraftAgentId && !sessionId);
+  const currentSession = sessionId ? sessions.find((item) => item.id === sessionId) || null : null;
   const availableAgents = visibleChatEmployees(agents, auth?.user);
   const defaultAgent = availableAgents.find((agent) => agent.id === selectedAgentId) || availableAgents[0] || null;
+  const draftAgent = activeDraftAgentId
+    ? agents.find((agent) => agent.id === activeDraftAgentId) || null
+    : null;
   const sessionAgent = currentSession?.agent_id
     ? agents.find((agent) => agent.id === currentSession.agent_id) || null
     : null;
-  const displayedAgent = sessionAgent || defaultAgent;
+  const displayedAgent = sessionAgent || draftAgent || defaultAgent;
   const displayedProfile = displayedAgent ? employeeProfile(displayedAgent) : null;
   const emptyProfileTags = displayedProfile?.workStyles.length
     ? displayedProfile.workStyles.slice(0, 3)
@@ -1383,6 +1397,12 @@ export default function ChatWindowPage() {
       })
       .catch(() => setAgents([]));
   }, [auth?.user, tenantId]);
+
+  useEffect(() => {
+    if (!activeDraftAgentId) return;
+    setSelectedAgentId(activeDraftAgentId);
+    window.localStorage.setItem('skill_agent_selected_agent', activeDraftAgentId);
+  }, [activeDraftAgentId]);
 
   useEffect(() => {
     if (!auth) return;
@@ -1509,18 +1529,20 @@ export default function ChatWindowPage() {
   }, [getSlot, getStreamSlot, notifyStore, notifyStream]);
 
   const displayedMessages = useMemo(() => {
-    if (!sessionId) return [];
+    if (!activeConversationId) return [];
     void storeTick;
     void streamTick;
     void feedbackTick;
-    return computeMergedMessages(getSlot(sessionId), getStreamSlot(sessionId).turnId);
-  }, [feedbackTick, getSlot, getStreamSlot, sessionId, storeTick, streamTick]);
+    return computeMergedMessages(getSlot(activeConversationId), getStreamSlot(activeConversationId).turnId);
+  }, [activeConversationId, feedbackTick, getSlot, getStreamSlot, storeTick, streamTick]);
 
   const currentStream = useMemo(() => {
     void streamTick;
-    return sessionId ? getStreamSlot(sessionId) : createStreamSlot();
-  }, [getStreamSlot, sessionId, streamTick]);
-  const currentSessionRunning = Boolean(currentStream.loading || (sessionId && runningTurn?.sessionId === sessionId));
+    return activeConversationId ? getStreamSlot(activeConversationId) : createStreamSlot();
+  }, [activeConversationId, getStreamSlot, streamTick]);
+  const currentSessionRunning = Boolean(
+    currentStream.loading || (activeConversationId && runningTurn?.sessionId === activeConversationId),
+  );
   const readyComposerAttachments = useMemo(
     () => composerAttachments.filter((item) => item.uploadStatus === 'ready'),
     [composerAttachments],
@@ -1540,7 +1562,7 @@ export default function ChatWindowPage() {
     || displayedMessages.length > 0
     || currentSessionRunning,
   );
-  const showComposerAvatar = Boolean(sessionId && displayedProfile);
+  const showComposerAvatar = Boolean(activeConversationId && displayedProfile);
   const renderAssistantTrace = (
     traceTurnId: string,
     summary: { text: string; state: TraceLine['state'] },
@@ -1643,7 +1665,7 @@ export default function ChatWindowPage() {
       setSessionAgentFilter('all');
     }
   }, [sessionAgentFilter, sessionFilterOptions]);
-  const currentScheduledDraft = sessionId ? scheduledDrafts[sessionId] : undefined;
+  const currentScheduledDraft = activeConversationId ? scheduledDrafts[activeConversationId] : undefined;
   const hasVisibleMessageScheduledDraft = displayedMessages.some((item) => (
     item.role === 'assistant'
     && !dismissedDraftMessageIds.includes(item.id)
@@ -1920,7 +1942,7 @@ export default function ChatWindowPage() {
   useLayoutEffect(() => {
     if (keepRunningStatusInMessageArea()) return;
     scrollChatToBottom({ preserveShortContentTop: true });
-  }, [displayedMessages.length, keepRunningStatusInMessageArea, scrollChatToBottom, sessionId, storeTick, traceTick]);
+  }, [activeConversationId, displayedMessages.length, keepRunningStatusInMessageArea, scrollChatToBottom, storeTick, traceTick]);
 
   useEffect(() => {
     if (!currentStream.loading) return;
@@ -1985,21 +2007,21 @@ export default function ChatWindowPage() {
   }
 
   function abortStream() {
-    if (!sessionId) return;
-    const stream = getStreamSlot(sessionId);
+    if (!activeConversationId) return;
+    const stream = getStreamSlot(activeConversationId);
     const cancelledTurnId = stream.turnId;
     stream.abortController?.abort();
     stream.abortController = null;
     stream.cancelledTurnId = cancelledTurnId;
-    locallyCancelledSessionIdsRef.current.add(sessionId);
+    locallyCancelledSessionIdsRef.current.add(activeConversationId);
     if (cancelledTurnId) {
       turnTraceRef.current.delete(cancelledTurnId);
       notifyTrace();
     }
-    finalizeStreaming(sessionId);
-    const slot = getSlot(sessionId);
+    finalizeStreaming(activeConversationId);
+    const slot = getSlot(activeConversationId);
     slot.realtimeMessages = slot.realtimeMessages.filter((item) => !item.id.startsWith('local_interrupt_'));
-    appendRealtime(sessionId, {
+    appendRealtime(activeConversationId, {
       id: `local_interrupt_${Date.now()}`,
       role: 'system',
       content: '已停止生成',
@@ -2007,8 +2029,8 @@ export default function ChatWindowPage() {
     });
     const nextStream = createStreamSlot();
     nextStream.cancelledTurnId = cancelledTurnId;
-    streamRef.current.set(sessionId, nextStream);
-    setRunningTurn((current) => (current?.sessionId === sessionId ? null : current));
+    streamRef.current.set(activeConversationId, nextStream);
+    setRunningTurn((current) => (current?.sessionId === activeConversationId ? null : current));
     notifyStream();
   }
 
@@ -2667,7 +2689,7 @@ export default function ChatWindowPage() {
         if (looksRunning) ids.add(session.id);
       });
       streamRef.current.forEach((slot, id) => {
-        if (slot.loading) ids.add(id);
+        if (slot.loading && !isDraftConversationKey(id)) ids.add(id);
       });
       Array.from(ids).slice(0, 8).forEach((id) => {
         void pollScheduledSessionEvents(id);
@@ -2680,7 +2702,7 @@ export default function ChatWindowPage() {
 
   async function send(interactionMode?: ComposerInteractionMode) {
     const resolvedInteractionMode = interactionMode || composerIntent || 'normal';
-    if (!sessionId) return;
+    if (!activeConversationId) return;
     if (resolvedInteractionMode === 'scheduled_task' && !input.trim()) {
       message.warning('请输入要创建的定时任务内容');
       return;
@@ -2690,30 +2712,31 @@ export default function ChatWindowPage() {
       message.warning('文件还在解析中，请稍后发送');
       return;
     }
-    const currentSessionId = sessionId;
-    const activeSession = sessions.find((item) => item.id === currentSessionId);
-    if (!activeSession) {
+    const currentConversationId = activeConversationId;
+    const activeSession = sessionId ? sessions.find((item) => item.id === sessionId) || null : null;
+    if (!isDraftConversation && !activeSession) {
       message.warning('任务信息还在加载，请稍后再发送');
       return;
     }
-    const sessionAgentId = activeSession?.agent_id || selectedAgentId || '';
+    const sessionAgentId = activeSession?.agent_id || activeDraftAgentId || selectedAgentId || displayedAgent?.id || '';
     if (!sessionAgentId) {
       message.warning('该任务没有绑定数字员工，请新建任务后再发送');
       return;
     }
-    const stream = getStreamSlot(currentSessionId);
+    const stream = getStreamSlot(currentConversationId);
     if (stream.loading) return;
     const userText = input.trim();
     const outgoingAttachments = readyComposerAttachments.map(toRequestAttachment);
     const turnId = `turn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    locallyCancelledSessionIdsRef.current.delete(currentSessionId);
+    let liveConversationId = currentConversationId;
+    locallyCancelledSessionIdsRef.current.delete(currentConversationId);
     setInput('');
     setComposerAttachments([]);
     setComposerIntent(null);
     stream.accumulated = '';
     stream.cancelledTurnId = null;
     stream.turnId = turnId;
-    appendRealtime(currentSessionId, {
+    appendRealtime(currentConversationId, {
       id: `local_${turnId}`,
       turnId,
       role: 'user',
@@ -2725,19 +2748,74 @@ export default function ChatWindowPage() {
       created_at: new Date().toISOString(),
     });
     upsertTraceLine(turnId, { id: 'thinking', kind: 'thinking', text: '正在思考', state: 'running' });
-    updateStreaming(currentSessionId, '', turnId);
+    updateStreaming(currentConversationId, '', turnId);
     stream.loading = true;
     stream.phase = '正在思考';
-    setRunningTurn({ sessionId: currentSessionId, turnId });
+    setRunningTurn({ sessionId: currentConversationId, turnId });
     notifyStream();
 
     const controller = new AbortController();
     stream.abortController = controller;
 
+    const clearRunningTurn = (targetId = liveConversationId) => {
+      setRunningTurn((current) => (
+        current?.turnId === turnId && (current.sessionId === targetId || current.sessionId === currentConversationId)
+          ? null
+          : current
+      ));
+    };
+
+    const promoteDraftConversation = (nextSessionId: string) => {
+      if (!isDraftConversation || !nextSessionId || nextSessionId === liveConversationId) return;
+      const previousId = liveConversationId;
+      const draftSlot = storeRef.current.get(previousId);
+      if (draftSlot) {
+        const previousStreamMessageId = `__streaming_${previousId}`;
+        const nextStreamMessageId = `__streaming_${nextSessionId}`;
+        draftSlot.realtimeMessages = draftSlot.realtimeMessages.map((item) => (
+          item.id === previousStreamMessageId ? { ...item, id: nextStreamMessageId } : item
+        ));
+        storeRef.current.set(nextSessionId, draftSlot);
+        storeRef.current.delete(previousId);
+      }
+      const draftStream = streamRef.current.get(previousId);
+      if (draftStream) {
+        streamRef.current.set(nextSessionId, draftStream);
+        streamRef.current.delete(previousId);
+      }
+      if (locallyCancelledSessionIdsRef.current.has(previousId)) {
+        locallyCancelledSessionIdsRef.current.delete(previousId);
+        locallyCancelledSessionIdsRef.current.add(nextSessionId);
+      }
+      setScheduledDrafts((prev) => {
+        if (!prev[previousId]) return prev;
+        const next = { ...prev, [nextSessionId]: prev[previousId] };
+        delete next[previousId];
+        return next;
+      });
+      setCreatedScheduledTasks((prev) => {
+        const previousKey = `session:${previousId}`;
+        if (!prev[previousKey]) return prev;
+        const next = { ...prev, [`session:${nextSessionId}`]: prev[previousKey] };
+        delete next[previousKey];
+        return next;
+      });
+      knownSessionIdsRef.current.add(nextSessionId);
+      liveConversationId = nextSessionId;
+      setRunningTurn((current) => (
+        current?.sessionId === previousId && current.turnId === turnId
+          ? { sessionId: nextSessionId, turnId }
+          : current
+      ));
+      notifyStore();
+      notifyStream();
+      navigate(`/${nextSessionId}`, { replace: true });
+      loadSessions();
+    };
+
     try {
-      await streamChatTurn({
+      const requestBody: Record<string, unknown> = {
         tenant_id: tenantId,
-        session_id: currentSessionId,
         user_id: userId,
         agent_id: sessionAgentId,
         message: userText,
@@ -2745,12 +2823,18 @@ export default function ChatWindowPage() {
         channel: 'web',
         interaction_mode: resolvedInteractionMode,
         model_config_id: selectedModelConfig?.id,
-      }, (item) => {
-        const eventSessionId = String(item.data.sessionId || currentSessionId);
-        const eventStream = getStreamSlot(eventSessionId);
-        if (controller.signal.aborted || eventStream.cancelledTurnId === turnId) {
+      };
+      if (!isDraftConversation) {
+        requestBody.session_id = currentConversationId;
+      }
+      await streamChatTurn(requestBody, (item) => {
+        if (item.event === 'session_created') {
+          promoteDraftConversation(String(item.data.newSessionId || item.data.sessionId || ''));
           return;
         }
+        const eventSessionId = String(item.data.sessionId || liveConversationId);
+        const eventStream = getStreamSlot(eventSessionId);
+        if (controller.signal.aborted || eventStream.cancelledTurnId === turnId) return;
         if (item.event === 'session_created') {
           return;
         }
@@ -3038,13 +3122,11 @@ export default function ChatWindowPage() {
         finishTrace(turnId, true);
         stream.loading = false;
         stream.phase = '';
-        setRunningTurn((current) => (
-          current?.sessionId === currentSessionId && current.turnId === turnId ? null : current
-        ));
+        clearRunningTurn();
         notifyStream();
         return;
       }
-      appendRealtime(currentSessionId, {
+      appendRealtime(liveConversationId, {
         id: `error_${Date.now()}`,
         role: 'assistant',
         content: '发送失败，请稍后重试',
@@ -3055,18 +3137,14 @@ export default function ChatWindowPage() {
       finishTrace(turnId, true);
       stream.loading = false;
       stream.phase = '';
-      setRunningTurn((current) => (
-        current?.sessionId === currentSessionId && current.turnId === turnId ? null : current
-      ));
+      clearRunningTurn();
       notifyStream();
     } finally {
       if (stream.abortController === controller) {
         stream.abortController = null;
         stream.loading = false;
         stream.phase = '';
-        setRunningTurn((current) => (
-          current?.sessionId === currentSessionId && current.turnId === turnId ? null : current
-        ));
+        clearRunningTurn();
         notifyStream();
       }
     }
@@ -3449,7 +3527,7 @@ export default function ChatWindowPage() {
           {currentScheduledDraft && !hasVisibleMessageScheduledDraft && (
             <ScheduledDraftCard
               draft={currentScheduledDraft}
-              createdTask={sessionId ? createdScheduledTasks[`session:${sessionId}`] : undefined}
+              createdTask={activeConversationId ? createdScheduledTasks[`session:${activeConversationId}`] : undefined}
               onConfirm={(nextDraft) => void confirmScheduledTask(nextDraft)}
               onDismiss={() => dismissScheduledTaskDraft()}
             />
