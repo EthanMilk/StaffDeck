@@ -96,6 +96,7 @@ type ComposerAttachment = ChatAttachmentRead & {
   uploadStatus: 'uploading' | 'ready' | 'error';
   uploadKey: string;
 };
+type ComposerInteractionMode = 'normal' | 'scheduled_task';
 const MODEL_CONFIG_STORAGE_PREFIX = 'skill_agent_selected_model_config';
 const SESSION_READ_STORAGE_PREFIX = 'skill_agent_session_read_at';
 
@@ -1168,6 +1169,7 @@ export default function ChatWindowPage() {
   const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]);
   const [composerDragActive, setComposerDragActive] = useState(false);
   const [composerPlusOpen, setComposerPlusOpen] = useState(false);
+  const [composerIntent, setComposerIntent] = useState<Exclude<ComposerInteractionMode, 'normal'> | null>(null);
   const [lastTurn, setLastTurn] = useState<ChatTurnResponse | null>(null);
   const [renameSession, setRenameSession] = useState<ChatSession | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
@@ -2676,9 +2678,10 @@ export default function ChatWindowPage() {
     return () => window.clearInterval(timer);
   }, [auth, pollScheduledSessionEvents, sessionId, sessions, streamTick]);
 
-  async function send(interactionMode: 'normal' | 'scheduled_task' = 'normal') {
+  async function send(interactionMode?: ComposerInteractionMode) {
+    const resolvedInteractionMode = interactionMode || composerIntent || 'normal';
     if (!sessionId) return;
-    if (interactionMode === 'scheduled_task' && !input.trim()) {
+    if (resolvedInteractionMode === 'scheduled_task' && !input.trim()) {
       message.warning('请输入要创建的定时任务内容');
       return;
     }
@@ -2706,6 +2709,7 @@ export default function ChatWindowPage() {
     locallyCancelledSessionIdsRef.current.delete(currentSessionId);
     setInput('');
     setComposerAttachments([]);
+    setComposerIntent(null);
     stream.accumulated = '';
     stream.cancelledTurnId = null;
     stream.turnId = turnId;
@@ -2716,7 +2720,7 @@ export default function ChatWindowPage() {
       content: userText,
       metadata: {
         ...(outgoingAttachments.length ? { attachments: outgoingAttachments } : {}),
-        ...(interactionMode === 'scheduled_task' ? { interaction_mode: 'scheduled_task' } : {}),
+        ...(resolvedInteractionMode === 'scheduled_task' ? { interaction_mode: 'scheduled_task' } : {}),
       },
       created_at: new Date().toISOString(),
     });
@@ -2739,7 +2743,7 @@ export default function ChatWindowPage() {
         message: userText,
         attachments: outgoingAttachments,
         channel: 'web',
-        interaction_mode: interactionMode,
+        interaction_mode: resolvedInteractionMode,
         model_config_id: selectedModelConfig?.id,
       }, (item) => {
         const eventSessionId = String(item.data.sessionId || currentSessionId);
@@ -3074,7 +3078,7 @@ export default function ChatWindowPage() {
       fileInputRef.current?.click();
       return;
     }
-    void send('scheduled_task');
+    setComposerIntent('scheduled_task');
   }
 
   return (
@@ -3578,6 +3582,20 @@ export default function ChatWindowPage() {
                     title="添加"
                   />
                 </Dropdown>
+                {composerIntent === 'scheduled_task' && (
+                  <button
+                    type="button"
+                    className="composer-intent-chip"
+                    onClick={() => setComposerIntent(null)}
+                    aria-label="移除定时任务"
+                    title="移除定时任务"
+                  >
+                    <span className="composer-intent-icon">
+                      <StaffdeckIcon name="clock" size={14} />
+                    </span>
+                    <span>定时任务</span>
+                  </button>
+                )}
                 <div className="composer-hint">Enter 发送 / Shift+Enter 换行</div>
               </div>
               <div className="composer-actions-row">

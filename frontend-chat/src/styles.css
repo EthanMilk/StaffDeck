@@ -3005,18 +3005,18 @@ textarea,
 }
 
 .composer-intent-chip {
-  height: 30px;
+  height: 24px;
   max-width: min(180px, 44vw);
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  padding: 0 11px;
+  gap: 6px;
+  padding: 0 8px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 7px;
   color: var(--muted);
   background: color-mix(in srgb, var(--surface-muted) 86%, transparent);
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1;
   cursor: pointer;
   transition: color 0.16s ease, background 0.16s ease, transform 0.16s ease;
@@ -3024,15 +3024,16 @@ textarea,
 
 .composer-intent-icon {
   position: relative;
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
 
-.composer-intent-icon .anticon {
+.composer-intent-icon .anticon,
+.composer-intent-icon .sd1-icon {
   font-size: 13px;
   transition: opacity 0.14s ease, transform 0.14s ease;
 }
@@ -3066,7 +3067,9 @@ textarea,
 }
 
 .composer-intent-chip:hover .composer-intent-icon .anticon,
-.composer-intent-chip:focus .composer-intent-icon .anticon {
+.composer-intent-chip:focus .composer-intent-icon .anticon,
+.composer-intent-chip:hover .composer-intent-icon .sd1-icon,
+.composer-intent-chip:focus .composer-intent-icon .sd1-icon {
   opacity: 0;
   transform: scale(0.72);
 }
