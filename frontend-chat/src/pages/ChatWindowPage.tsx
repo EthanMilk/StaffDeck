@@ -1229,6 +1229,7 @@ export default function ChatWindowPage() {
   const scheduledEventIdsRef = useRef(new Set<string>());
   const scheduledTurnIdsRef = useRef(new Map<string, string>());
   const knownSessionIdsRef = useRef(new Set<string>());
+  const optimisticSessionIdsRef = useRef(new Set<string>());
   const sessionsInitializedRef = useRef(false);
   const autoOpenedSessionIdsRef = useRef(new Set<string>());
   const loadErrorNoticeRef = useRef<Record<string, number>>({});
@@ -1486,6 +1487,7 @@ export default function ChatWindowPage() {
 
   const forgetMissingSession = useCallback((id: string) => {
     knownSessionIdsRef.current.delete(id);
+    optimisticSessionIdsRef.current.delete(id);
     storeRef.current.delete(id);
     streamRef.current.delete(id);
     locallyCancelledSessionIdsRef.current.delete(id);
@@ -1506,6 +1508,18 @@ export default function ChatWindowPage() {
     notifyStore();
     notifyStream();
   }, [notifyStore, notifyStream]);
+
+  const upsertOptimisticSession = useCallback((session: ChatSession) => {
+    optimisticSessionIdsRef.current.add(session.id);
+    knownSessionIdsRef.current.add(session.id);
+    setSessions((current) => {
+      const existing = current.find((item) => item.id === session.id);
+      const nextSession = existing
+        ? { ...existing, ...session, updated_at: session.updated_at || existing.updated_at }
+        : session;
+      return [nextSession, ...current.filter((item) => item.id !== session.id)];
+    });
+  }, []);
 
   const upsertTraceLine = useCallback((turnId: string, line: TraceLine) => {
     const trace = getTurnTrace(turnId);
@@ -1740,8 +1754,15 @@ export default function ChatWindowPage() {
           persistSessionReadTimes(userId, nextReads);
           sessionsInitializedRef.current = true;
         }
-        rows.forEach((row) => knownSessionIdsRef.current.add(row.id));
-        setSessions(rows);
+        rows.forEach((row) => {
+          knownSessionIdsRef.current.add(row.id);
+          optimisticSessionIdsRef.current.delete(row.id);
+        });
+        const persistedIds = new Set(rows.map((row) => row.id));
+        setSessions((current) => [
+          ...current.filter((row) => optimisticSessionIdsRef.current.has(row.id) && !persistedIds.has(row.id)),
+          ...rows,
+        ]);
         if (!initialized) return;
         const newScheduledSession = rows.find((row) => (
           !previousIds.has(row.id)
@@ -2861,7 +2882,18 @@ export default function ChatWindowPage() {
         delete next[previousKey];
         return next;
       });
-      knownSessionIdsRef.current.add(nextSessionId);
+      const now = new Date().toISOString();
+      upsertOptimisticSession({
+        id: nextSessionId,
+        tenant_id: tenantId,
+        user_id: userId,
+        agent_id: sessionAgentId,
+        title: userText || '新会话',
+        status: 'active',
+        summary: userText || undefined,
+        last_agent_question: userText || undefined,
+        updated_at: now,
+      });
       liveConversationId = nextSessionId;
       setRunningTurn((current) => (
         current?.sessionId === previousId && current.turnId === turnId
