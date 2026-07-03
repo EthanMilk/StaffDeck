@@ -215,6 +215,7 @@ class MessageRead(BaseModel):
     role: str
     content: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    turn_id: Optional[str] = None
     created_at: str
     feedback_rating: Optional[MessageFeedbackValue] = None
 

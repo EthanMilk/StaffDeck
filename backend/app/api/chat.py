@@ -106,7 +106,11 @@ def session_read(row: ChatSession) -> ChatSessionRead:
     )
 
 
-def message_read(row: Message, feedback_rating: str | None = None) -> MessageRead:
+def message_read(
+    row: Message,
+    feedback_rating: str | None = None,
+    turn_id: str | None = None,
+) -> MessageRead:
     return MessageRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -114,6 +118,7 @@ def message_read(row: Message, feedback_rating: str | None = None) -> MessageRea
         role=row.role,
         content=row.content,
         metadata=row.metadata_json or {},
+        turn_id=turn_id,
         created_at=row.created_at.isoformat(),
         feedback_rating=feedback_rating,
     )
@@ -397,16 +402,15 @@ def _maybe_handle_scheduled_task_request(
             created_at=now,
         )
     )
-    db.add(
-        Message(
-            tenant_id=request.tenant_id,
-            session_id=chat_session.id,
-            role="assistant",
-            content=reply,
-            metadata_json={"scheduled_task_draft": draft.model_dump(mode="json")},
-            created_at=assistant_time,
-        )
+    assistant_message = Message(
+        tenant_id=request.tenant_id,
+        session_id=chat_session.id,
+        role="assistant",
+        content=reply,
+        metadata_json={"scheduled_task_draft": draft.model_dump(mode="json")},
+        created_at=assistant_time,
     )
+    db.add(assistant_message)
     db.add(
         AgentEvent(
             tenant_id=request.tenant_id,
@@ -421,7 +425,14 @@ def _maybe_handle_scheduled_task_request(
             tenant_id=request.tenant_id,
             session_id=chat_session.id,
             event_type="assistant_message_created",
-            payload_json={"reply": reply, "scheduled_task_draft": draft.model_dump(mode="json")},
+            payload_json={
+                "message_id": assistant_message.id,
+                "assistant_message_id": assistant_message.id,
+                "user_message_id": user_message.id,
+                "turn_id": user_message.id,
+                "reply": reply,
+                "scheduled_task_draft": draft.model_dump(mode="json"),
+            },
             created_at=assistant_time,
         )
     )
@@ -743,8 +754,18 @@ def list_chat_messages(
         .where(Message.tenant_id == tenant_id, Message.session_id == session_id)
         .order_by(Message.created_at)
     ).all()
+    events = db.exec(
+        select(AgentEvent)
+        .where(
+            AgentEvent.tenant_id == tenant_id,
+            AgentEvent.session_id == session_id,
+            AgentEvent.event_type.in_(["user_message_received", "assistant_message_created"]),  # type: ignore[attr-defined]
+        )
+        .order_by(AgentEvent.created_at)
+    ).all()
+    turn_ids_by_message = _message_turn_ids_from_events(events)
     feedback_by_message = _feedback_by_message(db, tenant_id, current_user.id, [row.id for row in rows])
-    return [message_read(row, feedback_by_message.get(row.id)) for row in rows]
+    return [message_read(row, feedback_by_message.get(row.id), turn_ids_by_message.get(row.id)) for row in rows]
 
 
 @router.get("/sessions/{session_id}/events")
@@ -1174,7 +1195,8 @@ def _active_skill_context_for_assistant_message(
     for event in events:
         payload = event.payload_json or {}
         if event.event_type == "user_message_received":
-            collecting = str(payload.get("message") or "") == user_message.content
+            event_message_id = str(payload.get("message_id") or payload.get("user_message_id") or "").strip()
+            collecting = bool(event_message_id and event_message_id == user_message.id)
             last_context = None if collecting else last_context
             skill_hint = None if collecting else skill_hint
             continue
@@ -1189,8 +1211,13 @@ def _active_skill_context_for_assistant_message(
             last_context = event_context
             if event_context.get("skill_id"):
                 skill_hint = event_context["skill_id"]
-        if event.event_type == "assistant_message_created" and str(payload.get("reply") or "") == message_row.content:
-            return _fill_skill_context_version(db, tenant_id, last_context)
+        if event.event_type == "assistant_message_created":
+            assistant_message_id = str(
+                payload.get("message_id") or payload.get("assistant_message_id") or ""
+            ).strip()
+            if assistant_message_id == message_row.id:
+                return _fill_skill_context_version(db, tenant_id, last_context)
+            continue
     return _fill_skill_context_version(db, tenant_id, last_context)
 
 
@@ -1360,6 +1387,25 @@ def _normalize_title(value: str | None) -> str | None:
     return title[:80]
 
 
+def _message_turn_ids_from_events(events: list[AgentEvent]) -> dict[str, str]:
+    turn_ids: dict[str, str] = {}
+    for event in events:
+        payload = event.payload_json or {}
+        if event.event_type == "user_message_received":
+            message_id = str(payload.get("message_id") or payload.get("user_message_id") or "").strip()
+            if message_id:
+                turn_ids[message_id] = message_id
+            continue
+        if event.event_type == "assistant_message_created":
+            assistant_message_id = str(
+                payload.get("message_id") or payload.get("assistant_message_id") or ""
+            ).strip()
+            explicit_turn_id = str(payload.get("turn_id") or payload.get("user_message_id") or "").strip()
+            if assistant_message_id and explicit_turn_id:
+                turn_ids[assistant_message_id] = explicit_turn_id
+    return turn_ids
+
+
 def _build_turn_traces(
     messages: list[Message],
     events: list[AgentEvent],
@@ -1370,23 +1416,19 @@ def _build_turn_traces(
 
     user_messages = [message for message in messages if message.role == "user"]
     traces: list[dict] = []
-    current: dict | None = None
-    user_index = 0
-    skill_hint: str | None = None
+    traces_by_turn_id: dict[str, dict] = {}
+    skill_hints_by_turn_id: dict[str, str | None] = {}
+    active_turn_id: str | None = None
 
     for event in events:
+        payload = event.payload_json or {}
         if event.event_type == "user_message_received":
-            if current:
-                _ensure_knowledge_query_line(current["lines"], current.get("_user_message_content"))
-                _finish_trace_if_needed(current, event.created_at)
-                traces.append(current)
-            skill_hint = None
-            text = str((event.payload_json or {}).get("message") or "")
-            user_message = _matching_user_message(user_messages, user_index, event.payload_json or {})
-            if user_message:
-                user_index = user_messages.index(user_message) + 1
+            text = str(payload.get("message") or "")
+            user_message = _matching_user_message(user_messages, payload)
+            turn_id = user_message.id if user_message else event.id
+            active_turn_id = turn_id
             current = {
-                "turn_id": user_message.id if user_message else event.id,
+                "turn_id": turn_id,
                 "user_message_id": user_message.id if user_message else None,
                 "_user_message_content": user_message.content if user_message else text,
                 "started_at": event.created_at.isoformat(),
@@ -1400,37 +1442,59 @@ def _build_turn_traces(
                     }
                 ],
             }
+            traces.append(current)
+            traces_by_turn_id[turn_id] = current
+            skill_hints_by_turn_id[turn_id] = None
             continue
 
+        target_turn_id = _event_trace_turn_id(event, active_turn_id)
+        if not target_turn_id:
+            continue
+        current = traces_by_turn_id.get(target_turn_id)
         if not current:
             continue
         if current.get("completed_at"):
             continue
 
         if event.event_type == "router_decision_created":
-            target_skill_id = str((event.payload_json or {}).get("target_skill_id") or "").strip()
+            target_skill_id = str(payload.get("target_skill_id") or "").strip()
             if target_skill_id:
-                skill_hint = target_skill_id
+                skill_hints_by_turn_id[target_turn_id] = target_skill_id
 
+        skill_hint = skill_hints_by_turn_id.get(target_turn_id)
         lines = _event_trace_lines(event, skill_names, skill_hint)
         for line in lines:
             _upsert_trace_line(current["lines"], line)
         event_context = _skill_context_from_event(event, skill_hint=skill_hint)
         if event_context and event_context.get("skill_id"):
-            skill_hint = event_context["skill_id"]
+            skill_hints_by_turn_id[target_turn_id] = event_context["skill_id"]
         if event.event_type == "assistant_message_created":
             current["completed_at"] = event.created_at.isoformat()
             _ensure_knowledge_query_line(current["lines"], current.get("_user_message_content"))
             _complete_trace_lines(current["lines"])
+            if active_turn_id == target_turn_id:
+                active_turn_id = None
 
-    if current:
+    fallback_time = events[-1].created_at if events else None
+    for current in traces:
         _ensure_knowledge_query_line(current["lines"], current.get("_user_message_content"))
-        _finish_trace_if_needed(current, events[-1].created_at if events else None)
-        traces.append(current)
+        _finish_trace_if_needed(current, fallback_time)
 
     for trace in traces:
         trace.pop("_user_message_content", None)
     return _with_scheduled_draft_message_traces(traces, messages)
+
+
+def _event_trace_turn_id(event: AgentEvent, active_turn_id: str | None) -> str | None:
+    payload = event.payload_json or {}
+    if event.event_type == "user_message_received":
+        return str(payload.get("message_id") or payload.get("user_message_id") or "").strip() or event.id
+    explicit_turn_id = str(payload.get("turn_id") or payload.get("user_message_id") or "").strip()
+    if explicit_turn_id:
+        return explicit_turn_id
+    if event.event_type == "assistant_message_created":
+        return None
+    return active_turn_id
 
 
 def _with_scheduled_draft_message_traces(traces: list[dict], messages: list[Message]) -> list[dict]:
@@ -1576,7 +1640,6 @@ def _ensure_knowledge_query_line(lines: list[dict], user_message: object | None 
 
 def _matching_user_message(
     user_messages: list[Message],
-    start_index: int,
     payload: dict,
 ) -> Message | None:
     message_id = str(payload.get("message_id") or payload.get("user_message_id") or "").strip()
@@ -1584,8 +1647,6 @@ def _matching_user_message(
         for message in user_messages:
             if message.id == message_id:
                 return message
-    if start_index < len(user_messages):
-        return user_messages[start_index]
     return None
 
 

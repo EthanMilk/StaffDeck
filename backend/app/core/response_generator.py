@@ -160,9 +160,6 @@ class ResponseGenerator:
     ) -> list[dict[str, object]]:
         if step_result.knowledge_results:
             return list(step_result.knowledge_results)
-        for item in reversed(session.knowledge_context_json or []):
-            if isinstance(item, dict) and item.get("source_message") == message:
-                return [item]
         return []
 
     def _is_user_safe(self, text: str) -> bool:

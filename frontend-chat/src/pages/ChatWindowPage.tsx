@@ -476,19 +476,6 @@ function timestampAfterMessage(messageItem?: ChatMessage): string {
   return new Date((baseTime > 0 ? baseTime : Date.now()) + 1).toISOString();
 }
 
-function hasEquivalentServerMessage(messageItem: ChatMessage, serverMessages: ChatMessage[]): boolean {
-  const content = normalizeMessageText(messageItem.content);
-  if (!content) return false;
-  return serverMessages.some((serverMessage) => {
-    if (serverMessage.role !== messageItem.role) return false;
-    if (normalizeMessageText(serverMessage.content) !== content) return false;
-    if (messageItem.turnId || serverMessage.turnId) {
-      return Boolean(messageItem.turnId && serverMessage.turnId && messageItem.turnId === serverMessage.turnId);
-    }
-    return true;
-  });
-}
-
 function hasServerMessageForTurn(messageItem: ChatMessage, serverMessages: ChatMessage[]): boolean {
   if (!messageItem.turnId) return false;
   return serverMessages.some(
@@ -496,34 +483,28 @@ function hasServerMessageForTurn(messageItem: ChatMessage, serverMessages: ChatM
   );
 }
 
+function explicitMessageTurnId(messageItem: ChatMessage): string | undefined {
+  const camelTurnId = typeof messageItem.turnId === 'string' ? messageItem.turnId.trim() : '';
+  if (camelTurnId) return camelTurnId;
+  const snakeTurnId = typeof messageItem.turn_id === 'string' ? messageItem.turn_id.trim() : '';
+  return snakeTurnId || undefined;
+}
+
 function attachTurnIdsToServerMessages(
   serverMessages: ChatMessage[],
   realtimeMessages: ChatMessage[],
-  previousMessages: ChatMessage[] = [],
 ): ChatMessage[] {
   const realtimeTurnIdsByServerId = new Map(
     realtimeMessages
-      .filter((item) => item.turnId && item.id && item.id === item.serverMessageId)
-      .map((item) => [item.id, item.turnId as string]),
+      .filter((item) => item.turnId && item.serverMessageId)
+      .map((item) => [item.serverMessageId as string, item.turnId as string]),
   );
-  const previousTurnIds = new Map(
-    previousMessages
-      .filter((item) => item.turnId)
-      .map((item) => [item.id, item.turnId as string]),
-  );
-
-  let activeTurnId: string | undefined;
 
   return serverMessages.map((messageItem) => {
-    const previousTurnId = previousTurnIds.get(messageItem.id);
-    if (messageItem.role === 'user') {
-      activeTurnId = realtimeTurnIdsByServerId.get(messageItem.id) || previousTurnId || messageItem.turnId || messageItem.id;
-      return { ...messageItem, turnId: activeTurnId };
-    }
-    if (messageItem.role === 'assistant' && activeTurnId) {
-      return { ...messageItem, turnId: previousTurnId || messageItem.turnId || activeTurnId };
-    }
-    return previousTurnId ? { ...messageItem, turnId: previousTurnId } : messageItem;
+    const turnId = explicitMessageTurnId(messageItem) || realtimeTurnIdsByServerId.get(messageItem.id);
+    if (turnId) return { ...messageItem, turnId };
+    if (messageItem.role === 'user') return { ...messageItem, turnId: messageItem.id };
+    return messageItem;
   });
 }
 
@@ -536,8 +517,10 @@ function shouldKeepRealtimeMessage(
   if (messageItem.isStreaming) {
     return !messageItem.turnId || !activeTurnId || messageItem.turnId === activeTurnId;
   }
-  if (hasEquivalentServerMessage(messageItem, serverMessages)) return false;
   if (hasServerMessageForTurn(messageItem, serverMessages)) return false;
+  if (messageItem.serverMessageId && serverMessages.some((serverMessage) => serverMessage.id === messageItem.serverMessageId)) {
+    return false;
+  }
   if (messageItem.turnId && activeTurnId && messageItem.turnId === activeTurnId) return true;
   if (!latestServerTime) return true;
   return parseMessageTime(messageItem.created_at) > latestServerTime;
@@ -699,6 +682,64 @@ function reflectionTraceDetail(data: Record<string, unknown>): string | undefine
     typeof data.target_step_id === 'string' ? `步骤 ${data.target_step_id}` : '',
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+function routerDecisionTraceLine(data: Record<string, unknown>): TraceLine {
+  const intent = typeof data.user_intent === 'string' ? data.user_intent.trim() : '';
+  const decision = typeof data.decision === 'string' ? data.decision.trim() : '';
+  const skillId = typeof data.target_skill_id === 'string' ? data.target_skill_id.trim() : '';
+  const stepId = typeof data.target_step_id === 'string' ? data.target_step_id.trim() : '';
+  const reason = typeof data.reason === 'string' ? data.reason.trim() : '';
+  const detail = [reason, skillId ? `目标技能 ${skillId}` : '', stepId ? `目标节点 ${stepId}` : '']
+    .filter(Boolean)
+    .join(' · ');
+  return {
+    id: 'decision_router',
+    kind: 'decision',
+    text: intent ? `判断意图 ${intent}` : decision ? `判断意图 ${decision}` : '判断意图',
+    detail: detail || undefined,
+    state: 'completed',
+  };
+}
+
+function stepResultTraceLine(data: Record<string, unknown>): TraceLine {
+  const toolCall = isPlainRecord(data.tool_call) ? data.tool_call : undefined;
+  const knowledgeQuery = isPlainRecord(data.knowledge_query) ? data.knowledge_query : undefined;
+  const nextStepId = typeof data.next_step_id === 'string' ? data.next_step_id.trim() : '';
+  const reply = typeof data.reply === 'string' ? data.reply.trim() : '';
+  const toolName = typeof toolCall?.name === 'string' ? toolCall.name.trim() : '';
+  const knowledgeQueryText = typeof knowledgeQuery?.query === 'string' ? knowledgeQuery.query.trim() : '';
+  const detail = [
+    nextStepId ? `下一节点 ${nextStepId}` : '',
+    knowledgeQueryText ? `查询：${knowledgeQueryText}` : '',
+    !toolName && !knowledgeQueryText && reply ? reply.slice(0, 80) : '',
+  ].filter(Boolean).join(' · ');
+
+  if (toolName) {
+    return {
+      id: `decision_step_tool_${toolName}`,
+      kind: 'decision',
+      text: `决定调用工具 ${toolName}`,
+      detail: detail || undefined,
+      state: 'running',
+    };
+  }
+  if (knowledgeQueryText) {
+    return {
+      id: 'decision_step_knowledge',
+      kind: 'decision',
+      text: '决定查询知识库',
+      detail: detail || undefined,
+      state: 'running',
+    };
+  }
+  return {
+    id: 'decision_step_result',
+    kind: 'decision',
+    text: nextStepId ? '决定下一步' : '完成步骤判断',
+    detail: detail || undefined,
+    state: 'completed',
+  };
 }
 
 function formatTracePayload(value: unknown): string {
@@ -1253,19 +1294,6 @@ export default function ChatWindowPage() {
     updateChatStickiness();
   }, [updateChatStickiness]);
 
-  const keepRunningStatusInMessageArea = useCallback(() => {
-    const element = chatMessagesRef.current;
-    if (!element) return false;
-    const status = element.querySelector<HTMLElement>('.message-item.status-only-item, .message-item.running-trace-item');
-    if (!status) return false;
-    if (element.scrollTop > 16) return false;
-    if (element.scrollTop !== 0) {
-      isChatProgrammaticScrollRef.current = true;
-      element.scrollTop = 0;
-      finishProgrammaticChatScroll();
-    }
-    return true;
-  }, [finishProgrammaticChatScroll]);
   const notifyRequestError = useCallback((scope: string, error: unknown, fallback: string) => {
     if (isAuthError(error)) {
       clearAuthSession();
@@ -1632,8 +1660,18 @@ export default function ChatWindowPage() {
     void streamTick;
     return activeConversationId ? getStreamSlot(activeConversationId) : createStreamSlot();
   }, [activeConversationId, getStreamSlot, streamTick]);
+  const hasRunningDisplayedTrace = useMemo(() => {
+    void traceTick;
+    return displayedMessages.some((item) => {
+      if (item.role !== 'assistant' || !item.isStreaming) return false;
+      const trace = turnTraceRef.current.get(item.turnId || item.id);
+      return Boolean(trace?.lines.some((line) => line.state === 'running'));
+    });
+  }, [displayedMessages, traceTick]);
   const currentSessionRunning = Boolean(
-    currentStream.loading || (activeConversationId && runningTurn?.sessionId === activeConversationId),
+    currentStream.loading
+    || (activeConversationId && runningTurn?.sessionId === activeConversationId)
+    || hasRunningDisplayedTrace,
   );
   const readyComposerAttachments = useMemo(
     () => composerAttachments.filter((item) => item.uploadStatus === 'ready'),
@@ -1827,7 +1865,7 @@ export default function ChatWindowPage() {
       .get<ChatMessage[]>(`/api/chat/sessions/${id}/messages?tenant_id=${tenantId}`)
       .then((rows) => {
         const slot = getSlot(id);
-        slot.serverMessages = attachTurnIdsToServerMessages(rows, slot.realtimeMessages, slot.serverMessages);
+        slot.serverMessages = attachTurnIdsToServerMessages(rows, slot.realtimeMessages);
         const stream = getStreamSlot(id);
         if (stream.loading) {
           const latestUserTime = Math.max(
@@ -2072,15 +2110,13 @@ export default function ChatWindowPage() {
       scrollChatToBottom({ preserveShortContentTop: true, force: true });
       return;
     }
-    if (keepRunningStatusInMessageArea()) return;
     scrollChatToBottom({ preserveShortContentTop: true });
-  }, [activeConversationId, displayedMessages.length, keepRunningStatusInMessageArea, scrollChatToBottom, storeTick, traceTick]);
+  }, [activeConversationId, displayedMessages.length, scrollChatToBottom, storeTick, traceTick]);
 
   useEffect(() => {
     if (!currentStream.loading) return;
-    if (keepRunningStatusInMessageArea()) return;
     scrollChatToBottom({ preserveShortContentTop: true });
-  }, [currentStream.loading, currentStream.phase, keepRunningStatusInMessageArea, scrollChatToBottom, storeTick, streamTick, traceTick]);
+  }, [currentStream.loading, currentStream.phase, scrollChatToBottom, storeTick, streamTick, traceTick]);
 
   useEffect(() => {
     return () => {
@@ -2254,6 +2290,14 @@ export default function ChatWindowPage() {
       if (draft.should_create) {
         setScheduledDrafts((prev) => ({ ...prev, [eventSessionId]: draft }));
       }
+      return;
+    }
+    if (item.event === 'router_decision') {
+      upsertTraceLine(turnId, routerDecisionTraceLine(item.data));
+      return;
+    }
+    if (item.event === 'step_result') {
+      upsertTraceLine(turnId, stepResultTraceLine(item.data));
       return;
     }
     if (item.event === 'skill_state') {
@@ -2888,7 +2932,7 @@ export default function ChatWindowPage() {
       return;
     }
     const stream = getStreamSlot(currentConversationId);
-    if (stream.loading) return;
+    if (stream.loading || currentSessionRunning) return;
     const userText = input.trim();
     const outgoingAttachments = readyComposerAttachments.map(toRequestAttachment);
     const turnId = `turn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -3077,6 +3121,14 @@ export default function ChatWindowPage() {
           if (draft.should_create) {
             setScheduledDrafts((prev) => ({ ...prev, [eventSessionId]: draft }));
           }
+          return;
+        }
+        if (item.event === 'router_decision') {
+          upsertTraceLine(turnId, routerDecisionTraceLine(item.data));
+          return;
+        }
+        if (item.event === 'step_result') {
+          upsertTraceLine(turnId, stepResultTraceLine(item.data));
           return;
         }
         if (item.event === 'skill_state') {
@@ -3702,7 +3754,7 @@ export default function ChatWindowPage() {
                             <span>{visibleContent}</span>
                           </div>
                         )
-                      ) : item.role === 'assistant' && item.isStreaming && !summary ? (
+                      ) : !statusOnly && item.role === 'assistant' && item.isStreaming && !summary ? (
                         <span className="typing-caret" />
                       ) : null}
                       {!statusOnly && attachments.length > 0 && (

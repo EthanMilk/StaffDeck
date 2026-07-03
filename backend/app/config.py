@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     demo_model_base_url: str = "http://58.57.119.12:52010/v1"
     demo_model_name: str = "qwen3.6-27b"
     demo_model_api_key: str = ""
+    model_api_timeout_seconds: float = 600.0
     tool_timeout_seconds: float = 8.0
     tool_base_url: str = "http://localhost:5173"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"

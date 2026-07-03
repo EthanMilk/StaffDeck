@@ -244,6 +244,7 @@ class PreparedTurn:
     conversation_context: dict[str, object]
     general_response: ChatTurnResponse | None = None
     reply_override: str | None = None
+    user_message_id: str | None = None
 
 
 @dataclass
@@ -353,8 +354,10 @@ class AgentLoop:
         tool_result: ToolResult | None = None
         chat_session: ChatSession | None = None
         memory_model_config: ModelConfig | None = None
+        prepared_user_message_id: str | None = None
         try:
             prepared = self._prepare_turn(request)
+            prepared_user_message_id = prepared.user_message_id
             if prepared.general_response:
                 return prepared.general_response
             chat_session = prepared.chat_session
@@ -420,7 +423,14 @@ class AgentLoop:
         if not chat_session:
             chat_session = self._get_or_create_session(request)
         memory_recent_messages = self._recent_messages(chat_session) if memory_model_config else []
-        self._finalize_turn(chat_session, request.tenant_id, reply, step_result, request.message)
+        self._finalize_turn(
+            chat_session,
+            request.tenant_id,
+            reply,
+            step_result,
+            request.message,
+            user_message_id=prepared_user_message_id,
+        )
         self.db.commit()
         self.db.refresh(chat_session)
         if memory_model_config:
@@ -450,6 +460,7 @@ class AgentLoop:
         router_decision: RouterDecision,
         memory_context: list[dict[str, object]] | None = None,
         conversation_context: dict[str, object] | None = None,
+        user_message_id: str | None = None,
     ) -> ChatTurnResponse | None:
         if not self._scene_router_deferred_to_general(router_decision):
             return None
@@ -497,7 +508,14 @@ class AgentLoop:
             memory_context or [],
             conversation_context or self._conversation_context(chat_session),
         )
-        self._finalize_turn(chat_session, request.tenant_id, reply, step_result, request.message)
+        self._finalize_turn(
+            chat_session,
+            request.tenant_id,
+            reply,
+            step_result,
+            request.message,
+            user_message_id=user_message_id,
+        )
         self.db.commit()
         self.db.refresh(chat_session)
         self._enqueue_memory_capture(
@@ -580,6 +598,7 @@ class AgentLoop:
         memory_context: list[dict[str, object]] | None = None,
         conversation_context: dict[str, object] | None = None,
         persona_prompt: str | None = None,
+        user_message_id: str | None = None,
     ) -> Iterator[dict[str, object]]:
         skill, selection = selected_general_skill
         self.events.record(
@@ -728,7 +747,14 @@ class AgentLoop:
                 yield self._stream_event("stream_delta", chat_session, {"content": chunk})
                 self._pace_stream()
         yield self._stream_event("stream_end", chat_session, {})
-        self._finalize_turn(chat_session, request.tenant_id, reply, step_result, request.message)
+        self._finalize_turn(
+            chat_session,
+            request.tenant_id,
+            reply,
+            step_result,
+            request.message,
+            user_message_id=user_message_id,
+        )
         self.db.commit()
         self.db.refresh(chat_session)
         self._enqueue_memory_capture(
@@ -818,6 +844,7 @@ class AgentLoop:
                 )
                 if not router_decision:
                     continue
+                yield self._stream_event("router_decision", chat_session, router_decision.model_dump(mode="json"))
 
                 before_skill = chat_session.active_skill_id
                 before_step = chat_session.active_step_id
@@ -860,6 +887,7 @@ class AgentLoop:
                     conversation_context,
                     repair_stream_events,
                 )
+                yield self._stream_event("step_result", chat_session, step_result.model_dump(mode="json"))
                 self.db.commit()
                 self.db.refresh(chat_session)
                 for event_name, payload in repair_stream_events:
@@ -1020,6 +1048,7 @@ class AgentLoop:
         reply = ""
         memory_model_config: ModelConfig | None = None
         turn_finalized = False
+        user_message_id: str | None = None
 
         def finalize_turn_once(
             target_session: ChatSession,
@@ -1036,6 +1065,7 @@ class AgentLoop:
                 final_reply,
                 final_step_result,
                 final_source_message,
+                user_message_id=user_message_id,
             )
             turn_finalized = True
 
@@ -1054,6 +1084,7 @@ class AgentLoop:
                 request.message,
                 metadata=self._user_message_metadata(request),
             )
+            user_message_id = user_message.id
             self.events.record(
                 request.tenant_id,
                 chat_session.id,
@@ -1090,12 +1121,14 @@ class AgentLoop:
                         [],
                         self._conversation_context(chat_session),
                         persona_prompt,
+                        user_message.id,
                     )
                     return
                 router_decision = RouterDecision(
                     decision="answer_only",
                     reason="No published scene skills are available; answer as chat.",
                 )
+                yield self._stream_event("router_decision", chat_session, router_decision.model_dump(mode="json"))
                 knowledge_stream_events: list[tuple[str, dict[str, object]]] = []
                 step_result = self._auto_knowledge_step_result(
                     request,
@@ -1179,6 +1212,7 @@ class AgentLoop:
                 "router_decision_created",
                 router_decision.model_dump(),
             )
+            yield self._stream_event("router_decision", chat_session, router_decision.model_dump(mode="json"))
             if self._scene_router_deferred_to_general(router_decision):
                 selected_general_skill = self._select_general_skill(request.message, model_config, chat_session.agent_id)
                 if selected_general_skill:
@@ -1191,6 +1225,7 @@ class AgentLoop:
                         memory_context,
                         conversation_context,
                         persona_prompt,
+                        user_message.id,
                     )
                     return
 
@@ -1230,6 +1265,7 @@ class AgentLoop:
                     tool_result = continuation.tool_result
                 else:
                     router_decision = initial_schedule_decision
+                    yield self._stream_event("router_decision", chat_session, router_decision.model_dump(mode="json"))
                     yield self._stream_status(chat_session, "responding", "正在生成回复")
                     chunks: list[str] = []
                     for chunk in self._generate_reply_stream_segment(
@@ -1358,6 +1394,7 @@ class AgentLoop:
                 conversation_context,
                 repair_stream_events,
             )
+            yield self._stream_event("step_result", chat_session, step_result.model_dump(mode="json"))
             self.db.commit()
             self.db.refresh(chat_session)
             for event_name, payload in repair_stream_events:
@@ -1664,6 +1701,7 @@ class AgentLoop:
                 router_decision,
                 [],
                 self._conversation_context(chat_session),
+                user_message.id,
             )
             if general_response:
                 return PreparedTurn(
@@ -1676,6 +1714,7 @@ class AgentLoop:
                     memory_context=[],
                     conversation_context=self._conversation_context(chat_session),
                     general_response=general_response,
+                    user_message_id=user_message.id,
                 )
             step_result = self._auto_knowledge_step_result(
                 request,
@@ -1693,6 +1732,7 @@ class AgentLoop:
                 tool_result=None,
                 memory_context=[],
                 conversation_context=self._conversation_context(chat_session),
+                user_message_id=user_message.id,
             )
         self._finish_stale_completed_skill(request.tenant_id, chat_session, skills)
         memory_context = [
@@ -1744,6 +1784,7 @@ class AgentLoop:
             router_decision,
             memory_context,
             conversation_context,
+            user_message.id,
         )
         if general_response:
             return PreparedTurn(
@@ -1756,6 +1797,7 @@ class AgentLoop:
                 memory_context=memory_context,
                 conversation_context=conversation_context,
                 general_response=general_response,
+                user_message_id=user_message.id,
             )
 
         initial_schedule_decision = self._initial_scheduler_queue_decision(
@@ -1797,6 +1839,7 @@ class AgentLoop:
                     memory_context=memory_context,
                     conversation_context=conversation_context,
                     reply_override=continuation.reply,
+                    user_message_id=user_message.id,
                 )
             return PreparedTurn(
                 chat_session=chat_session,
@@ -1807,6 +1850,7 @@ class AgentLoop:
                 tool_result=None,
                 memory_context=memory_context,
                 conversation_context=conversation_context,
+                user_message_id=user_message.id,
             )
 
         before_skill = chat_session.active_skill_id
@@ -1836,6 +1880,7 @@ class AgentLoop:
                 tool_result=None,
                 memory_context=memory_context,
                 conversation_context=conversation_context,
+                user_message_id=user_message.id,
             )
         status(
             "stepping",
@@ -1939,6 +1984,7 @@ class AgentLoop:
             tool_result=tool_result,
             memory_context=memory_context,
             conversation_context=conversation_context,
+            user_message_id=user_message.id,
         )
 
     def _finalize_execution_after_reply(
@@ -5183,11 +5229,6 @@ class AgentLoop:
         source_message: str | None = None,
     ) -> dict[str, Any]:
         knowledge_results = list(step_result.knowledge_results or []) if step_result else []
-        if not knowledge_results and source_message:
-            for item in reversed(chat_session.knowledge_context_json or []):
-                if item.get("source_message") == source_message:
-                    knowledge_results = [item]
-                    break
         citations = self._dedupe_knowledge_citations(knowledge_citations_from_results(knowledge_results))
         if not citations:
             return {}
@@ -5485,6 +5526,7 @@ class AgentLoop:
         reply: str,
         step_result: StepAgentResult | None = None,
         source_message: str | None = None,
+        user_message_id: str | None = None,
     ) -> None:
         chat_session.updated_at = utc_now()
         metadata = self._assistant_message_metadata(step_result, chat_session, source_message)
@@ -5497,8 +5539,15 @@ class AgentLoop:
             if fallback_title:
                 chat_session.title = fallback_title
         chat_session.summary = f"最近回复：{reply[:120]}"
-        self._append_message(tenant_id, chat_session.id, "assistant", reply, metadata=metadata)
-        event_payload: dict[str, Any] = {"reply": reply}
+        assistant_message = self._append_message(tenant_id, chat_session.id, "assistant", reply, metadata=metadata)
+        event_payload: dict[str, Any] = {
+            "message_id": assistant_message.id,
+            "assistant_message_id": assistant_message.id,
+            "reply": reply,
+        }
+        if user_message_id:
+            event_payload["user_message_id"] = user_message_id
+            event_payload["turn_id"] = user_message_id
         if metadata.get("knowledge_citations"):
             event_payload["knowledge_citations"] = metadata["knowledge_citations"]
         self.events.record(

@@ -754,7 +754,7 @@ def test_message_feedback_attribution_uses_turn_active_skill() -> None:
                 tenant_id="tenant_demo",
                 session_id="session_1",
                 event_type="user_message_received",
-                payload_json={"message": "我要退款"},
+                payload_json={"message_id": "msg_user", "message": "我要退款"},
             )
         )
         db.add(
@@ -770,7 +770,7 @@ def test_message_feedback_attribution_uses_turn_active_skill() -> None:
                 tenant_id="tenant_demo",
                 session_id="session_1",
                 event_type="assistant_message_created",
-                payload_json={"reply": "请提供订单号。"},
+                payload_json={"message_id": "msg_assistant", "reply": "请提供订单号。"},
             )
         )
         db.commit()
@@ -798,7 +798,7 @@ def test_message_feedback_attribution_uses_router_skill_hint_for_legacy_step_eve
                 tenant_id="tenant_demo",
                 session_id="session_1",
                 event_type="user_message_received",
-                payload_json={"message": "继续下单"},
+                payload_json={"message_id": "msg_user", "message": "继续下单"},
             )
         )
         db.add(
@@ -826,7 +826,7 @@ def test_message_feedback_attribution_uses_router_skill_hint_for_legacy_step_eve
                 tenant_id="tenant_demo",
                 session_id="session_1",
                 event_type="assistant_message_created",
-                payload_json={"reply": "已为您下单。"},
+                payload_json={"message_id": "msg_assistant", "reply": "已为您下单。"},
             )
         )
         db.commit()

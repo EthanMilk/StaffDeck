@@ -28,6 +28,38 @@ class _FakeOpenAIClient:
         self.chat = _FakeChat()
 
 
+def test_llm_client_uses_600_second_timeout(monkeypatch):
+    captured = {}
+
+    def fake_decrypt_secret(_value):  # noqa: ANN001
+        return "api-key"
+
+    def fake_openai(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return _FakeOpenAIClient()
+
+    settings = type("Settings", (), {"model_api_timeout_seconds": 600.0})()
+    model_config = type(
+        "ModelConfig",
+        (),
+        {
+            "api_key_encrypted": "encrypted",
+            "base_url": "https://example.test/v1",
+            "model": "demo-model",
+            "temperature": 0.2,
+            "max_output_tokens": 256,
+        },
+    )()
+    monkeypatch.setattr("app.llm.client.decrypt_secret", fake_decrypt_secret)
+    monkeypatch.setattr("app.llm.client.OpenAI", fake_openai)
+    monkeypatch.setattr("app.llm.client.get_settings", lambda: settings)
+
+    client = LLMClient(model_config)
+
+    assert client.timeout_seconds == 600.0
+    assert captured["timeout"] == 600.0
+
+
 def _completion_with_content(content):  # noqa: ANN001
     return type(
         "Completion",

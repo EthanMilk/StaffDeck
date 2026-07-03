@@ -9,6 +9,7 @@ from typing import Any
 
 from openai import OpenAI
 
+from app.config import get_settings
 from app.db.models import ModelConfig
 from app.security.encryption import decrypt_secret
 
@@ -20,6 +21,7 @@ class LLMError(Exception):
 JSON_REPAIR_ATTEMPTS = 3
 EMPTY_RESPONSE_RETRIES = 2
 EMPTY_RESPONSE_MESSAGE = "Model returned an empty response"
+DEFAULT_MODEL_API_TIMEOUT_SECONDS = 600.0
 
 
 class LLMClient:
@@ -27,7 +29,12 @@ class LLMClient:
         api_key = decrypt_secret(model_config.api_key_encrypted)
         if not api_key:
             raise LLMError("Model API key is not configured")
-        self.client = OpenAI(api_key=api_key, base_url=model_config.base_url)
+        self.timeout_seconds = get_settings().model_api_timeout_seconds or DEFAULT_MODEL_API_TIMEOUT_SECONDS
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=model_config.base_url,
+            timeout=self.timeout_seconds,
+        )
         self.model = model_config.model
         self.temperature = model_config.temperature
         self.max_output_tokens = model_config.max_output_tokens

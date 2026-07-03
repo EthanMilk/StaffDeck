@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from app.core.agent_loop import GRAPH_PENDING_STEPS_SLOT, AgentLoop
 from app.core.skill_runtime import SkillRuntime
 from app.db.models import ChatSession, Message, Skill, Tool
@@ -111,6 +113,71 @@ def test_tool_call_start_event_is_committed_before_external_execute() -> None:
         "tool_call_started",
         "tool_call_finished",
     ]
+
+
+def test_stream_emits_router_decision_before_reply_delta() -> None:
+    db = FakeDb()
+    loop = object.__new__(AgentLoop)
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        user_id="user_demo",
+        agent_id="agent_demo",
+        slots_json={},
+        skill_stack_json=[],
+        pending_tasks_json=[],
+        knowledge_context_json=[],
+    )
+    user_message = Message(
+        id="msg_user",
+        tenant_id="tenant_demo",
+        session_id=session.id,
+        role="user",
+        content="你好",
+    )
+
+    loop.db = db
+    loop.events = FakeEvents()
+    loop.memory = SimpleNamespace(recall=lambda *_args, **_kwargs: [])
+    loop.runtime = SimpleNamespace(apply_decision=lambda *_args, **_kwargs: None)
+    loop.router = SimpleNamespace(
+        decide=lambda *_args, **_kwargs: RouterDecision(
+            decision="answer_only",
+            user_intent="问候",
+            reason="普通问候，不需要进入业务流程。",
+        )
+    )
+    loop._get_or_create_session = lambda _request: session
+    loop._append_message = lambda *_args, **_kwargs: user_message
+    loop._get_request_model = lambda *_args, **_kwargs: _model_config()
+    loop._list_published_skills = lambda *_args, **_kwargs: [_purchase_skill()]
+    loop._list_enabled_tools = lambda *_args, **_kwargs: []
+    loop._tools_with_general_skills = lambda *_args, **_kwargs: []
+    loop._get_persona_prompt = lambda *_args, **_kwargs: None
+    loop._drop_unavailable_skill_state = lambda *_args, **_kwargs: False
+    loop._finish_stale_completed_skill = lambda *_args, **_kwargs: None
+    loop._scene_router_deferred_to_general = lambda *_args, **_kwargs: False
+    loop._hydrate_router_decision_from_context = lambda *_args, **_kwargs: {}
+    loop._initial_scheduler_queue_decision = lambda *_args, **_kwargs: None
+    loop._conversation_context = lambda *_args, **_kwargs: {}
+    loop._get_active_skill = lambda *_args, **_kwargs: None
+    loop._should_record_runtime_event_after_prune = lambda *_args, **_kwargs: False
+    loop._should_run_step_agent = lambda *_args, **_kwargs: False
+    loop._auto_knowledge_step_result = lambda *_args, **_kwargs: StepAgentResult()
+    loop._generate_reply_stream_segment = lambda *_args, **_kwargs: iter(["收到"])
+    loop._finalize_turn = lambda *_args, **_kwargs: None
+    loop._recent_messages = lambda *_args, **_kwargs: []
+    loop._enqueue_memory_capture = lambda *_args, **_kwargs: None
+
+    events = list(loop.handle_turn_stream(_request("你好")))
+    names = [event["event"] for event in events]
+    router_index = names.index("router_decision")
+    reply_index = names.index("stream_delta")
+
+    assert router_index < reply_index
+    router_payload = events[router_index]["data"]
+    assert router_payload["user_intent"] == "问候"
+    assert router_payload["reason"] == "普通问候，不需要进入业务流程。"
 
 
 def test_compound_turn_seeds_primary_and_created_tasks_for_scheduler() -> None:
@@ -371,12 +438,11 @@ def test_finalize_turn_keeps_only_inline_knowledge_citations() -> None:
     loop = object.__new__(AgentLoop)
     loop.db = FakeDb()
     loop.events = FakeEvents()
-    session = ChatSession(
-        id="session_test",
-        tenant_id="tenant_demo",
-        knowledge_context_json=[
+    session = ChatSession(id="session_test", tenant_id="tenant_demo")
+    step_result = StepAgentResult(
+        knowledge_results=[
             {
-                "source_message": "前端规范有哪些？",
+                "query": {"query": "前端规范有哪些？"},
                 "evidence_pack": [
                     {
                         "source_path": "frontend.md / 目录规范 / evidence 1",
@@ -392,7 +458,13 @@ def test_finalize_turn_keeps_only_inline_knowledge_citations() -> None:
     )
     reply = "前端规范包括目录组织和命名规范。[2]\n\n参考资料：[1][2]"
 
-    loop._finalize_turn(session, "tenant_demo", reply, source_message="前端规范有哪些？")
+    loop._finalize_turn(
+        session,
+        "tenant_demo",
+        reply,
+        step_result=step_result,
+        source_message="前端规范有哪些？",
+    )
 
     message = loop.db.added[-1]
     assert isinstance(message, Message)
