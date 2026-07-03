@@ -2423,7 +2423,13 @@ export default function ChatWindowPage() {
       const piece = typeof item.data.content === 'string' ? item.data.content : '';
       if (!piece) return;
       const eventStream = getStreamSlot(eventSessionId);
+      const wasEmpty = !eventStream.accumulated;
       eventStream.accumulated += piece;
+      if (wasEmpty) {
+        updateStreaming(eventSessionId, eventStream.accumulated, turnId);
+        notifyStream();
+        return;
+      }
       if (!eventStream.timer) {
         eventStream.timer = window.setTimeout(() => {
           eventStream.timer = null;
@@ -3156,7 +3162,13 @@ export default function ChatWindowPage() {
         if (item.event === 'stream_delta' || item.event === 'token') {
           const piece = typeof item.data.content === 'string' ? item.data.content : '';
           if (!piece) return;
+          const wasEmpty = !eventStream.accumulated;
           eventStream.accumulated += piece;
+          if (wasEmpty) {
+            updateStreaming(eventSessionId, eventStream.accumulated, turnId);
+            notifyStream();
+            return;
+          }
           if (!eventStream.timer) {
             eventStream.timer = window.setTimeout(() => {
               eventStream.timer = null;

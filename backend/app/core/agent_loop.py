@@ -1047,7 +1047,7 @@ class AgentLoop:
                 {"newSessionId": chat_session.id, "sessionId": chat_session.id},
             )
             yield self._stream_status(chat_session, "received", "已收到消息")
-            self._append_message(
+            user_message = self._append_message(
                 request.tenant_id,
                 chat_session.id,
                 "user",
@@ -1058,7 +1058,12 @@ class AgentLoop:
                 request.tenant_id,
                 chat_session.id,
                 "user_message_received",
-                {"message": request.message, "channel": request.channel, "user_id": request.user_id},
+                {
+                    "message_id": user_message.id,
+                    "message": request.message,
+                    "channel": request.channel,
+                    "user_id": request.user_id,
+                },
             )
 
             model_config = self._get_request_model(request, chat_session.agent_id)
@@ -1618,7 +1623,7 @@ class AgentLoop:
 
         chat_session = self._get_or_create_session(request)
         status("received", {"session_id": chat_session.id})
-        self._append_message(
+        user_message = self._append_message(
             request.tenant_id,
             chat_session.id,
             "user",
@@ -1629,7 +1634,12 @@ class AgentLoop:
             request.tenant_id,
             chat_session.id,
             "user_message_received",
-            {"message": request.message, "channel": request.channel, "user_id": request.user_id},
+            {
+                "message_id": user_message.id,
+                "message": request.message,
+                "channel": request.channel,
+                "user_id": request.user_id,
+            },
         )
 
         model_config = self._get_request_model(request, chat_session.agent_id)
@@ -5225,16 +5235,16 @@ class AgentLoop:
         role: str,
         content: str,
         metadata: dict[str, Any] | None = None,
-    ) -> None:
-        self.db.add(
-            Message(
-                tenant_id=tenant_id,
-                session_id=session_id,
-                role=role,
-                content=content,
-                metadata_json=metadata or {},
-            )
+    ) -> Message:
+        message = Message(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            role=role,
+            content=content,
+            metadata_json=metadata or {},
         )
+        self.db.add(message)
+        return message
 
     def _user_message_metadata(self, request: ChatTurnRequest) -> dict[str, Any]:
         metadata: dict[str, Any] = {}

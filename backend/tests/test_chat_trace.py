@@ -105,3 +105,133 @@ def test_turn_trace_falls_back_to_knowledge_citations_without_events() -> None:
         "读取业务资料",
         "生成带引用回答",
     ]
+
+
+def test_turn_trace_uses_message_id_for_repeated_user_text() -> None:
+    started_at = datetime(2026, 7, 3, 10, 0, 0)
+    messages = [
+        Message(
+            id="msg_user_first",
+            tenant_id="tenant_demo",
+            session_id="session_repeat",
+            role="user",
+            content="你好",
+            created_at=started_at,
+        ),
+        Message(
+            id="msg_assistant_first",
+            tenant_id="tenant_demo",
+            session_id="session_repeat",
+            role="assistant",
+            content="你好！",
+            created_at=started_at + timedelta(seconds=2),
+        ),
+        Message(
+            id="msg_user_second",
+            tenant_id="tenant_demo",
+            session_id="session_repeat",
+            role="user",
+            content="你好",
+            created_at=started_at + timedelta(seconds=10),
+        ),
+        Message(
+            id="msg_assistant_second",
+            tenant_id="tenant_demo",
+            session_id="session_repeat",
+            role="assistant",
+            content="请问有什么可以帮您？",
+            created_at=started_at + timedelta(seconds=12),
+        ),
+    ]
+    events = [
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_repeat",
+            event_type="user_message_received",
+            payload_json={"message_id": "msg_user_first", "message": "你好"},
+            created_at=started_at,
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_repeat",
+            event_type="assistant_message_created",
+            payload_json={"reply": "你好！"},
+            created_at=started_at + timedelta(seconds=2),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_repeat",
+            event_type="user_message_received",
+            payload_json={"message_id": "msg_user_second", "message": "你好"},
+            created_at=started_at + timedelta(seconds=10),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_repeat",
+            event_type="router_decision_created",
+            payload_json={"decision": "answer_only", "user_intent": "问候", "reason": "第二轮问候"},
+            created_at=started_at + timedelta(seconds=11),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_repeat",
+            event_type="assistant_message_created",
+            payload_json={"reply": "请问有什么可以帮您？"},
+            created_at=started_at + timedelta(seconds=12),
+        ),
+    ]
+
+    traces = _build_turn_traces(messages, events, {})
+
+    assert [trace["turn_id"] for trace in traces] == ["msg_user_first", "msg_user_second"]
+    assert traces[1]["user_message_id"] == "msg_user_second"
+    assert any(line["text"] == "判断意图 问候" and line["detail"] == "第二轮问候" for line in traces[1]["lines"])
+
+
+def test_turn_trace_without_message_id_uses_sequence_not_text_search() -> None:
+    started_at = datetime(2026, 7, 3, 11, 0, 0)
+    messages = [
+        Message(
+            id="msg_user_first",
+            tenant_id="tenant_demo",
+            session_id="session_sequence",
+            role="user",
+            content="第一句",
+            created_at=started_at,
+        ),
+        Message(
+            id="msg_user_second",
+            tenant_id="tenant_demo",
+            session_id="session_sequence",
+            role="user",
+            content="第二句",
+            created_at=started_at + timedelta(seconds=10),
+        ),
+    ]
+    events = [
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_sequence",
+            event_type="user_message_received",
+            payload_json={"message": "第二句"},
+            created_at=started_at,
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_sequence",
+            event_type="assistant_message_created",
+            payload_json={"reply": "收到"},
+            created_at=started_at + timedelta(seconds=1),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_sequence",
+            event_type="user_message_received",
+            payload_json={"message": "第二句"},
+            created_at=started_at + timedelta(seconds=10),
+        ),
+    ]
+
+    traces = _build_turn_traces(messages, events, {})
+
+    assert [trace["turn_id"] for trace in traces] == ["msg_user_first", "msg_user_second"]

@@ -76,9 +76,24 @@ class ResponseGenerator:
         )
         try:
             stream = LLMClient(model_config).generate_text_stream(self._system_prompt(persona_prompt), payload)
-            chunks = [chunk for chunk in stream]
+            reply_parts: list[str] = []
+            has_streamed = False
+            for chunk in stream:
+                if not chunk:
+                    continue
+                reply_parts.append(chunk)
+                if not has_streamed:
+                    preview = "".join(reply_parts).strip()
+                    if not preview:
+                        continue
+                    if not self._is_user_safe(preview):
+                        raise ValueError("Unsafe model stream content")
+                    has_streamed = True
+                yield chunk
+            if has_streamed:
+                return
             reply = self._visible_reply_or_fallback(
-                "".join(chunks).strip() or step_result.reply or self._minimal_fallback(router_decision),
+                "".join(reply_parts).strip() or step_result.reply or self._minimal_fallback(router_decision),
                 session,
                 step_result,
                 tool_result,

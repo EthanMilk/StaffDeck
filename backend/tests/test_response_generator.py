@@ -308,6 +308,37 @@ def test_stream_pending_reply_without_tool_result_is_model_driven(monkeypatch):
     assert reply == "好的，正在为您创建订单，请稍候..."
 
 
+def test_stream_reply_yields_provider_chunks_without_collecting_first(monkeypatch):
+    emitted: list[str] = []
+
+    def fake_init(self, model_config):  # noqa: ANN001
+        return None
+
+    def fake_generate_text_stream(self, system_prompt, payload):  # noqa: ANN001
+        emitted.append("provider_started")
+        yield "第一段"
+        emitted.append("after_first_chunk")
+        yield "第二段"
+
+    monkeypatch.setattr(LLMClient, "__init__", fake_init)
+    monkeypatch.setattr(LLMClient, "generate_text_stream", fake_generate_text_stream)
+
+    stream = ResponseGenerator().generate_stream(
+        message="继续",
+        session=ChatSession(id="session_test", tenant_id="tenant_demo"),
+        skill=None,
+        router_decision=RouterDecision(decision="answer_only"),
+        step_result=StepAgentResult(),
+        tool_result=None,
+        model_config=None,  # type: ignore[arg-type]
+    )
+
+    assert next(stream) == "第一段"
+    assert emitted == ["provider_started"]
+    assert next(stream) == "第二段"
+    assert emitted == ["provider_started", "after_first_chunk"]
+
+
 def test_completed_step_reply_is_model_driven(monkeypatch):
     def fake_init(self, model_config):  # noqa: ANN001
         return None

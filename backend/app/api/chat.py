@@ -374,22 +374,26 @@ def _maybe_handle_scheduled_task_request(
     state_time = now + timedelta(microseconds=3)
     chat_session.updated_at = assistant_time
     chat_session.summary = f"最近回复：{reply[:120]}"
-    db.add(
-        Message(
-            tenant_id=request.tenant_id,
-            session_id=chat_session.id,
-            role="user",
-            content=request.message,
-            metadata_json=_user_message_metadata(request),
-            created_at=now,
-        )
+    user_message = Message(
+        tenant_id=request.tenant_id,
+        session_id=chat_session.id,
+        role="user",
+        content=request.message,
+        metadata_json=_user_message_metadata(request),
+        created_at=now,
     )
+    db.add(user_message)
     db.add(
         AgentEvent(
             tenant_id=request.tenant_id,
             session_id=chat_session.id,
             event_type="user_message_received",
-            payload_json={"message": request.message, "channel": request.channel, "user_id": request.user_id},
+            payload_json={
+                "message_id": user_message.id,
+                "message": request.message,
+                "channel": request.channel,
+                "user_id": request.user_id,
+            },
             created_at=now,
         )
     )
@@ -1378,7 +1382,7 @@ def _build_turn_traces(
                 traces.append(current)
             skill_hint = None
             text = str((event.payload_json or {}).get("message") or "")
-            user_message = _matching_user_message(user_messages, user_index, event.payload_json)
+            user_message = _matching_user_message(user_messages, user_index, event.payload_json or {})
             if user_message:
                 user_index = user_messages.index(user_message) + 1
             current = {
@@ -1575,10 +1579,11 @@ def _matching_user_message(
     start_index: int,
     payload: dict,
 ) -> Message | None:
-    text = str(payload.get("message") or "")
-    for index in range(start_index, len(user_messages)):
-        if user_messages[index].content == text:
-            return user_messages[index]
+    message_id = str(payload.get("message_id") or payload.get("user_message_id") or "").strip()
+    if message_id:
+        for message in user_messages:
+            if message.id == message_id:
+                return message
     if start_index < len(user_messages):
         return user_messages[start_index]
     return None
