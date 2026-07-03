@@ -24,9 +24,9 @@ import EmployeeAvatar from '../components/EmployeeAvatar';
 import EmployeeAvatarEditor from '../components/EmployeeAvatarEditor';
 import EmployeeProfileEditor from '../components/EmployeeProfileEditor';
 import StaffdeckIcon from '../components/StaffdeckIcon';
-import capabilityLogs from '../assets/staffdeck/sd1-card-logs.png';
-import capabilityTasks from '../assets/staffdeck/sd1-card-scheduled.png';
-import capabilityTools from '../assets/staffdeck/sd1-card-tools.png';
+import capabilityLogs from '../assets/staffdeck/capabilityLogs.png';
+import capabilityTasks from '../assets/staffdeck/capabilityTasks.png';
+import capabilityTools from '../assets/staffdeck/capabilityTools.png';
 import {
   employeeDisplayName,
   employeeProfile,
