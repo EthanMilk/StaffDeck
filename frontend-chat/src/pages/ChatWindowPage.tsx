@@ -557,6 +557,7 @@ function upsertStreamingTracePlaceholder(slot: SessionSlot, sessionId: string, t
 function upsertTraceStatusPlaceholder(slot: SessionSlot, sessionId: string, turnId: string): boolean {
   if (!turnId) return false;
   const traceId = `__trace_${sessionId}_${turnId}`;
+  const streamId = `__streaming_${sessionId}`;
   const traceMessage: ChatMessage = {
     id: traceId,
     turnId,
@@ -573,8 +574,28 @@ function upsertTraceStatusPlaceholder(slot: SessionSlot, sessionId: string, turn
     slot.realtimeMessages[index] = { ...current, ...traceMessage, created_at: current.created_at || traceMessage.created_at };
     return true;
   }
+  const streamingIndex = slot.realtimeMessages.findIndex((item) => item.id === streamId && item.turnId === turnId);
+  if (streamingIndex >= 0) {
+    const current = slot.realtimeMessages[streamingIndex];
+    slot.realtimeMessages = slot.realtimeMessages.filter((item, itemIndex) => (
+      itemIndex === streamingIndex
+      || !(
+        item.turnId === turnId
+        && item.role === 'assistant'
+        && (item.id === traceId || item.id === streamId)
+      )
+    ));
+    const nextIndex = slot.realtimeMessages.findIndex((item) => item === current);
+    slot.realtimeMessages[nextIndex] = {
+      ...current,
+      id: traceId,
+      isStreaming: false,
+      created_at: current.created_at || traceMessage.created_at,
+    };
+    return true;
+  }
   slot.realtimeMessages = [
-    ...slot.realtimeMessages.filter((item) => item.id !== `__streaming_${sessionId}` || item.turnId !== turnId),
+    ...slot.realtimeMessages.filter((item) => item.id !== streamId || item.turnId !== turnId),
     traceMessage,
   ];
   return true;
@@ -597,6 +618,36 @@ function explicitStreamTurnId(data: Record<string, unknown>, fallbackTurnId: str
   const userMessageId = typeof data.user_message_id === 'string' ? data.user_message_id.trim() : '';
   if (userMessageId) return userMessageId;
   return fallbackTurnId;
+}
+
+function eventTraceTurnId(event: ChatSessionEventRead): string {
+  const data = isPlainRecord(event.data) ? event.data : {};
+  const explicit = explicitStreamTurnId(data, '');
+  if (explicit) return explicit;
+  if (event.event === 'user_message_received') {
+    return typeof data.message_id === 'string' ? data.message_id.trim() : '';
+  }
+  return '';
+}
+
+function normalizeSessionEventForStream(event: ChatSessionEventRead): ChatStreamEvent {
+  const data = isPlainRecord(event.data) ? event.data : {};
+  if (event.event === 'stream_status') {
+    return { event: 'status', data };
+  }
+  if (event.event === 'router_decision_created') {
+    return { event: 'router_decision', data };
+  }
+  if (event.event === 'assistant_message_created') {
+    const content = typeof data.reply === 'string' ? data.reply : '';
+    return { event: 'stream_replace', data: { ...data, content } };
+  }
+  return { event: event.event, data };
+}
+
+function isTerminalSessionEvent(event: ChatSessionEventRead, isTerminalStreamEvent: (event: ChatSessionEventRead) => boolean): boolean {
+  if (event.event === 'assistant_message_created') return true;
+  return isTerminalStreamEvent(event);
 }
 
 function attachTurnIdsToServerMessages(
@@ -664,8 +715,8 @@ function computeMergedMessages(slot: SessionSlot, activeTurnId?: string | null):
     return shouldKeepRealtimeMessage(item, slot.serverMessages, latestServerTime, activeTurnId);
   });
   const combined = [
-    ...slot.serverMessages.map((messageItem, index) => ({ messageItem, index })),
-    ...extras.map((messageItem, index) => ({ messageItem, index: slot.serverMessages.length + index })),
+    ...slot.serverMessages.map((messageItem, index) => ({ messageItem, index, source: 'server' as const })),
+    ...extras.map((messageItem, index) => ({ messageItem, index: slot.serverMessages.length + index, source: 'realtime' as const })),
   ];
   const turnStarts = new Map<string, number>();
   combined.forEach(({ messageItem }) => {
@@ -690,7 +741,7 @@ function computeMergedMessages(slot: SessionSlot, activeTurnId?: string | null):
     system: 3,
   };
 
-  return combined
+  const sorted = combined
     .sort((left, right) => {
       const leftTurnId = effectiveMessageTurnId(left.messageItem);
       const rightTurnId = effectiveMessageTurnId(right.messageItem);
@@ -706,6 +757,34 @@ function computeMergedMessages(slot: SessionSlot, activeTurnId?: string | null):
         parseMessageTime(left.messageItem.created_at) - parseMessageTime(right.messageItem.created_at) ||
         left.index - right.index
       );
+    });
+
+  const selectedAssistantByTurn = new Map<string, { messageItem: ChatMessage; index: number; source: 'server' | 'realtime' }>();
+  const assistantRank = (entry: { messageItem: ChatMessage; source: 'server' | 'realtime' }) => {
+    const content = normalizeMessageText(entry.messageItem.content);
+    let rank = 0;
+    if (entry.source === 'server') rank += 100;
+    if (content) rank += 60;
+    if (entry.messageItem.isStreaming && (!activeTurnId || entry.messageItem.turnId === activeTurnId)) rank += 40;
+    if (!entry.messageItem.isStreaming) rank += 10;
+    return rank;
+  };
+  sorted.forEach((entry) => {
+    if (entry.messageItem.role !== 'assistant') return;
+    const turnId = effectiveMessageTurnId(entry.messageItem);
+    if (!turnId) return;
+    const previous = selectedAssistantByTurn.get(turnId);
+    if (!previous || assistantRank(entry) >= assistantRank(previous)) {
+      selectedAssistantByTurn.set(turnId, entry);
+    }
+  });
+
+  return sorted
+    .filter((entry) => {
+      if (entry.messageItem.role !== 'assistant') return true;
+      const turnId = effectiveMessageTurnId(entry.messageItem);
+      if (!turnId) return true;
+      return selectedAssistantByTurn.get(turnId)?.messageItem === entry.messageItem;
     })
     .map((item) => item.messageItem);
 }
@@ -719,10 +798,69 @@ function publicStreamPhase(data: Record<string, unknown>): string {
   return '正在思考';
 }
 
+type RecoverableTraceProgress = {
+  id?: string;
+  kind?: string;
+  text?: string;
+  detail?: string | null;
+  code?: string | null;
+  output?: string | null;
+  state?: string;
+};
+
+function isBareInitialRoutingLine(line: RecoverableTraceProgress): boolean {
+  const id = String(line.id || '');
+  const text = String(line.text || '').trim();
+  return (
+    (id === 'decision_router' || /router|routing/i.test(id))
+    && /^(判断意图|正在判断用户意图|意图识别|识别意图)$/.test(text)
+    && !line.detail
+    && !line.code
+    && !line.output
+    && (!line.state || line.state === 'running')
+  );
+}
+
+function hasRecoverableTraceProgress(lines: RecoverableTraceProgress[]): boolean {
+  return lines.some((line) => {
+    if (!line) return false;
+    if (isBareInitialRoutingLine(line)) return false;
+    if (line.detail || line.code || line.output) return true;
+    if (line.state === 'completed' || line.state === 'failed') return true;
+    if (line.kind && line.kind !== 'decision') return true;
+    const text = String(line.text || '').trim();
+    if (!text) return false;
+    return !/^(判断意图|正在判断用户意图|意图识别|识别意图|执行记录|正在思考|已收到消息)$/.test(text);
+  });
+}
+
+function hasRecoverableEventProgress(events: ChatSessionEventRead[]): boolean {
+  return events.some((event) => {
+    const data = isPlainRecord(event.data) ? event.data : {};
+    if (event.event === 'user_message_received' || event.event === 'memory_recalled') return false;
+    if (event.event === 'stream_status') {
+      const phase = typeof data.phase === 'string' ? data.phase : '';
+      return phase !== 'received' && phase !== 'routing';
+    }
+    if (event.event === 'status') {
+      const phase = typeof data.phase === 'string' ? data.phase : '';
+      return phase !== 'received' && phase !== 'routing';
+    }
+    if (event.event === 'router_decision_created') {
+      const intent = typeof data.user_intent === 'string' ? data.user_intent.trim() : '';
+      const reason = typeof data.reason === 'string' ? data.reason.trim() : '';
+      const decision = typeof data.decision === 'string' ? data.decision.trim() : '';
+      return Boolean(intent || reason || decision);
+    }
+    return true;
+  });
+}
+
 function isRecoverableRunningTrace(row: TurnTraceRead): boolean {
   if (row.completed_at) return false;
-  const startedAt = Date.parse(row.started_at);
-  if (!Number.isFinite(startedAt)) return false;
+  if (!hasRecoverableTraceProgress(row.lines || [])) return false;
+  const startedAt = parseMessageTime(row.started_at);
+  if (startedAt <= 0) return false;
   return Date.now() - startedAt <= CHAT_TRACE_RECOVERY_WINDOW_MS;
 }
 
@@ -1694,7 +1832,6 @@ export default function ChatWindowPage() {
   const turnTraceRef = useRef(new Map<string, TurnTrace>());
   const locallyCancelledSessionIdsRef = useRef(new Set<string>());
   const scheduledEventIdsRef = useRef(new Set<string>());
-  const scheduledTurnIdsRef = useRef(new Map<string, string>());
   const knownSessionIdsRef = useRef(new Set<string>());
   const optimisticSessionIdsRef = useRef(new Set<string>());
   const sessionsInitializedRef = useRef(false);
@@ -1794,15 +1931,6 @@ export default function ChatWindowPage() {
       return next;
     });
   }, [userId]);
-
-  const scheduledTurnId = useCallback((sessionKey: string, runId?: string) => {
-    const key = `${sessionKey}:${runId || sessionKey}`;
-    const cached = scheduledTurnIdsRef.current.get(key);
-    if (cached) return cached;
-    const next = `scheduled_${(runId || sessionKey).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
-    scheduledTurnIdsRef.current.set(key, next);
-    return next;
-  }, []);
 
   const activeDraftAgentId = draftAgentId || '';
   const activeConversationId = sessionId || (activeDraftAgentId ? draftConversationKey(activeDraftAgentId) : '');
@@ -2413,7 +2541,7 @@ export default function ChatWindowPage() {
             )
           ));
           if (hasCompletedAssistant) {
-            clearStreamSlot(id, true);
+            clearStreamSlot(id, false);
           }
         }
         pruneRealtime(id);
@@ -2438,32 +2566,50 @@ export default function ChatWindowPage() {
         const locallyCancelled = locallyCancelledSessionIdsRef.current.has(id);
         let recoveredRunningTurnId = '';
         let storeChanged = false;
+        let streamChanged = false;
         rows.forEach((row) => {
-          turnTraceRef.current.set(row.turn_id, {
-            lines: row.lines.map((line) => ({
-              id: line.id,
-              kind: line.kind,
-              text: line.text,
-              detail: line.detail || undefined,
-              code: line.code || undefined,
-              language: line.language || undefined,
-              output: line.output || undefined,
-              outputLanguage: line.outputLanguage || undefined,
-              outputTitle: line.outputTitle || undefined,
-              state: line.state,
-              collapsible: Boolean(line.collapsible || line.code || line.output),
-            })),
-            startedAt: Date.parse(row.started_at) || Date.now(),
-            completedAt: row.completed_at ? Date.parse(row.completed_at) : undefined,
-          });
           const hasFinalAssistant = hasAssistantMessageForTurn(slot, row.turn_id);
-          if (!locallyCancelled && isRecoverableRunningTrace(row) && !hasFinalAssistant) {
+          const recoverableRunningTrace = !locallyCancelled && isRecoverableRunningTrace(row) && !hasFinalAssistant;
+          const staleOpenTrace = !row.completed_at && row.lines.length > 0 && !recoverableRunningTrace && !hasFinalAssistant;
+          const traceLines = row.lines.map((line) => ({
+            id: line.id,
+            kind: line.kind,
+            text: line.text,
+            detail: line.detail || undefined,
+            code: line.code || undefined,
+            language: line.language || undefined,
+            output: line.output || undefined,
+            outputLanguage: line.outputLanguage || undefined,
+            outputTitle: line.outputTitle || undefined,
+            state: staleOpenTrace && line.state === 'running' ? 'completed' as const : line.state,
+            collapsible: Boolean(line.collapsible || line.code || line.output),
+          }));
+          turnTraceRef.current.set(row.turn_id, {
+            lines: traceLines,
+            startedAt: parseMessageTime(row.started_at) || Date.now(),
+            completedAt: row.completed_at
+              ? parseMessageTime(row.completed_at)
+              : staleOpenTrace
+                ? parseMessageTime(row.started_at) || Date.now()
+                : undefined,
+          });
+          if (recoverableRunningTrace) {
             recoveredRunningTurnId = row.turn_id;
-          } else if (row.completed_at && row.lines.length > 0 && !hasFinalAssistant) {
+          } else if ((row.completed_at || staleOpenTrace) && row.lines.length > 0 && !hasFinalAssistant) {
             storeChanged = upsertTraceStatusPlaceholder(slot, id, row.turn_id) || storeChanged;
+            if (staleOpenTrace) {
+              setExpandedTraceIds((expanded) => (
+                expanded.includes(row.turn_id) ? expanded : [...expanded, row.turn_id]
+              ));
+              setCollapsedTraceIds((collapsed) => collapsed.filter((item) => item !== row.turn_id));
+            }
           }
         });
         if (recoveredRunningTurnId) {
+          streamChanged = streamChanged
+            || stream.turnId !== recoveredRunningTurnId
+            || !stream.loading
+            || !stream.phase;
           stream.turnId = recoveredRunningTurnId;
           stream.loading = true;
           stream.phase = stream.phase || '正在思考';
@@ -2473,6 +2619,7 @@ export default function ChatWindowPage() {
           ));
           setCollapsedTraceIds((collapsed) => collapsed.filter((item) => item !== recoveredRunningTurnId));
         } else if (stream.turnId && !stream.loading) {
+          streamChanged = true;
           stream.turnId = null;
           stream.phase = '';
         }
@@ -2485,6 +2632,8 @@ export default function ChatWindowPage() {
         });
         if (storeChanged) {
           notifyStore();
+        }
+        if (storeChanged || streamChanged) {
           notifyStream();
         }
         notifyTrace();
@@ -2791,7 +2940,7 @@ export default function ChatWindowPage() {
       });
       finishTrace(cancelledTurnId, true);
     }
-    clearStreamSlot(activeConversationId, true);
+    clearStreamSlot(activeConversationId, false);
     if (cancelledTurnId) {
       upsertTraceStatusPlaceholder(getSlot(activeConversationId), activeConversationId, cancelledTurnId);
       notifyStore();
@@ -3164,7 +3313,7 @@ export default function ChatWindowPage() {
     if (item.event === 'stream_cancelled') {
       const cancelledStreamTurnId = getStreamSlot(eventSessionId).turnId || traceTurnId;
       finishTrace(traceTurnId, true);
-      clearStreamSlot(eventSessionId, true);
+      clearStreamSlot(eventSessionId, false);
       upsertTraceStatusPlaceholder(getSlot(eventSessionId), eventSessionId, traceTurnId);
       notifyStore();
       setRunningTurn((current) => (
@@ -3260,32 +3409,18 @@ export default function ChatWindowPage() {
 
   const hydrateRunningSessionFromEvents = useCallback((id: string, events: ChatSessionEventRead[]) => {
     if (locallyCancelledSessionIdsRef.current.has(id)) return false;
-    const runnableEvents = events.filter((event) => Boolean(event.run_id));
-    if (!runnableEvents.length) return false;
+    const traceEvents = events.filter((event) => Boolean(eventTraceTurnId(event)));
+    if (!traceEvents.length) return false;
     const slot = getSlot(id);
     if (slot.serverMessages.length === 0) return false;
-    const latestUserTime = Math.max(
-      0,
-      ...slot.serverMessages
-        .filter((messageItem) => messageItem.role === 'user')
-        .map((messageItem) => parseMessageTime(messageItem.created_at)),
-    );
-    const latestAssistantTime = Math.max(
-      0,
-      ...slot.serverMessages
-        .filter((messageItem) => messageItem.role === 'assistant')
-        .map((messageItem) => parseMessageTime(messageItem.created_at)),
-    );
-    if (latestUserTime > 0 && latestAssistantTime > latestUserTime) {
-      clearStreamSlot(id, true);
-      return false;
-    }
     const stream = getStreamSlot(id);
     if (stream.loading) return false;
 
     const groups = new Map<string, ChatSessionEventRead[]>();
-    runnableEvents.forEach((event) => {
-      const key = `${id}:${event.run_id || id}`;
+    traceEvents.forEach((event) => {
+      const turnId = eventTraceTurnId(event);
+      if (!turnId) return;
+      const key = `${id}:${turnId}`;
       const bucket = groups.get(key) || [];
       bucket.push(event);
       groups.set(key, bucket);
@@ -3294,32 +3429,31 @@ export default function ChatWindowPage() {
     const runningGroup = [...groups.values()]
       .map((group) => [...group].sort((left, right) => eventTime(left) - eventTime(right)))
       .sort((left, right) => eventTime(right[right.length - 1]) - eventTime(left[left.length - 1]))
-      .find((group) => !group.some((event) => isTerminalEvent(event)));
+      .find((group) => !group.some((event) => isTerminalSessionEvent(event, isTerminalEvent)));
 
     if (!runningGroup?.length) return false;
 
-    const runId = runningGroup[0].run_id;
-    const turnId = scheduledTurnId(id, runId);
+    const turnId = eventTraceTurnId(runningGroup[0]);
+    if (!turnId) return false;
+    const runningUserMessage = slot.serverMessages.find((messageItem) => (
+      messageItem.role === 'user'
+      && (effectiveMessageTurnId(messageItem) === turnId || messageItem.id === turnId)
+    ));
+    if (!runningUserMessage) return false;
     const latestRunningEventTime = eventTime(runningGroup[runningGroup.length - 1]);
     if (
       latestRunningEventTime <= 0
       || Date.now() - latestRunningEventTime > RUNNING_EVENT_RECOVERY_WINDOW_MS
-      || latestRunningEventTime <= latestUserTime
     ) {
-      clearStreamSlot(id, true);
+      clearStreamSlot(id, false);
       return false;
     }
-    const hasAssistantAfterRunningGroup = slot.serverMessages.some((messageItem) => (
-      messageItem.role === 'assistant'
-      && latestRunningEventTime > 0
-      && parseMessageTime(messageItem.created_at) >= latestRunningEventTime
-    ));
-    if (hasAssistantAfterRunningGroup) {
-      clearStreamSlot(id, true);
+    if (!hasRecoverableEventProgress(runningGroup)) {
+      clearStreamSlot(id, false);
       return false;
     }
-    if (slot.serverMessages.some((messageItem) => messageItem.role === 'assistant' && messageItem.turnId === turnId)) {
-      clearStreamSlot(id, true);
+    if (hasAssistantMessageForTurn(slot, turnId)) {
+      clearStreamSlot(id, false);
       return false;
     }
 
@@ -3341,8 +3475,9 @@ export default function ChatWindowPage() {
 
     runningGroup.forEach((event) => {
       scheduledEventIdsRef.current.add(event.id);
-      if (event.event === 'stream_replace' || event.event === 'stream_delta' || event.event === 'token') return;
-      handleStreamEvent({ event: event.event, data: event.data || {} }, id, turnId);
+      const streamEvent = normalizeSessionEventForStream(event);
+      if (streamEvent.event === 'stream_replace' || streamEvent.event === 'stream_delta' || streamEvent.event === 'token') return;
+      handleStreamEvent(streamEvent, id, turnId);
     });
 
     notifyStream();
@@ -3356,7 +3491,6 @@ export default function ChatWindowPage() {
     handleStreamEvent,
     isTerminalEvent,
     notifyStream,
-    scheduledTurnId,
     updateStreaming,
   ]);
 
@@ -3365,9 +3499,9 @@ export default function ChatWindowPage() {
     return api
       .get<ChatSessionEventRead[]>(`/api/chat/sessions/${id}/events?tenant_id=${tenantId}`)
       .then((events) => {
-        const runnableEvents = events.filter((event) => Boolean(event.run_id));
-        if (!runnableEvents.length) return;
-        hydrateRunningSessionFromEvents(id, runnableEvents);
+        const traceEvents = events.filter((event) => Boolean(eventTraceTurnId(event)));
+        if (!traceEvents.length) return;
+        hydrateRunningSessionFromEvents(id, traceEvents);
         const slot = getSlot(id);
         if (slot.serverMessages.length === 0) return;
         const latestLoadedMessageTime = Math.max(
@@ -3376,7 +3510,7 @@ export default function ChatWindowPage() {
         );
         const now = Date.now();
         const stream = getStreamSlot(id);
-        const unseenEvents = runnableEvents.filter((event) => {
+        const unseenEvents = traceEvents.filter((event) => {
           if (scheduledEventIdsRef.current.has(event.id)) return false;
           const timestamp = eventTime(event);
           return (
@@ -3389,24 +3523,39 @@ export default function ChatWindowPage() {
         });
         if (!unseenEvents.length) return;
         const sessionRow = sessions.find((item) => item.id === id);
-        const hasTerminalEvent = unseenEvents.some((event) => isTerminalEvent(event));
+        const hasTerminalEvent = unseenEvents.some((event) => isTerminalSessionEvent(event, isTerminalEvent));
         if (!stream.loading && Boolean(sessionRow?.summary) && hasTerminalEvent) {
           unseenEvents.forEach((event) => scheduledEventIdsRef.current.add(event.id));
           return;
         }
+        const unseenEventsByTurn = new Map<string, ChatSessionEventRead[]>();
+        unseenEvents.forEach((event) => {
+          const turnId = eventTraceTurnId(event);
+          if (!turnId) return;
+          const bucket = unseenEventsByTurn.get(turnId) || [];
+          bucket.push(event);
+          unseenEventsByTurn.set(turnId, bucket);
+        });
         unseenEvents.forEach((event) => {
           scheduledEventIdsRef.current.add(event.id);
-          const turnId = scheduledTurnId(id, event.run_id);
+          const turnId = eventTraceTurnId(event);
+          if (!turnId) return;
           if (!stream.turnId) {
             stream.turnId = turnId;
           }
-          if (!stream.loading && !isTerminalEvent(event)) {
+          const streamEvent = normalizeSessionEventForStream(event);
+          if (!stream.loading && !isTerminalSessionEvent(event, isTerminalEvent)) {
+            const turnEvents = unseenEventsByTurn.get(turnId) || [event];
+            if (!hasRecoverableEventProgress(turnEvents)) {
+              handleStreamEvent(streamEvent, id, turnId);
+              return;
+            }
             stream.loading = true;
             stream.phase = '执行中';
             updateStreaming(id, stream.accumulated || '', turnId, true);
             notifyStream();
           }
-          handleStreamEvent({ event: event.event, data: event.data || {} }, id, turnId);
+          handleStreamEvent(streamEvent, id, turnId);
         });
       })
       .catch((error) => {
@@ -3422,7 +3571,6 @@ export default function ChatWindowPage() {
     isTerminalEvent,
     navigate,
     notifyStream,
-    scheduledTurnId,
     sessions,
     tenantId,
     updateStreaming,
@@ -4047,7 +4195,7 @@ export default function ChatWindowPage() {
         if (item.event === 'stream_cancelled') {
           markStreamTerminal();
           finishTrace(traceTurnId, true);
-          clearStreamSlot(eventSessionId, true);
+          clearStreamSlot(eventSessionId, false);
           upsertTraceStatusPlaceholder(getSlot(eventSessionId), eventSessionId, traceTurnId);
           notifyStore();
           setRunningTurn((current) => (
@@ -4340,7 +4488,7 @@ export default function ChatWindowPage() {
             </div>
           )}
           <div className="message-stack">
-            {displayedMessages.map((item) => {
+            {displayedMessages.map((item, itemIndex) => {
               const turnId = item.turnId || item.id;
               const fallbackTraceId = item.role === 'assistant' && item.isStreaming
                 ? (currentStream.turnId || runningTurn?.turnId || '')
@@ -4364,7 +4512,26 @@ export default function ChatWindowPage() {
               const summaryForRender = summary && traceActive && !trace?.completedAt
                 ? { ...summary, state: 'running' as const }
                 : summary;
-              const defaultExpanded = Boolean(traceActive || summaryForRender?.state === 'running');
+              const traceOnlyMessage = Boolean(
+                item.role === 'assistant'
+                && !normalizeMessageText(item.content)
+                && details.length > 0
+              );
+              const latestAssistantTrace = Boolean(
+                item.role === 'assistant'
+                && details.length > 0
+                && !displayedMessages.slice(itemIndex + 1).some((later) => (
+                  later.role === 'assistant'
+                  && Boolean(turnTraceRef.current.get(later.turnId || later.id)?.lines.length)
+                ))
+              );
+              const recentlyStartedTrace = Boolean(trace?.startedAt && Date.now() - trace.startedAt <= CHAT_TRACE_RECOVERY_WINDOW_MS);
+              const defaultExpanded = Boolean(
+                traceActive
+                || summaryForRender?.state === 'running'
+                || traceOnlyMessage
+                || (latestAssistantTrace && recentlyStartedTrace)
+              );
               const expanded = Boolean(
                 expandedTraceIds.includes(traceTurnId)
                 || (defaultExpanded && !collapsedTraceIds.includes(traceTurnId))

@@ -1049,7 +1049,7 @@ textarea,
   min-height: 0;
   height: 100vh;
   display: grid;
-  grid-template-rows: 56px minmax(0, 1fr) auto;
+  grid-template-rows: 56px minmax(0, 1fr) 148px;
   background: var(--background);
   overflow: hidden;
 }
@@ -5714,6 +5714,7 @@ body,
 
 .chat-input {
   height: 148px !important;
+  min-height: 148px !important;
   padding: 0 !important;
   display: flex !important;
   align-items: flex-start !important;
