@@ -909,43 +909,33 @@ type RecoverableTraceProgress = {
   state?: string;
 };
 
-function isBareInitialRoutingLine(line: RecoverableTraceProgress): boolean {
-  const id = String(line.id || '');
-  const text = String(line.text || '').trim();
-  return (
-    (id === 'decision_router' || /router|routing/i.test(id))
-    && /^(判断意图|正在判断用户意图|意图识别|识别意图)$/.test(text)
-    && !line.detail
-    && !line.code
-    && !line.output
-    && (!line.state || line.state === 'running')
-  );
-}
-
 function hasRecoverableTraceProgress(lines: RecoverableTraceProgress[]): boolean {
   return lines.some((line) => {
     if (!line) return false;
-    if (isBareInitialRoutingLine(line)) return false;
+    if (line.state === 'cancelled') return false;
+    if (line.state === 'running') return true;
     if (line.detail || line.code || line.output) return true;
     if (line.state === 'completed' || line.state === 'failed') return true;
     if (line.kind && line.kind !== 'decision') return true;
     const text = String(line.text || '').trim();
     if (!text) return false;
-    return !/^(判断意图|正在判断用户意图|意图识别|识别意图|执行记录|正在思考|已收到消息)$/.test(text);
+    return !/^(执行记录|已收到消息)$/.test(text);
   });
 }
 
 function hasRecoverableEventProgress(events: ChatSessionEventRead[]): boolean {
   return events.some((event) => {
     const data = isPlainRecord(event.data) ? event.data : {};
-    if (event.event === 'user_message_received' || event.event === 'memory_recalled') return false;
+    if (event.event === 'stream_cancelled' || event.event === 'assistant_message_created') return false;
+    if (event.event === 'user_message_received') return true;
+    if (event.event === 'memory_recalled') return false;
     if (event.event === 'stream_status') {
       const phase = typeof data.phase === 'string' ? data.phase : '';
-      return phase !== 'received' && phase !== 'routing';
+      return Boolean(phase);
     }
     if (event.event === 'status') {
       const phase = typeof data.phase === 'string' ? data.phase : '';
-      return phase !== 'received' && phase !== 'routing';
+      return Boolean(phase);
     }
     if (event.event === 'router_decision_created') {
       const intent = typeof data.user_intent === 'string' ? data.user_intent.trim() : '';
@@ -2716,7 +2706,7 @@ export default function ChatWindowPage() {
           const traceCancelled = row.lines.some((line) => (
             line.state === 'cancelled'
             || line.id === 'generation_stopped'
-            || line.text === CANCELLED_ASSISTANT_REPLY
+            || normalizeMessageText(line.text) === CANCELLED_ASSISTANT_REPLY
           ));
           const locallyCancelledTurn = stream.cancelledTurnId === row.turn_id;
           const recoverableRunningTrace = (
@@ -2958,7 +2948,7 @@ export default function ChatWindowPage() {
       return;
     }
     const slot = getSlot(id);
-    if (upsertTraceStatusPlaceholder(slot, id, turnId)) {
+    if (upsertStreamingTracePlaceholder(slot, id, turnId)) {
       notifyStore();
     }
   }, [getSlot, getStreamSlot, notifyStore, updateStreaming]);
@@ -3741,7 +3731,7 @@ export default function ChatWindowPage() {
     stream.accumulated = text;
     if (text) {
       updateStreaming(id, text, turnId);
-    } else if (upsertTraceStatusPlaceholder(slot, id, turnId)) {
+    } else if (upsertStreamingTracePlaceholder(slot, id, turnId)) {
       notifyStore();
     }
 
@@ -3762,6 +3752,7 @@ export default function ChatWindowPage() {
     getStreamSlot,
     handleStreamEvent,
     isTerminalEvent,
+    notifyStore,
     notifyStream,
     updateStreaming,
   ]);
@@ -4040,7 +4031,7 @@ export default function ChatWindowPage() {
     stream.phase = '正在思考';
     {
       const slot = getSlot(currentConversationId);
-      if (upsertTraceStatusPlaceholder(slot, currentConversationId, turnId)) {
+      if (upsertStreamingTracePlaceholder(slot, currentConversationId, turnId)) {
         notifyStore();
       }
     }
@@ -4843,7 +4834,15 @@ export default function ChatWindowPage() {
                 : null;
               const details = traceDetails(visibleTrace);
               const detailsForRender = summary?.state === 'cancelled'
-                ? details.filter((line) => line.id !== 'generation_stopped' && line.text !== summary.text)
+                ? details.filter((line) => {
+                  const text = normalizeMessageText(line.text);
+                  return (
+                    line.id !== 'generation_stopped'
+                    && line.state !== 'cancelled'
+                    && text !== normalizeMessageText(summary.text)
+                    && text !== CANCELLED_ASSISTANT_REPLY
+                  );
+                })
                 : details;
               const traceActive = isCurrentStreamingTrace(traceTurnId, item);
               const summaryForRender = summary && traceActive && !trace?.completedAt && !locallyCancelledTrace
@@ -4876,7 +4875,13 @@ export default function ChatWindowPage() {
               const visibleContent = staffdeckDisplayText(item.role === 'assistant'
                 ? stripTrailingCitationSummary(item.content)
                 : item.content);
-              const citations = item.role === 'assistant' ? knowledgeCitations(item, visibleContent) : [];
+              const shouldHideCancelledBody = Boolean(
+                item.role === 'assistant'
+                && summaryForRender?.state === 'cancelled'
+                && normalizeMessageText(visibleContent) === CANCELLED_ASSISTANT_REPLY
+              );
+              const renderedContent = shouldHideCancelledBody ? '' : visibleContent;
+              const citations = item.role === 'assistant' ? knowledgeCitations(item, renderedContent) : [];
               const scheduledTaskPrompt = isScheduledTaskPrompt(item);
               const scheduledDraft = item.role === 'assistant' && !dismissedDraftMessageIds.includes(item.id)
                 ? scheduledDraftForMessage(item)
@@ -4895,7 +4900,7 @@ export default function ChatWindowPage() {
               const showInlineTrace = Boolean(summaryForRender && !stoppedStatusOnly);
               if (
                 item.role === 'assistant'
-                && !visibleContent
+                && !renderedContent
                 && !showInlineTrace
                 && !statusOnly
                 && !scheduledDraft
@@ -4908,7 +4913,7 @@ export default function ChatWindowPage() {
               if (
                 item.role === 'assistant'
                 && item.isStreaming
-                && !visibleContent
+                && !renderedContent
                 && !showInlineTrace
                 && !statusOnly
                 && !scheduledDraft
@@ -4927,9 +4932,9 @@ export default function ChatWindowPage() {
                       ) : showInlineTrace && summaryForRender && (
                         renderAssistantTrace(traceTurnId, summaryForRender, detailsForRender, expanded)
                       )}
-                      {!statusOnly && visibleContent ? (
+                      {!statusOnly && renderedContent ? (
                         item.role === 'assistant' ? (
-                          <MarkdownMessage content={visibleContent} />
+                          <MarkdownMessage content={renderedContent} />
                         ) : (
                           <div className="plain-answer">
                             {scheduledTaskPrompt && (
@@ -4938,7 +4943,7 @@ export default function ChatWindowPage() {
                                 定时任务
                               </span>
                             )}
-                            <span>{visibleContent}</span>
+                            <span>{renderedContent}</span>
                           </div>
                         )
                       ) : !statusOnly && item.role === 'assistant' && item.isStreaming && !summary ? (
