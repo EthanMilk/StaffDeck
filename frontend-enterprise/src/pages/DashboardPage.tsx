@@ -109,6 +109,7 @@ export default function DashboardPage({
   const [agentId, setAgentId] = useState(() => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY) || '');
   const [avatarEditorOpen, setAvatarEditorOpen] = useState(false);
   const [profileEditorOpen, setProfileEditorOpen] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     const onScopeChange = (event: Event) => {
@@ -170,7 +171,8 @@ export default function DashboardPage({
           }
         }
       })
-      .catch((error) => notify.error(error instanceof Error ? error.message : '加载数字员工档案失败'));
+      .catch((error) => notify.error(error instanceof Error ? error.message : '加载数字员工档案失败'))
+      .finally(() => setLoaded(true));
   }, [agentId, currentUser, forceOverall, isAdmin]);
 
   const selectedAgent = (forceOverall ? agents.find((item) => item.is_overall) : agents.find((item) => item.id === agentId))
@@ -218,6 +220,12 @@ export default function DashboardPage({
   const totalCalls = skills.reduce((sum, item) => sum + (item.total_call_count || item.call_count || 0), 0);
   const positiveFeedback = skills.reduce((sum, item) => sum + (item.total_positive_feedback_count || 0), 0);
   const negativeFeedback = skills.reduce((sum, item) => sum + (item.total_negative_feedback_count || 0), 0);
+
+  // Avoid flashing the 开放广场 / empty state before the agents API resolves,
+  // which would otherwise briefly render before the employee profile appears.
+  if (!loaded && agents.length === 0) {
+    return <div className="page dashboard-page" />;
+  }
 
   if (!selectedAgent && !isAdmin) {
     return (
