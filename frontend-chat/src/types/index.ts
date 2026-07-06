@@ -141,7 +141,7 @@ export type TraceLineRead = {
   output?: string | null;
   outputLanguage?: string | null;
   outputTitle?: string | null;
-  state: 'running' | 'completed' | 'failed';
+  state: 'running' | 'completed' | 'failed' | 'cancelled';
   collapsible?: boolean | null;
 };
 

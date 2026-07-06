@@ -252,6 +252,63 @@ def test_stream_disconnect_does_not_persist_stop_event_without_cancel_flag() -> 
     assert "stream_cancelled" not in [record[2] for record in loop.events.records]
 
 
+def test_stream_text_events_are_persisted_for_refresh_recovery() -> None:
+    db = FakeDb()
+    loop = object.__new__(AgentLoop)
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        user_id="user_demo",
+        agent_id="agent_demo",
+        slots_json={},
+        skill_stack_json=[],
+        pending_tasks_json=[],
+        knowledge_context_json=[],
+    )
+
+    loop.db = db
+    loop.events = FakeEvents()
+
+    payload = {"turn_id": "msg_user", "user_message_id": "msg_user", "content": "收到"}
+    event = loop._stream_event("stream_delta", session, payload)
+
+    assert event["event"] == "stream_delta"
+    assert loop.events.records == [
+        ("tenant_demo", "session_test", "stream_delta", payload),
+    ]
+    assert db.commits == 1
+
+
+def test_stream_trace_events_require_turn_id_for_persistence() -> None:
+    db = FakeDb()
+    loop = object.__new__(AgentLoop)
+    loop.db = db
+    loop.events = FakeEvents()
+    session = ChatSession(
+        id="session_test",
+        tenant_id="tenant_demo",
+        user_id="user_demo",
+        agent_id="agent_demo",
+    )
+
+    without_turn = {"toolName": "weather", "success": True}
+    with_turn = {
+        "turn_id": "msg_user",
+        "user_message_id": "msg_user",
+        "toolName": "weather",
+        "success": True,
+    }
+
+    loop._stream_event("tool_result", session, without_turn)
+    event = loop._stream_event("tool_result", session, with_turn)
+
+    assert event["event"] == "tool_result"
+    assert loop.events.records == [
+        ("tenant_demo", "session_test", "tool_result", with_turn),
+    ]
+    assert db.commits == 1
+
+
 def test_compound_turn_seeds_primary_and_created_tasks_for_scheduler() -> None:
     loop = object.__new__(AgentLoop)
     loop.runtime = SkillRuntime()

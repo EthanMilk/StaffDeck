@@ -83,7 +83,7 @@ type TraceLine = {
   output?: string;
   outputLanguage?: string;
   outputTitle?: string;
-  state: 'running' | 'completed' | 'failed';
+  state: 'running' | 'completed' | 'failed' | 'cancelled';
   collapsible?: boolean;
 };
 
@@ -103,9 +103,10 @@ type CotTraceIconName = 'advance' | 'execute' | 'generated' | 'judge' | 'loading
 const MODEL_CONFIG_STORAGE_PREFIX = 'skill_agent_selected_model_config';
 const SESSION_READ_STORAGE_PREFIX = 'skill_agent_session_read_at';
 const RUNNING_EVENT_RECOVERY_WINDOW_MS = 5 * 60 * 1000;
-const CHAT_STREAM_IDLE_TIMEOUT_MS = 90 * 1000;
+const CHAT_STREAM_IDLE_TIMEOUT_MS = 600 * 1000;
 const CHAT_TRACE_RECOVERY_WINDOW_MS = 10 * 60 * 1000;
-const STREAM_TERMINAL_EVENTS = new Set(['complete', 'done', 'stream_end', 'stream_cancelled', 'error']);
+const STREAM_TERMINAL_EVENTS = new Set(['complete', 'done', 'stream_cancelled', 'error']);
+const CANCELLED_ASSISTANT_REPLY = '已停止生成';
 const HIDDEN_GENERAL_SKILL_TRACE_PHASES = new Set(['replying']);
 const DRAFT_SCHEDULE_TYPES = new Set<DraftScheduleType>(['once', 'daily', 'weekly', 'monthly']);
 const DRAFT_SCHEDULE_TYPE_LABELS: Record<DraftScheduleType, string> = {
@@ -507,14 +508,65 @@ function timestampAfterMessage(messageItem?: ChatMessage): string {
 function hasServerMessageForTurn(messageItem: ChatMessage, serverMessages: ChatMessage[]): boolean {
   if (!messageItem.turnId) return false;
   return serverMessages.some(
-    (serverMessage) => serverMessage.turnId === messageItem.turnId && serverMessage.role === messageItem.role,
+    (serverMessage) => explicitMessageTurnId(serverMessage) === messageItem.turnId && serverMessage.role === messageItem.role,
   );
+}
+
+function sameTurnAssistantOnServer(messageItem: ChatMessage, serverMessages: ChatMessage[]): boolean {
+  if (messageItem.role !== 'assistant') return false;
+  const turnId = effectiveMessageTurnId(messageItem);
+  if (!turnId) return false;
+  return serverMessages.some((serverMessage) => (
+    serverMessage.role === 'assistant'
+    && (
+      effectiveMessageTurnId(serverMessage) === turnId
+      || serverMessage.id === messageItem.serverMessageId
+    )
+  ));
 }
 
 function sameRoleTurn(left: ChatMessage, right: ChatMessage): boolean {
   const leftTurnId = effectiveMessageTurnId(left);
   const rightTurnId = effectiveMessageTurnId(right);
   return Boolean(leftTurnId && rightTurnId && leftTurnId === rightTurnId && left.role === right.role);
+}
+
+function isTracePlaceholderMessage(messageItem: ChatMessage): boolean {
+  return String(messageItem.id || '').startsWith('__trace_');
+}
+
+function streamingMessageId(sessionId: string, turnId?: string | null): string {
+  const normalizedTurnId = (turnId || '').trim();
+  return normalizedTurnId ? `__streaming_${sessionId}_${normalizedTurnId}` : `__streaming_${sessionId}`;
+}
+
+function isStreamingMessageForSession(sessionId: string, messageId: string): boolean {
+  return messageId === `__streaming_${sessionId}` || messageId.startsWith(`__streaming_${sessionId}_`);
+}
+
+function tracePlaceholderMessageId(sessionId: string, turnId: string): string {
+  return `__trace_${sessionId}_${turnId}`;
+}
+
+function shouldMergeRealtimeAssistant(existing: ChatMessage, incoming: ChatMessage): boolean {
+  if (!sameRoleTurn(existing, incoming)) return false;
+  if (isTracePlaceholderMessage(existing) || isTracePlaceholderMessage(incoming)) return false;
+  if (existing.id === incoming.id) return true;
+  if (existing.serverMessageId && incoming.serverMessageId && existing.serverMessageId === incoming.serverMessageId) {
+    return true;
+  }
+  return Boolean(existing.isStreaming && incoming.isStreaming);
+}
+
+function isCancelledAssistantMessage(messageItem: ChatMessage): boolean {
+  return (
+    messageItem.role === 'assistant'
+    && normalizeMessageText(messageItem.content) === CANCELLED_ASSISTANT_REPLY
+    && (
+      messageItem.metadata?.status === 'cancelled'
+      || String(messageItem.id || '').startsWith('__cancelled_')
+    )
+  );
 }
 
 function hasAssistantMessageForTurn(slot: SessionSlot, turnId: string): boolean {
@@ -533,7 +585,7 @@ function hasAssistantMessageForTurn(slot: SessionSlot, turnId: string): boolean 
 
 function upsertStreamingTracePlaceholder(slot: SessionSlot, sessionId: string, turnId: string): boolean {
   if (!turnId) return false;
-  const streamId = `__streaming_${sessionId}`;
+  const streamId = streamingMessageId(sessionId, turnId);
   const streamingMessage: ChatMessage = {
     id: streamId,
     turnId,
@@ -545,15 +597,21 @@ function upsertStreamingTracePlaceholder(slot: SessionSlot, sessionId: string, t
   const index = slot.realtimeMessages.findIndex((item) => item.id === streamId);
   if (index >= 0) {
     const current = slot.realtimeMessages[index];
+    const sameTurn = current.turnId === streamingMessage.turnId;
     if (
-      current.turnId === streamingMessage.turnId
+      sameTurn
       && current.isStreaming
       && current.content === streamingMessage.content
     ) {
       return false;
     }
     slot.realtimeMessages = [...slot.realtimeMessages];
-    slot.realtimeMessages[index] = { ...current, ...streamingMessage, created_at: current.created_at || streamingMessage.created_at };
+    slot.realtimeMessages[index] = {
+      ...current,
+      ...streamingMessage,
+      content: sameTurn ? (streamingMessage.content || current.content) : streamingMessage.content,
+      created_at: current.created_at || streamingMessage.created_at,
+    };
     return true;
   }
   slot.realtimeMessages = [...slot.realtimeMessages, streamingMessage];
@@ -562,8 +620,8 @@ function upsertStreamingTracePlaceholder(slot: SessionSlot, sessionId: string, t
 
 function upsertTraceStatusPlaceholder(slot: SessionSlot, sessionId: string, turnId: string): boolean {
   if (!turnId) return false;
-  const traceId = `__trace_${sessionId}_${turnId}`;
-  const streamId = `__streaming_${sessionId}`;
+  const traceId = tracePlaceholderMessageId(sessionId, turnId);
+  const streamId = streamingMessageId(sessionId, turnId);
   const traceMessage: ChatMessage = {
     id: traceId,
     turnId,
@@ -580,7 +638,10 @@ function upsertTraceStatusPlaceholder(slot: SessionSlot, sessionId: string, turn
     slot.realtimeMessages[index] = { ...current, ...traceMessage, created_at: current.created_at || traceMessage.created_at };
     return true;
   }
-  const streamingIndex = slot.realtimeMessages.findIndex((item) => item.id === streamId && item.turnId === turnId);
+  const streamingIndex = slot.realtimeMessages.findIndex((item) => (
+    item.turnId === turnId
+    && (item.id === streamId || item.id === `__streaming_${sessionId}` || isStreamingMessageForSession(sessionId, String(item.id || '')))
+  ));
   if (streamingIndex >= 0) {
     const current = slot.realtimeMessages[streamingIndex];
     slot.realtimeMessages = slot.realtimeMessages.filter((item, itemIndex) => (
@@ -605,6 +666,54 @@ function upsertTraceStatusPlaceholder(slot: SessionSlot, sessionId: string, turn
     traceMessage,
   ];
   return true;
+}
+
+function upsertCancelledTraceAssistantPlaceholder(slot: SessionSlot, sessionId: string, turnId: string): boolean {
+  if (!turnId) return false;
+  const hasServerAssistant = slot.serverMessages.some((messageItem) => (
+    messageItem.role === 'assistant'
+    && !messageItem.isStreaming
+    && (
+      explicitMessageTurnId(messageItem) === turnId
+      || messageItem.id === turnId
+    )
+    && Boolean(normalizeMessageText(messageItem.content))
+  ));
+  if (hasServerAssistant) return false;
+  const cancelId = `__cancelled_${sessionId}_${turnId}`;
+  const traceId = tracePlaceholderMessageId(sessionId, turnId);
+  const streamId = streamingMessageId(sessionId, turnId);
+  const current = slot.realtimeMessages.find((item) => item.id === cancelId);
+  const cancelledMessage: ChatMessage = {
+    id: cancelId,
+    turnId,
+    role: 'assistant',
+    content: CANCELLED_ASSISTANT_REPLY,
+    metadata: { status: 'cancelled' },
+    created_at: current?.created_at || timestampAfterMessage(latestUserMessageForTurn(slot, turnId)),
+    isStreaming: false,
+  };
+  const nextMessages = slot.realtimeMessages.filter((item) => {
+    if (item.id === cancelId) return false;
+    if (item.role !== 'assistant') return true;
+    const itemTurnId = effectiveMessageTurnId(item);
+    if (itemTurnId !== turnId) return true;
+    return !(
+      item.id === traceId
+      || item.id === streamId
+      || item.isStreaming
+      || isTracePlaceholderMessage(item)
+    );
+  });
+  const previous = slot.realtimeMessages;
+  slot.realtimeMessages = [...nextMessages, cancelledMessage].slice(-200);
+  return (
+    previous.length !== slot.realtimeMessages.length
+    || previous.some((item, index) => slot.realtimeMessages[index]?.id !== item.id)
+    || !current
+    || current.content !== cancelledMessage.content
+    || current.metadata?.status !== cancelledMessage.metadata?.status
+  );
 }
 
 function explicitMessageTurnId(messageItem: ChatMessage): string | undefined {
@@ -672,27 +781,7 @@ function attachTurnIdsToServerMessages(
     if (messageItem.role === 'user') return { ...messageItem, turnId: messageItem.id };
     return messageItem;
   });
-
-  const pendingUserTurnIds: string[] = [];
-  const assignedAssistantTurnIds = new Set(
-    normalized
-      .filter((item) => item.role === 'assistant' && explicitMessageTurnId(item))
-      .map((item) => explicitMessageTurnId(item) as string),
-  );
-
-  return normalized.map((messageItem) => {
-    const turnId = explicitMessageTurnId(messageItem);
-    if (messageItem.role === 'user') {
-      const userTurnId = turnId || messageItem.id;
-      pendingUserTurnIds.push(userTurnId);
-      return turnId ? messageItem : { ...messageItem, turnId: userTurnId };
-    }
-    if (turnId || messageItem.role !== 'assistant') return messageItem;
-    const nextTurnId = pendingUserTurnIds.find((candidate) => !assignedAssistantTurnIds.has(candidate));
-    if (!nextTurnId) return messageItem;
-    assignedAssistantTurnIds.add(nextTurnId);
-    return { ...messageItem, turnId: nextTurnId };
-  });
+  return normalized;
 }
 
 function shouldKeepRealtimeMessage(
@@ -708,6 +797,11 @@ function shouldKeepRealtimeMessage(
   if (messageItem.serverMessageId && serverMessages.some((serverMessage) => serverMessage.id === messageItem.serverMessageId)) {
     return false;
   }
+  if (sameTurnAssistantOnServer(messageItem, serverMessages)) return false;
+  if (isTracePlaceholderMessage(messageItem)) {
+    return true;
+  }
+  if (isCancelledAssistantMessage(messageItem)) return true;
   if (messageItem.turnId && activeTurnId && messageItem.turnId === activeTurnId) return true;
   if (!latestServerTime) return true;
   return parseMessageTime(messageItem.created_at) > latestServerTime;
@@ -799,6 +893,7 @@ function publicStreamPhase(data: Record<string, unknown>): string {
   const phase = typeof data.phase === 'string' ? data.phase : '';
   const text = typeof data.text === 'string' ? data.text : '';
   if (phase === 'error') return text || '请求失败';
+  if (phase === 'responding') return text || '生成回复';
   if (phase === 'scheduled_task_draft') return text || '生成定时任务草案';
   if (isKnowledgeTracePhase(phase)) return text || knowledgeTraceText(data);
   return '正在思考';
@@ -1169,6 +1264,9 @@ function traceLineAllowed(line: TraceLine, config: UIConfigRead): boolean {
 }
 
 function traceSummary(trace: TurnTrace, lines: TraceLine[]): { text: string; state: TraceLine['state'] } {
+  if (lines.some((line) => line.state === 'cancelled' || line.id === 'generation_stopped')) {
+    return { text: '已停止生成', state: 'cancelled' };
+  }
   if (trace.completedAt) {
     if (lines.some((line) => line.state === 'failed')) {
       return { text: '执行遇到问题', state: 'failed' };
@@ -1190,6 +1288,9 @@ function traceDetails(lines: TraceLine[]): TraceLine[] {
     '已完成思考',
     '正在执行',
     '执行记录',
+    '正在判断意图',
+    '正在选择通用技能',
+    '正在运行通用技能',
     '生成回复',
     '正在生成回复',
     '正在根据运行结果生成回复',
@@ -1837,6 +1938,7 @@ export default function ChatWindowPage() {
   const streamRef = useRef(new Map<string, StreamSlot>());
   const turnTraceRef = useRef(new Map<string, TurnTrace>());
   const locallyCancelledSessionIdsRef = useRef(new Set<string>());
+  const persistedCancelTurnKeysRef = useRef(new Set<string>());
   const scheduledEventIdsRef = useRef(new Set<string>());
   const knownSessionIdsRef = useRef(new Set<string>());
   const optimisticSessionIdsRef = useRef(new Set<string>());
@@ -2159,12 +2261,17 @@ export default function ChatWindowPage() {
     notifyTrace();
   }, [getTurnTrace, notifyTrace]);
 
-  const finishTrace = useCallback((turnId: string, failed = false) => {
+  const finishTrace = useCallback((turnId: string, terminalState: boolean | TraceLine['state'] = false) => {
     const trace = getTurnTrace(turnId);
+    const nextRunningState: TraceLine['state'] = terminalState === true
+      ? 'failed'
+      : terminalState === false
+        ? 'completed'
+        : terminalState;
     trace.completedAt = Date.now();
     trace.lines = trace.lines.map((line) => ({
       ...line,
-      state: failed && line.state === 'running' ? 'failed' : line.state === 'running' ? 'completed' : line.state,
+      state: line.state === 'running' ? nextRunningState : line.state,
     }));
     notifyTrace();
   }, [getTurnTrace, notifyTrace]);
@@ -2181,6 +2288,7 @@ export default function ChatWindowPage() {
 
   const clearStreamSlot = useCallback((id: string, removeStreamingMessage = false) => {
     const stream = getStreamSlot(id);
+    const activeTurnId = stream.turnId;
     if (stream.timer) {
       window.clearTimeout(stream.timer);
       stream.timer = null;
@@ -2192,8 +2300,12 @@ export default function ChatWindowPage() {
     stream.abortController = null;
     if (removeStreamingMessage) {
       const slot = getSlot(id);
-      const streamId = `__streaming_${id}`;
-      const nextRealtime = slot.realtimeMessages.filter((item) => item.id !== streamId);
+      const nextRealtime = slot.realtimeMessages.filter((item) => {
+        const messageId = String(item.id || '');
+        if (!isStreamingMessageForSession(id, messageId)) return true;
+        if (!activeTurnId) return false;
+        return effectiveMessageTurnId(item) !== activeTurnId;
+      });
       if (nextRealtime.length !== slot.realtimeMessages.length) {
         slot.realtimeMessages = nextRealtime;
         notifyStore();
@@ -2241,13 +2353,28 @@ export default function ChatWindowPage() {
     if (!turnId || !serverMessageId) return;
     const slot = getSlot(id);
     const stream = getStreamSlot(id);
+    const previousStreamId = streamingMessageId(id, turnId);
+    const nextStreamId = streamingMessageId(id, serverMessageId);
+    const previousTraceId = tracePlaceholderMessageId(id, turnId);
+    const nextTraceId = tracePlaceholderMessageId(id, serverMessageId);
+    const wasCancelledTurn = (
+      stream.cancelledTurnId === turnId
+      || slot.realtimeMessages.some((item) => item.turnId === turnId && isCancelledAssistantMessage(item))
+    );
     let changed = false;
     slot.realtimeMessages = slot.realtimeMessages.map((item) => {
       if (item.turnId !== turnId) return item;
       changed = true;
+      const nextId = item.role === 'user'
+        ? serverMessageId
+        : item.id === previousStreamId
+          ? nextStreamId
+          : item.id === previousTraceId
+            ? nextTraceId
+            : item.id;
       return {
         ...item,
-        id: item.role === 'user' ? serverMessageId : item.id,
+        id: nextId,
         serverMessageId: item.role === 'user' ? serverMessageId : item.serverMessageId,
         turnId: serverMessageId,
       };
@@ -2274,8 +2401,21 @@ export default function ChatWindowPage() {
         : current
     ));
     rekeyTurnTrace(turnId, serverMessageId);
+    if (wasCancelledTurn && !isDraftConversationKey(id)) {
+      const cancelKey = `${id}:${serverMessageId}`;
+      if (!persistedCancelTurnKeysRef.current.has(cancelKey)) {
+        persistedCancelTurnKeysRef.current.add(cancelKey);
+        void api.postKeepalive(`/api/chat/sessions/${id}/cancel`, {
+          tenant_id: tenantId,
+          turn_id: serverMessageId,
+        }).catch((error) => {
+          persistedCancelTurnKeysRef.current.delete(cancelKey);
+          notifyRequestError('cancel-bind', error, '停止生成状态保存失败');
+        });
+      }
+    }
     if (changed) notifyStore();
-  }, [getSlot, getStreamSlot, notifyStore, rekeyTurnTrace]);
+  }, [getSlot, getStreamSlot, notifyRequestError, notifyStore, rekeyTurnTrace, tenantId]);
 
   const displayedMessages = useMemo(() => {
     if (!activeConversationId) return [];
@@ -2435,8 +2575,7 @@ export default function ChatWindowPage() {
     || (fallbackTraceDefaultExpanded && !collapsedTraceIds.includes(fallbackRunningTraceId))
   );
   const showFallbackRunningStatus = Boolean(
-    false
-    && currentTraceRunning
+    currentTraceRunning
     && fallbackTraceSummaryForRender
     && !hasCurrentTurnAssistantMessage
     && !hasInlineCurrentTrace
@@ -2540,8 +2679,9 @@ export default function ChatWindowPage() {
           const hasCompletedAssistant = slot.serverMessages.some((messageItem) => (
             messageItem.role === 'assistant'
             && (
-              (stream.turnId && messageItem.turnId === stream.turnId)
-              || parseMessageTime(messageItem.created_at) > latestUserTime
+              stream.turnId
+                ? effectiveMessageTurnId(messageItem) === stream.turnId
+                : parseMessageTime(messageItem.created_at) > latestUserTime
             )
           ));
           if (hasCompletedAssistant) {
@@ -2573,7 +2713,19 @@ export default function ChatWindowPage() {
         let streamChanged = false;
         rows.forEach((row) => {
           const hasFinalAssistant = hasAssistantMessageForTurn(slot, row.turn_id);
-          const recoverableRunningTrace = !locallyCancelled && isRecoverableRunningTrace(row) && !hasFinalAssistant;
+          const traceCancelled = row.lines.some((line) => (
+            line.state === 'cancelled'
+            || line.id === 'generation_stopped'
+            || line.text === CANCELLED_ASSISTANT_REPLY
+          ));
+          const locallyCancelledTurn = stream.cancelledTurnId === row.turn_id;
+          const recoverableRunningTrace = (
+            !locallyCancelled
+            && !locallyCancelledTurn
+            && !traceCancelled
+            && isRecoverableRunningTrace(row)
+            && !hasFinalAssistant
+          );
           const staleOpenTrace = !row.completed_at && row.lines.length > 0 && !recoverableRunningTrace && !hasFinalAssistant;
           const traceLines = row.lines.map((line) => ({
             id: line.id,
@@ -2585,7 +2737,11 @@ export default function ChatWindowPage() {
             output: line.output || undefined,
             outputLanguage: line.outputLanguage || undefined,
             outputTitle: line.outputTitle || undefined,
-            state: staleOpenTrace && line.state === 'running' ? 'completed' as const : line.state,
+            state: traceCancelled && line.state === 'running'
+              ? 'cancelled' as const
+              : staleOpenTrace && line.state === 'running'
+                ? 'completed' as const
+                : line.state,
             collapsible: Boolean(line.collapsible || line.code || line.output),
           }));
           turnTraceRef.current.set(row.turn_id, {
@@ -2599,6 +2755,8 @@ export default function ChatWindowPage() {
           });
           if (recoverableRunningTrace) {
             recoveredRunningTurnId = row.turn_id;
+          } else if (traceCancelled && !hasFinalAssistant) {
+            storeChanged = upsertCancelledTraceAssistantPlaceholder(slot, id, row.turn_id) || storeChanged;
           } else if ((row.completed_at || staleOpenTrace) && row.lines.length > 0 && !hasFinalAssistant) {
             storeChanged = upsertTraceStatusPlaceholder(slot, id, row.turn_id) || storeChanged;
             if (staleOpenTrace) {
@@ -2618,10 +2776,6 @@ export default function ChatWindowPage() {
           stream.loading = true;
           stream.phase = stream.phase || '正在思考';
           storeChanged = upsertStreamingTracePlaceholder(slot, id, recoveredRunningTurnId) || storeChanged;
-          setExpandedTraceIds((expanded) => (
-            expanded.includes(recoveredRunningTurnId) ? expanded : [...expanded, recoveredRunningTurnId]
-          ));
-          setCollapsedTraceIds((collapsed) => collapsed.filter((item) => item !== recoveredRunningTurnId));
         } else if (stream.turnId && !stream.loading) {
           streamChanged = true;
           stream.turnId = null;
@@ -2707,7 +2861,7 @@ export default function ChatWindowPage() {
   const appendRealtime = useCallback((id: string, messageItem: ChatMessage) => {
     const slot = getSlot(id);
     const existingIndex = messageItem.role === 'assistant'
-      ? slot.realtimeMessages.findIndex((item) => sameRoleTurn(item, messageItem))
+      ? slot.realtimeMessages.findIndex((item) => shouldMergeRealtimeAssistant(item, messageItem))
       : -1;
     if (existingIndex >= 0) {
       const nextMessages = [...slot.realtimeMessages];
@@ -2722,6 +2876,14 @@ export default function ChatWindowPage() {
       slot.realtimeMessages = [...slot.realtimeMessages, messageItem].slice(-200);
     }
     notifyStore();
+  }, [getSlot, notifyStore]);
+
+  const appendCancelledAssistantMessage = useCallback((id: string, turnId?: string | null) => {
+    if (!turnId) return;
+    const slot = getSlot(id);
+    if (upsertCancelledTraceAssistantPlaceholder(slot, id, turnId)) {
+      notifyStore();
+    }
   }, [getSlot, notifyStore]);
 
   const updateMessageFeedback = useCallback((
@@ -2741,11 +2903,11 @@ export default function ChatWindowPage() {
   const updateStreaming = useCallback((id: string, text: string, turnId?: string, allowEmpty = false) => {
     const slot = getSlot(id);
     const stream = getStreamSlot(id);
-    const streamId = `__streaming_${id}`;
+    const activeTurnId = turnId || stream.turnId || undefined;
+    const streamId = streamingMessageId(id, activeTurnId);
     const index = slot.realtimeMessages.findIndex((item) => item.id === streamId);
     if (!text && index < 0 && !allowEmpty) return;
     const previousMessage = index >= 0 ? slot.realtimeMessages[index] : undefined;
-    const activeTurnId = turnId || stream.turnId || undefined;
     const previousCreatedAt = previousMessage && previousMessage.turnId === activeTurnId
       ? previousMessage.created_at
       : undefined;
@@ -2762,7 +2924,9 @@ export default function ChatWindowPage() {
         item.id === streamId
         || !(
           item.role === 'assistant'
+          && item.isStreaming
           && effectiveMessageTurnId(item) === activeTurnId
+          && !String(item.id || '').startsWith('__trace_')
           && !hasServerMessageForTurn(item, slot.serverMessages)
         )
       ));
@@ -2789,8 +2953,15 @@ export default function ChatWindowPage() {
     if (!turnId) return;
     const stream = getStreamSlot(id);
     if (!stream.loading) return;
-    updateStreaming(id, stream.accumulated || '', turnId, true);
-  }, [getStreamSlot, updateStreaming]);
+    if (stream.accumulated) {
+      updateStreaming(id, stream.accumulated, turnId);
+      return;
+    }
+    const slot = getSlot(id);
+    if (upsertTraceStatusPlaceholder(slot, id, turnId)) {
+      notifyStore();
+    }
+  }, [getSlot, getStreamSlot, notifyStore, updateStreaming]);
 
   const flushStreaming = useCallback((id: string) => {
     const stream = getStreamSlot(id);
@@ -2803,37 +2974,18 @@ export default function ChatWindowPage() {
     }
   }, [getStreamSlot, updateStreaming]);
 
-  const finalizeStreaming = useCallback((id: string) => {
+  const settleStreamingAfterTerminal = useCallback((id: string) => {
     flushStreaming(id);
     const slot = getSlot(id);
-    const streamId = `__streaming_${id}`;
-    const index = slot.realtimeMessages.findIndex((item) => item.id === streamId);
+    const index = slot.realtimeMessages.findIndex((item) => (
+      isStreamingMessageForSession(id, String(item.id || ''))
+      && hasServerMessageForTurn(item, slot.serverMessages)
+    ));
     if (index >= 0) {
       const streamMessage = slot.realtimeMessages[index];
       const streamTurnId = effectiveMessageTurnId(streamMessage);
       if (streamTurnId && hasServerMessageForTurn(streamMessage, slot.serverMessages)) {
-        slot.realtimeMessages = slot.realtimeMessages.filter((item) => item.id !== streamId);
-      } else {
-        const finalMessage: ChatMessage = {
-          ...streamMessage,
-          id: streamTurnId ? `__final_${id}_${streamTurnId}` : `text_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          isStreaming: false,
-        };
-        const nextMessages = slot.realtimeMessages.filter((item, itemIndex) => (
-          itemIndex === index
-          || !(
-            streamTurnId
-            && item.role === 'assistant'
-            && effectiveMessageTurnId(item) === streamTurnId
-          )
-        ));
-        const nextIndex = nextMessages.findIndex((item) => item.id === streamId);
-        if (nextIndex >= 0) {
-          nextMessages[nextIndex] = finalMessage;
-        } else {
-          nextMessages.push(finalMessage);
-        }
-        slot.realtimeMessages = nextMessages;
+        slot.realtimeMessages = slot.realtimeMessages.filter((item) => item !== streamMessage);
       }
     }
     const stream = getStreamSlot(id);
@@ -2907,11 +3059,13 @@ export default function ChatWindowPage() {
       scrollChatToBottom({ preserveShortContentTop: true, force: true });
       return;
     }
-    scrollChatToBottom();
+    if (isChatStickyToBottomRef.current) {
+      scrollChatToBottom();
+    }
   }, [activeConversationId, displayedMessages.length, scrollChatToBottom, traceTick]);
 
   useEffect(() => {
-    if (!currentTraceRunning) return;
+    if (!currentTraceRunning || !isChatStickyToBottomRef.current) return;
     scrollChatToBottom();
   }, [currentTraceRunning, currentStream.phase, scrollChatToBottom, streamTick, traceTick]);
 
@@ -2979,39 +3133,61 @@ export default function ChatWindowPage() {
       runningTurn?.sessionId === activeConversationId ? runningTurn.turnId : null
     );
     const controller = stream.abortController;
+    const conversationId = activeConversationId;
     locallyCancelledSessionIdsRef.current.add(activeConversationId);
-    const cancelRequest = cancelledTurnId && !isDraftConversationKey(activeConversationId)
-      ? api.postKeepalive(`/api/chat/sessions/${activeConversationId}/cancel`, {
+    const cancelRequest = cancelledTurnId && !isDraftConversationKey(conversationId)
+      ? api.postKeepalive(`/api/chat/sessions/${conversationId}/cancel`, {
           tenant_id: tenantId,
           turn_id: cancelledTurnId,
-        }).catch(() => undefined)
+        })
       : Promise.resolve();
     if (cancelledTurnId) {
       upsertTraceLine(cancelledTurnId, {
         id: 'generation_stopped',
         kind: 'decision',
-        text: '已停止生成',
-        state: 'failed',
+        text: CANCELLED_ASSISTANT_REPLY,
+        state: 'cancelled',
       });
-      finishTrace(cancelledTurnId, true);
+      finishTrace(cancelledTurnId, 'cancelled');
+      appendCancelledAssistantMessage(conversationId, cancelledTurnId);
     }
-    clearStreamSlot(activeConversationId, false);
+    clearStreamSlot(conversationId, false);
     if (cancelledTurnId) {
-      upsertTraceStatusPlaceholder(getSlot(activeConversationId), activeConversationId, cancelledTurnId);
       notifyStore();
     }
-    const stoppedStream = getStreamSlot(activeConversationId);
+    const stoppedStream = getStreamSlot(conversationId);
     stoppedStream.cancelledTurnId = cancelledTurnId;
-    setRunningTurn((current) => (current?.sessionId === activeConversationId ? null : current));
+    setRunningTurn((current) => (current?.sessionId === conversationId ? null : current));
     notifyStream();
+
+    let cancelReloadScheduled = false;
+    const reloadCancelledState = () => {
+      if (isDraftConversationKey(conversationId)) return;
+      if (cancelReloadScheduled) return;
+      cancelReloadScheduled = true;
+      window.setTimeout(() => {
+        void loadMessages(conversationId).finally(() => {
+          void loadTraces(conversationId);
+        });
+        loadSessions();
+      }, 200);
+    };
+    const persistCancel = cancelRequest.catch((error) => {
+      notifyRequestError('cancel', error, '停止生成状态保存失败');
+      return undefined;
+    });
     const abortAfterCancel = () => {
       controller?.abort();
+      reloadCancelledState();
     };
+    void persistCancel.finally(reloadCancelledState);
     if (controller) {
       const cancelDeadline = new Promise<void>((resolve) => {
-        window.setTimeout(resolve, 300);
+        window.setTimeout(resolve, 2500);
       });
-      void Promise.race([cancelRequest, cancelDeadline]).then(abortAfterCancel, abortAfterCancel);
+      void Promise.race([persistCancel, cancelDeadline]).then(abortAfterCancel, abortAfterCancel);
+    } else {
+      void persistCancel.finally(reloadCancelledState);
     }
   }
 
@@ -3097,6 +3273,12 @@ export default function ChatWindowPage() {
     const eventSessionId = String(item.data.sessionId || baseSessionId);
     const traceTurnId = explicitStreamTurnId(item.data, turnId);
     if (item.event === 'session_created') {
+      return;
+    }
+    if (item.event === 'user_message_received') {
+      const serverMessageId = typeof item.data.message_id === 'string' ? item.data.message_id.trim() : '';
+      const clientTurnId = typeof item.data.client_turn_id === 'string' ? item.data.client_turn_id.trim() : '';
+      bindRealtimeUserToServerMessage(eventSessionId, clientTurnId || turnId, serverMessageId);
       return;
     }
     if (item.event === 'session_title_summarized') {
@@ -3269,6 +3451,13 @@ export default function ChatWindowPage() {
       }
       const phase = typeof item.data.phase === 'string' ? item.data.phase : 'thinking';
       if (phase === 'responding') {
+        eventStream.phase = publicStreamPhase(item.data);
+        upsertTraceLine(traceTurnId, {
+          id: 'decision_responding',
+          kind: 'decision',
+          text: eventStream.phase,
+          state: 'running',
+        });
         notifyStream();
         return;
       }
@@ -3355,21 +3544,21 @@ export default function ChatWindowPage() {
       return;
     }
     if (item.event === 'stream_end') {
-      finishTrace(traceTurnId);
-      upsertTraceLine(traceTurnId, { id: 'thinking', kind: 'thinking', text: '执行记录', state: 'completed' });
-      finalizeStreaming(eventSessionId);
-      const eventStream = getStreamSlot(eventSessionId);
-      eventStream.loading = false;
-      eventStream.phase = '';
-      eventStream.abortController = null;
+      flushStreaming(eventSessionId);
+      window.setTimeout(() => {
+        void loadMessages(eventSessionId).finally(() => {
+          void loadTraces(eventSessionId);
+        });
+        loadSessions();
+      }, 250);
       notifyStream();
       return;
     }
     if (item.event === 'stream_cancelled') {
       const cancelledStreamTurnId = getStreamSlot(eventSessionId).turnId || traceTurnId;
-      finishTrace(traceTurnId, true);
+      finishTrace(traceTurnId, 'cancelled');
+      appendCancelledAssistantMessage(eventSessionId, traceTurnId);
       clearStreamSlot(eventSessionId, false);
-      upsertTraceStatusPlaceholder(getSlot(eventSessionId), eventSessionId, traceTurnId);
       notifyStore();
       setRunningTurn((current) => (
         current?.sessionId === eventSessionId && (current.turnId === traceTurnId || current.turnId === cancelledStreamTurnId)
@@ -3394,7 +3583,7 @@ export default function ChatWindowPage() {
       }
       finishTrace(traceTurnId);
       upsertTraceLine(traceTurnId, { id: 'thinking', kind: 'thinking', text: '执行记录', state: 'completed' });
-      finalizeStreaming(eventSessionId);
+      settleStreamingAfterTerminal(eventSessionId);
       setLastTurn(result);
       const eventStream = getStreamSlot(eventSessionId);
       eventStream.loading = false;
@@ -3424,10 +3613,11 @@ export default function ChatWindowPage() {
       notifyStream();
     }
   }, [
+    appendCancelledAssistantMessage,
     appendRealtime,
     applySessionTitleSummary,
     clearStreamSlot,
-    finalizeStreaming,
+    flushStreaming,
     finishTrace,
     getStreamSlot,
     getTurnTrace,
@@ -3436,10 +3626,12 @@ export default function ChatWindowPage() {
     loadTraces,
     notifyStream,
     ensureStreamingTraceMessage,
+    settleStreamingAfterTerminal,
     updateStreaming,
     upsertTraceLine,
     getSlot,
     notifyStore,
+    bindRealtimeUserToServerMessage,
   ]);
 
   const eventTextPayload = useCallback((event: ChatSessionEventRead): string => {
@@ -3452,7 +3644,6 @@ export default function ChatWindowPage() {
   const isTerminalEvent = useCallback((event: ChatSessionEventRead) => (
     event.event === 'complete' ||
     event.event === 'done' ||
-    event.event === 'stream_end' ||
     event.event === 'stream_cancelled' ||
     event.event === 'error'
   ), []);
@@ -3467,7 +3658,6 @@ export default function ChatWindowPage() {
     const traceEvents = events.filter((event) => Boolean(eventTraceTurnId(event)));
     if (!traceEvents.length) return false;
     const slot = getSlot(id);
-    if (slot.serverMessages.length === 0) return false;
     const stream = getStreamSlot(id);
     if (stream.loading) return false;
 
@@ -3490,11 +3680,6 @@ export default function ChatWindowPage() {
 
     const turnId = eventTraceTurnId(runningGroup[0]);
     if (!turnId) return false;
-    const runningUserMessage = slot.serverMessages.find((messageItem) => (
-      messageItem.role === 'user'
-      && (effectiveMessageTurnId(messageItem) === turnId || messageItem.id === turnId)
-    ));
-    if (!runningUserMessage) return false;
     const latestRunningEventTime = eventTime(runningGroup[runningGroup.length - 1]);
     if (
       latestRunningEventTime <= 0
@@ -3512,6 +3697,34 @@ export default function ChatWindowPage() {
       return false;
     }
 
+    let runningUserMessage = [...slot.serverMessages, ...slot.realtimeMessages].find((messageItem) => (
+      messageItem.role === 'user'
+      && (effectiveMessageTurnId(messageItem) === turnId || messageItem.id === turnId)
+    ));
+    if (!runningUserMessage) {
+      const userEvent = runningGroup.find((event) => event.event === 'user_message_received');
+      const userData = userEvent?.data || {};
+      const userMessageId = typeof userData.message_id === 'string' && userData.message_id.trim()
+        ? userData.message_id.trim()
+        : turnId;
+      const userContent = typeof userData.message === 'string' ? userData.message : '';
+      if (!userEvent && !userContent) return false;
+      runningUserMessage = {
+        id: userMessageId,
+        turnId,
+        role: 'user',
+        content: userContent,
+        created_at: userEvent?.created_at || new Date(latestRunningEventTime).toISOString(),
+      };
+      slot.realtimeMessages = [
+        ...slot.realtimeMessages.filter((messageItem) => !(
+          messageItem.role === 'user'
+          && (effectiveMessageTurnId(messageItem) === turnId || messageItem.id === userMessageId)
+        )),
+        runningUserMessage,
+      ].slice(-200);
+    }
+
     let text = '';
     runningGroup.forEach((event) => {
       const payloadText = eventTextPayload(event);
@@ -3526,7 +3739,11 @@ export default function ChatWindowPage() {
     stream.loading = true;
     stream.phase = '执行中';
     stream.accumulated = text;
-    updateStreaming(id, text, turnId, true);
+    if (text) {
+      updateStreaming(id, text, turnId);
+    } else if (upsertTraceStatusPlaceholder(slot, id, turnId)) {
+      notifyStore();
+    }
 
     runningGroup.forEach((event) => {
       scheduledEventIdsRef.current.add(event.id);
@@ -3558,7 +3775,6 @@ export default function ChatWindowPage() {
         if (!traceEvents.length) return;
         hydrateRunningSessionFromEvents(id, traceEvents);
         const slot = getSlot(id);
-        if (slot.serverMessages.length === 0) return;
         const latestLoadedMessageTime = Math.max(
           0,
           ...slot.serverMessages.map((messageItem) => parseMessageTime(messageItem.created_at)),
@@ -3577,12 +3793,6 @@ export default function ChatWindowPage() {
           );
         });
         if (!unseenEvents.length) return;
-        const sessionRow = sessions.find((item) => item.id === id);
-        const hasTerminalEvent = unseenEvents.some((event) => isTerminalSessionEvent(event, isTerminalEvent));
-        if (!stream.loading && Boolean(sessionRow?.summary) && hasTerminalEvent) {
-          unseenEvents.forEach((event) => scheduledEventIdsRef.current.add(event.id));
-          return;
-        }
         const unseenEventsByTurn = new Map<string, ChatSessionEventRead[]>();
         unseenEvents.forEach((event) => {
           const turnId = eventTraceTurnId(event);
@@ -3598,6 +3808,13 @@ export default function ChatWindowPage() {
           if (!stream.turnId) {
             stream.turnId = turnId;
           }
+          if (event.event === 'assistant_message_created') {
+            void loadMessages(id).finally(() => {
+              void loadTraces(id);
+            });
+            loadSessions();
+            return;
+          }
           const streamEvent = normalizeSessionEventForStream(event);
           if (!stream.loading && !isTerminalSessionEvent(event, isTerminalEvent)) {
             const turnEvents = unseenEventsByTurn.get(turnId) || [event];
@@ -3607,7 +3824,7 @@ export default function ChatWindowPage() {
             }
             stream.loading = true;
             stream.phase = '执行中';
-            updateStreaming(id, stream.accumulated || '', turnId, true);
+            ensureStreamingTraceMessage(id, turnId);
             notifyStream();
           }
           handleStreamEvent(streamEvent, id, turnId);
@@ -3624,6 +3841,9 @@ export default function ChatWindowPage() {
     handleStreamEvent,
     hydrateRunningSessionFromEvents,
     isTerminalEvent,
+    loadMessages,
+    loadSessions,
+    loadTraces,
     navigate,
     notifyStream,
     sessions,
@@ -3774,17 +3994,22 @@ export default function ChatWindowPage() {
     }
     const currentConversationId = activeConversationId;
     const activeSession = sessionId ? sessions.find((item) => item.id === sessionId) || null : null;
-    if (!isDraftConversation && !activeSession) {
+    const fallbackAgentId = activeDraftAgentId || selectedAgentId || displayedAgent?.id || '';
+    if (!isDraftConversation && !activeSession && !fallbackAgentId) {
       message.warning('任务信息还在加载，请稍后再发送');
       return;
     }
-    const sessionAgentId = activeSession?.agent_id || activeDraftAgentId || selectedAgentId || displayedAgent?.id || '';
+    const sendAsDraftConversation = isDraftConversation || (!activeSession && Boolean(fallbackAgentId));
+    const sessionAgentId = activeSession?.agent_id || fallbackAgentId;
     if (!sessionAgentId) {
       message.warning('该任务没有绑定数字员工，请新建任务后再发送');
       return;
     }
     const stream = getStreamSlot(currentConversationId);
-    if (stream.loading || currentSessionRunning) return;
+    if (stream.loading || currentSessionRunning) {
+      message.warning('当前回复未完成，请先停止或等待完成');
+      return;
+    }
     const userText = input.trim();
     const outgoingAttachments = readyComposerAttachments.map(toRequestAttachment);
     const turnId = `turn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -3813,13 +4038,19 @@ export default function ChatWindowPage() {
     setExpandedTraceIds((current) => (current.includes(turnId) ? current : [...current, turnId]));
     stream.loading = true;
     stream.phase = '正在思考';
-    updateStreaming(currentConversationId, '', turnId, true);
+    {
+      const slot = getSlot(currentConversationId);
+      if (upsertTraceStatusPlaceholder(slot, currentConversationId, turnId)) {
+        notifyStore();
+      }
+    }
     setRunningTurn({ sessionId: currentConversationId, turnId });
     notifyStream();
 
     const controller = new AbortController();
     stream.abortController = controller;
     let receivedTerminalEvent = false;
+    let keepRecoveringAfterStreamClose = false;
     let streamWatchdog: number | null = null;
 
     const clearRunningTurn = (targetId = liveConversationId) => {
@@ -3837,23 +4068,22 @@ export default function ChatWindowPage() {
       }
     };
 
-    const appendInterruptedResponse = (reason: string) => {
-      const activeTurnId = getStreamSlot(liveConversationId).turnId || turnId;
-      clearStreamSlot(liveConversationId, true);
-      appendRealtime(liveConversationId, {
-        id: `stream_interrupted_${activeTurnId}_${Date.now()}`,
-        turnId: activeTurnId,
-        role: 'assistant',
-        content: reason,
-        created_at: new Date().toISOString(),
-        isError: true,
-      });
-      finishTrace(activeTurnId, true);
-      clearRunningTurn(liveConversationId);
+    const recoverDetachedStream = () => {
+      const activeStream = getStreamSlot(liveConversationId);
+      const activeTurnId = activeStream.turnId || turnId;
+      keepRecoveringAfterStreamClose = true;
+      activeStream.turnId = activeTurnId;
+      activeStream.loading = true;
+      activeStream.phase = activeStream.phase || '执行中';
+      activeStream.abortController = null;
+      upsertStreamingTracePlaceholder(getSlot(liveConversationId), liveConversationId, activeTurnId);
+      setRunningTurn({ sessionId: liveConversationId, turnId: activeTurnId });
+      notifyStore();
       notifyStream();
       window.setTimeout(() => {
-        loadMessages(liveConversationId);
-        loadTraces(liveConversationId);
+        void loadMessages(liveConversationId).finally(() => {
+          void loadTraces(liveConversationId);
+        });
         loadSessions();
       }, 250);
     };
@@ -3868,8 +4098,36 @@ export default function ChatWindowPage() {
       ) {
         return;
       }
+      const activeTurnId = activeStream.turnId || turnId;
+      if (!isDraftConversationKey(liveConversationId)) {
+        void api.postKeepalive(`/api/chat/sessions/${liveConversationId}/cancel`, {
+          tenant_id: tenantId,
+          turn_id: activeTurnId,
+        }).catch((error) => {
+          notifyRequestError('timeout-cancel', error, '停止生成状态保存失败');
+        });
+      }
+      upsertTraceLine(activeTurnId, {
+        id: 'generation_stopped',
+        kind: 'decision',
+        text: '等待超时，已停止生成',
+        state: 'cancelled',
+      });
+      finishTrace(activeTurnId, 'cancelled');
+      appendCancelledAssistantMessage(liveConversationId, activeTurnId);
+      clearStreamSlot(liveConversationId, false);
+      setRunningTurn((current) => (
+        current?.sessionId === liveConversationId && current.turnId === activeTurnId ? null : current
+      ));
       controller.abort();
-      appendInterruptedResponse('本次响应等待时间过长，已停止等待。请重试发送。');
+      notifyStore();
+      notifyStream();
+      window.setTimeout(() => {
+        void loadMessages(liveConversationId).finally(() => {
+          void loadTraces(liveConversationId);
+        });
+        loadSessions();
+      }, 250);
     };
 
     const armStreamWatchdog = () => {
@@ -3883,14 +4141,14 @@ export default function ChatWindowPage() {
     };
 
     const promoteDraftConversation = (nextSessionId: string) => {
-      if (!isDraftConversation || !nextSessionId || nextSessionId === liveConversationId) return;
+      if (!sendAsDraftConversation || !nextSessionId || nextSessionId === liveConversationId) return;
       const previousId = liveConversationId;
       const draftSlot = storeRef.current.get(previousId);
       if (draftSlot) {
-        const previousStreamMessageId = `__streaming_${previousId}`;
-        const nextStreamMessageId = `__streaming_${nextSessionId}`;
         draftSlot.realtimeMessages = draftSlot.realtimeMessages.map((item) => (
-          item.id === previousStreamMessageId ? { ...item, id: nextStreamMessageId } : item
+          isStreamingMessageForSession(previousId, String(item.id || ''))
+            ? { ...item, id: streamingMessageId(nextSessionId, effectiveMessageTurnId(item)) }
+            : item
         ));
         storeRef.current.set(nextSessionId, draftSlot);
         storeRef.current.delete(previousId);
@@ -3952,7 +4210,7 @@ export default function ChatWindowPage() {
         interaction_mode: resolvedInteractionMode,
         model_config_id: selectedModelConfig?.id,
       };
-      if (!isDraftConversation) {
+      if (!sendAsDraftConversation) {
         requestBody.session_id = currentConversationId;
       }
       armStreamWatchdog();
@@ -3962,11 +4220,13 @@ export default function ChatWindowPage() {
         }
         if (item.event === 'session_created') {
           createdSessionId = String(item.data.newSessionId || item.data.sessionId || '');
+          if (sendAsDraftConversation && createdSessionId) {
+            promoteDraftConversation(createdSessionId);
+          }
           return;
         }
-        const eventSessionId = isDraftConversation
-          ? currentConversationId
-          : String(item.data.sessionId || liveConversationId);
+        const payloadSessionId = String(item.data.sessionId || item.data.session_id || createdSessionId || '').trim();
+        const eventSessionId = payloadSessionId || liveConversationId;
         const eventStream = getStreamSlot(eventSessionId);
         const traceTurnId = explicitStreamTurnId(item.data, eventStream.turnId || turnId);
         if (
@@ -3980,8 +4240,9 @@ export default function ChatWindowPage() {
           return;
         }
         if (item.event === 'user_message_received') {
-          const serverMessageId = typeof item.data.message_id === 'string' ? item.data.message_id : '';
-          bindRealtimeUserToServerMessage(eventSessionId, turnId, serverMessageId);
+          const serverMessageId = typeof item.data.message_id === 'string' ? item.data.message_id.trim() : '';
+          const clientTurnId = typeof item.data.client_turn_id === 'string' ? item.data.client_turn_id.trim() : '';
+          bindRealtimeUserToServerMessage(eventSessionId, clientTurnId || turnId, serverMessageId);
           return;
         }
         if (item.event === 'session_title_summarized') {
@@ -4150,6 +4411,13 @@ export default function ChatWindowPage() {
           const eventStream = getStreamSlot(eventSessionId);
           const phase = typeof item.data.phase === 'string' ? item.data.phase : 'thinking';
           if (phase === 'responding') {
+            eventStream.phase = publicStreamPhase(item.data);
+            upsertTraceLine(traceTurnId, {
+              id: 'decision_responding',
+              kind: 'decision',
+              text: eventStream.phase,
+              state: 'running',
+            });
             notifyStream();
             return;
           }
@@ -4234,25 +4502,21 @@ export default function ChatWindowPage() {
           return;
         }
         if (item.event === 'stream_end') {
-          markStreamTerminal();
-          finishTrace(traceTurnId);
-          upsertTraceLine(traceTurnId, { id: 'thinking', kind: 'thinking', text: '执行记录', state: 'completed' });
-          finalizeStreaming(eventSessionId);
-          const eventStream = getStreamSlot(eventSessionId);
-          eventStream.loading = false;
-          eventStream.phase = '';
-          eventStream.abortController = null;
-          setRunningTurn((current) => (
-            current?.sessionId === eventSessionId && (current.turnId === turnId || current.turnId === traceTurnId) ? null : current
-          ));
+          flushStreaming(eventSessionId);
+          window.setTimeout(() => {
+            void loadMessages(eventSessionId).finally(() => {
+              void loadTraces(eventSessionId);
+            });
+            loadSessions();
+          }, 250);
           notifyStream();
           return;
         }
         if (item.event === 'stream_cancelled') {
           markStreamTerminal();
-          finishTrace(traceTurnId, true);
+          finishTrace(traceTurnId, 'cancelled');
+          appendCancelledAssistantMessage(eventSessionId, traceTurnId);
           clearStreamSlot(eventSessionId, false);
-          upsertTraceStatusPlaceholder(getSlot(eventSessionId), eventSessionId, traceTurnId);
           notifyStore();
           setRunningTurn((current) => (
             current?.sessionId === eventSessionId && (current.turnId === turnId || current.turnId === traceTurnId) ? null : current
@@ -4277,7 +4541,7 @@ export default function ChatWindowPage() {
           }
           finishTrace(traceTurnId);
           upsertTraceLine(traceTurnId, { id: 'thinking', kind: 'thinking', text: '执行记录', state: 'completed' });
-          finalizeStreaming(eventSessionId);
+          settleStreamingAfterTerminal(eventSessionId);
           setLastTurn(result);
           eventStream.loading = false;
           eventStream.phase = '';
@@ -4286,7 +4550,7 @@ export default function ChatWindowPage() {
             current?.sessionId === eventSessionId && (current.turnId === turnId || current.turnId === traceTurnId) ? null : current
           ));
           notifyStream();
-          if (isDraftConversation && completedSessionId) {
+          if (sendAsDraftConversation && completedSessionId) {
             promoteDraftConversation(completedSessionId);
           } else {
             loadSessions();
@@ -4303,21 +4567,10 @@ export default function ChatWindowPage() {
         const activeStream = getStreamSlot(liveConversationId);
         const activeTurnId = activeStream.turnId || turnId;
         if (activeStream.accumulated) {
-          finishTrace(activeTurnId);
-          upsertTraceLine(activeTurnId, { id: 'thinking', kind: 'thinking', text: '执行记录', state: 'completed' });
-          finalizeStreaming(liveConversationId);
-          activeStream.loading = false;
-          activeStream.phase = '';
-          activeStream.abortController = null;
-          clearRunningTurn(liveConversationId);
-          notifyStream();
-          loadSessions();
-          window.setTimeout(() => {
-            loadMessages(liveConversationId);
-            loadTraces(liveConversationId);
-          }, 250);
+          updateStreaming(liveConversationId, activeStream.accumulated, activeTurnId);
+          recoverDetachedStream();
         } else {
-          appendInterruptedResponse('本次响应中断，未收到模型回复。请重试发送。');
+          recoverDetachedStream();
         }
       }
     } catch (error) {
@@ -4350,7 +4603,7 @@ export default function ChatWindowPage() {
       notifyStream();
     } finally {
       clearStreamWatchdog();
-      if (stream.abortController === controller) {
+      if (stream.abortController === controller && !keepRecoveringAfterStreamClose) {
         stream.abortController = null;
         stream.loading = false;
         stream.phase = '';
@@ -4578,10 +4831,22 @@ export default function ChatWindowPage() {
                 && traceLines.some((line) => line.state === 'running')
               );
               const visibleTrace = forceRunningTrace ? traceLines : allowedTrace;
-              const summary = trace && visibleTrace.length > 0 ? traceSummary(trace, visibleTrace) : null;
+              const locallyCancelledTrace = Boolean(
+                item.role === 'assistant'
+                && currentStream.cancelledTurnId
+                && traceTurnId === currentStream.cancelledTurnId
+              );
+              const summary = trace && visibleTrace.length > 0
+                ? locallyCancelledTrace
+                  ? { text: '已停止生成', state: 'cancelled' as const }
+                  : traceSummary(trace, visibleTrace)
+                : null;
               const details = traceDetails(visibleTrace);
+              const detailsForRender = summary?.state === 'cancelled'
+                ? details.filter((line) => line.id !== 'generation_stopped' && line.text !== summary.text)
+                : details;
               const traceActive = isCurrentStreamingTrace(traceTurnId, item);
-              const summaryForRender = summary && traceActive && !trace?.completedAt
+              const summaryForRender = summary && traceActive && !trace?.completedAt && !locallyCancelledTrace
                 ? { ...summary, state: 'running' as const }
                 : summary;
               const traceOnlyMessage = Boolean(
@@ -4640,6 +4905,18 @@ export default function ChatWindowPage() {
               ) {
                 return null;
               }
+              if (
+                item.role === 'assistant'
+                && item.isStreaming
+                && !visibleContent
+                && !showInlineTrace
+                && !statusOnly
+                && !scheduledDraft
+                && !persistedCreatedTask
+                && citations.length === 0
+              ) {
+                return null;
+              }
               void traceTick;
               const messageNode = (
                 <div key={`${item.id}:message`} className={`message-item ${item.role}${statusOnly ? ' status-only-item' : ''}`}>
@@ -4648,7 +4925,7 @@ export default function ChatWindowPage() {
                       {statusOnly ? (
                         <div className="assistant-running-status">{statusOnlyText}</div>
                       ) : showInlineTrace && summaryForRender && (
-                        renderAssistantTrace(traceTurnId, summaryForRender, details, expanded)
+                        renderAssistantTrace(traceTurnId, summaryForRender, detailsForRender, expanded)
                       )}
                       {!statusOnly && visibleContent ? (
                         item.role === 'assistant' ? (

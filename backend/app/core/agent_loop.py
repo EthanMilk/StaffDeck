@@ -70,6 +70,7 @@ TOOL_CALL_HISTORY_SLOT = "_tool_call_history"
 TOOL_RESULTS_SLOT = "_tool_results"
 GRAPH_PENDING_STEPS_SLOT = "_graph_pending_steps"
 GENERAL_SKILL_TOOL_PREFIX = "general_skill."
+CANCELLED_ASSISTANT_REPLY = "已停止生成"
 PROFILE_NAME_PREFIX = "用户姓名/称呼："
 TASK_CONFIRMATION_MARKERS = ("确认下单", "确认购买", "请确认", "是否确认")
 TASK_HANDOFF_MARKERS = ("接下来", "然后", "下一步", "随后", "之后")
@@ -737,12 +738,21 @@ class AgentLoop:
 
         threading.Thread(target=general_skill_worker, daemon=True).start()
         run_response: GeneralSkillRunResponse | None = None
+        streamed_trace_count = 0
         while True:
-            queued = general_skill_events.get()
+            if is_cancelled and is_cancelled():
+                return
+            try:
+                queued = general_skill_events.get(timeout=0.5)
+            except queue.Empty:
+                continue
             if queued is None:
                 break
             event_name, payload = queued
             if event_name == "trace":
+                if is_cancelled and is_cancelled():
+                    return
+                streamed_trace_count += 1
                 yield self._stream_event(
                     "general_skill_trace",
                     chat_session,
@@ -755,7 +765,17 @@ class AgentLoop:
 
         if run_response is None:
             raise LLMError("General skill stream ended without a result")
-        self._record_general_skill_run_events(request.tenant_id, chat_session, run_response, user_message_id)
+        if is_cancelled and is_cancelled():
+            return
+        self._record_general_skill_run_events(
+            request.tenant_id,
+            chat_session,
+            run_response,
+            user_message_id,
+            include_trace=streamed_trace_count == 0,
+        )
+        if is_cancelled and is_cancelled():
+            return
         yield self._stream_status(chat_session, "responding", "正在生成回复", user_message_id=user_message_id)
         step_result, tool_result = self._general_skill_agent_outputs(run_response)
         active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
@@ -1158,6 +1178,12 @@ class AgentLoop:
                 matches_server_turn = user_message_id in event_turn_ids
                 matches_client_turn = bool(normalized_client_turn_id and normalized_client_turn_id in event_turn_ids)
                 if matches_server_turn or matches_client_turn:
+                    self._persist_cancelled_assistant_message(
+                        request.tenant_id,
+                        chat_session,
+                        user_message_id,
+                        normalized_client_turn_id,
+                    )
                     clear_chat_turn_cancelled(chat_session.id, user_message_id)
                     if normalized_client_turn_id:
                         clear_chat_turn_cancelled(chat_session.id, normalized_client_turn_id)
@@ -1175,6 +1201,12 @@ class AgentLoop:
                     },
                     user_message_id,
                 ),
+            )
+            self._persist_cancelled_assistant_message(
+                request.tenant_id,
+                chat_session,
+                user_message_id,
+                normalized_client_turn_id,
             )
             self.db.commit()
             clear_chat_turn_cancelled(chat_session.id, user_message_id)
@@ -1254,12 +1286,6 @@ class AgentLoop:
                     user_message.id,
                 ),
             )
-            self.events.record(
-                request.tenant_id,
-                chat_session.id,
-                "stream_status",
-                self._turn_payload({"phase": "routing", "text": "正在判断用户意图"}, user_message_id),
-            )
             self.db.commit()
             self.db.refresh(chat_session)
             self.db.refresh(user_message)
@@ -1277,6 +1303,7 @@ class AgentLoop:
             persona_prompt = self._get_persona_prompt(request.tenant_id, chat_session.agent_id)
             self._drop_unavailable_skill_state(request.tenant_id, chat_session, skills)
             if not skills:
+                yield self._stream_status(chat_session, "routing", "正在判断用户意图", user_message_id=user_message_id)
                 selected_general_skill = self._select_general_skill(request.message, model_config, chat_session.agent_id)
                 if selected_general_skill:
                     yield from self._stream_general_skill_response(
@@ -1898,6 +1925,9 @@ class AgentLoop:
         payload: dict[str, object] = {"phase": phase, "text": text, **(extra or {})}
         if user_message_id:
             payload = self._turn_payload(payload, user_message_id)
+            if phase != "received":
+                self.events.record(chat_session.tenant_id, chat_session.id, "stream_status", payload)
+                self.db.commit()
         return self._stream_event(
             "status",
             chat_session,
@@ -1910,6 +1940,23 @@ class AgentLoop:
         chat_session: ChatSession,
         payload: dict[str, object],
     ) -> dict[str, object]:
+        persisted_stream_events = {
+            "agent_loop_completed",
+            "agent_loop_continued",
+            "general_skill_run_finished",
+            "general_skill_trace",
+            "knowledge_result",
+            "reflection_decision",
+            "skill_state",
+            "step_result",
+            "stream_delta",
+            "stream_replace",
+            "stream_end",
+            "tool_result",
+        }
+        if kind in persisted_stream_events and (payload.get("turn_id") or payload.get("user_message_id")):
+            self.events.record(chat_session.tenant_id, chat_session.id, kind, payload)
+            self.db.commit()
         data = {
             "kind": kind,
             "sessionId": chat_session.id,
@@ -1944,6 +1991,7 @@ class AgentLoop:
             "user_message_received",
             {
                 "message_id": user_message.id,
+                "client_turn_id": request.client_turn_id,
                 "message": request.message,
                 "channel": request.channel,
                 "user_id": request.user_id,
@@ -5567,8 +5615,84 @@ class AgentLoop:
         self.db.add(message)
         return message
 
+    def _persist_cancelled_assistant_message(
+        self,
+        tenant_id: str,
+        chat_session: ChatSession,
+        user_message_id: str,
+        client_turn_id: str | None = None,
+    ) -> Message | None:
+        if not user_message_id:
+            return None
+        user_message = self.db.get(Message, user_message_id)
+        if (
+            not user_message
+            or user_message.tenant_id != tenant_id
+            or user_message.session_id != chat_session.id
+            or user_message.role != "user"
+        ):
+            return None
+
+        normalized_client_turn_id = (client_turn_id or "").strip()
+        turn_ids = {user_message_id}
+        if normalized_client_turn_id:
+            turn_ids.add(normalized_client_turn_id)
+        existing_messages = self.db.exec(
+            select(Message)
+            .where(Message.tenant_id == tenant_id, Message.session_id == chat_session.id, Message.role == "assistant")
+            .order_by(Message.created_at)
+        ).all()
+        for row in existing_messages:
+            metadata = row.metadata_json or {}
+            row_turn_ids = {
+                str(metadata.get("turn_id") or "").strip(),
+                str(metadata.get("user_message_id") or "").strip(),
+                str(metadata.get("client_turn_id") or "").strip(),
+            }
+            if turn_ids & row_turn_ids:
+                return None
+
+        chat_session.updated_at = utc_now()
+        chat_session.status = "active"
+        chat_session.summary = f"最近回复：{CANCELLED_ASSISTANT_REPLY}"
+        assistant_message = self._append_message(
+            tenant_id,
+            chat_session.id,
+            "assistant",
+            CANCELLED_ASSISTANT_REPLY,
+            metadata={
+                "turn_id": user_message_id,
+                "user_message_id": user_message_id,
+                "client_turn_id": normalized_client_turn_id or None,
+                "status": "cancelled",
+            },
+        )
+        self.events.record(
+            tenant_id,
+            chat_session.id,
+            "assistant_message_created",
+            {
+                "message_id": assistant_message.id,
+                "assistant_message_id": assistant_message.id,
+                "user_message_id": user_message_id,
+                "turn_id": user_message_id,
+                "client_turn_id": normalized_client_turn_id or None,
+                "reply": CANCELLED_ASSISTANT_REPLY,
+                "status": "cancelled",
+            },
+        )
+        self.events.record(
+            tenant_id,
+            chat_session.id,
+            "session_state_changed",
+            public_session(chat_session).model_dump(),
+        )
+        return assistant_message
+
     def _user_message_metadata(self, request: ChatTurnRequest) -> dict[str, Any]:
         metadata: dict[str, Any] = {}
+        if request.client_turn_id:
+            metadata["client_turn_id"] = request.client_turn_id
         if request.interaction_mode == "scheduled_task":
             metadata["interaction_mode"] = "scheduled_task"
         if request.model_config_id:
@@ -5721,20 +5845,22 @@ class AgentLoop:
         chat_session: ChatSession,
         run_response: GeneralSkillRunResponse,
         user_message_id: str | None = None,
+        include_trace: bool = True,
     ) -> None:
-        for item in run_response.execution_trace:
-            self.events.record(
-                tenant_id,
-                chat_session.id,
-                "general_skill_trace",
-                self._turn_payload(
-                    {
-                        "skill_slug": run_response.skill_slug,
-                        **item,
-                    },
-                    user_message_id,
-                ),
-            )
+        if include_trace:
+            for item in run_response.execution_trace:
+                self.events.record(
+                    tenant_id,
+                    chat_session.id,
+                    "general_skill_trace",
+                    self._turn_payload(
+                        {
+                            "skill_slug": run_response.skill_slug,
+                            **item,
+                        },
+                        user_message_id,
+                    ),
+                )
         self.events.record(
             tenant_id,
             chat_session.id,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import queue
 import threading
 import time
 from datetime import timedelta
@@ -49,32 +50,13 @@ from app.session.session_schema import (
 )
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+CANCELLED_ASSISTANT_REPLY = "已停止生成"
 CHAT_ADMIN_USERNAMES = {"admin", "admin_demo"}
 STREAM_REPLY_CHUNK_SIZE = 96
 MAX_CHAT_ATTACHMENT_BYTES = 12 * 1024 * 1024
 MAX_CHAT_ATTACHMENTS = 8
 SESSION_TITLE_SUMMARY_EVENT = "session_title_summarized"
 EVENT_PAYLOAD_META_KEYS = {"id", "event", "type", "event_type", "created_at", "data"}
-ACTIVE_TURN_FALLBACK_TRACE_EVENTS = {
-    "agent_loop_completed",
-    "agent_loop_continued",
-    "general_skill_intent_checked",
-    "general_skill_run_finished",
-    "general_skill_selected",
-    "general_skill_trace",
-    "knowledge_query_finished",
-    "knowledge_query_started",
-    "reflection_decision_created",
-    "reflection_retry_started",
-    "reflection_skipped",
-    "skill_completed",
-    "skill_resumed",
-    "skill_started",
-    "skill_step_changed",
-    "skill_suspended",
-    "tool_call_finished",
-    "tool_call_started",
-}
 SESSION_TITLE_PROMPT = """你是任务派发台的会话标题编辑器。
 
 根据首轮用户需求和员工回复，生成一个简短、可读、具体的中文标题。
@@ -179,6 +161,8 @@ def human_handoff_read(row: HumanHandoffRequest) -> HumanHandoffRead:
 
 def _user_message_metadata(request: ChatTurnRequest) -> dict[str, object]:
     metadata: dict[str, object] = {}
+    if request.client_turn_id:
+        metadata["client_turn_id"] = request.client_turn_id
     if request.interaction_mode == "scheduled_task":
         metadata["interaction_mode"] = "scheduled_task"
     if request.model_config_id:
@@ -224,6 +208,9 @@ def _summarize_session_title_once(
 ) -> None:
     try:
         for attempt in range(8):
+            messages: list[Message] = []
+            model_config = None
+            effective_agent_id = agent_id
             with Session(engine) as db:
                 session = db.exec(
                     select(ChatSession).where(
@@ -252,35 +239,60 @@ def _summarize_session_title_once(
                     .limit(6)
                 ).all()
                 if not any(row.role == "user" for row in messages):
-                    if attempt < 7:
-                        time.sleep(0.25)
-                        continue
+                    messages = []
+                else:
+                    effective_agent_id = agent_id or session.agent_id
+                    model_config = model_for_agent(db, tenant_id, effective_agent_id)
+
+            if not messages:
+                if attempt < 7:
+                    time.sleep(0.25)
+                    continue
+                return
+
+            payload = {
+                "current_title": "",
+                "messages": [
+                    {"role": row.role, "content": row.content[:1200]}
+                    for row in messages
+                    if row.role in {"user", "assistant"}
+                ],
+            }
+            title = ""
+            title_source = "first_user_fallback"
+            if model_config:
+                try:
+                    raw = LLMClient(model_config).generate_json(SESSION_TITLE_PROMPT, payload)
+                    title = _normalize_auto_title(str(raw.get("title") or ""))
+                    if title:
+                        title_source = "first_turn_summary"
+                except LLMError:
+                    title = ""
+            if not title:
+                title = _fallback_session_title(messages)
+            if not title:
+                return
+
+            with Session(engine) as db:
+                session = db.exec(
+                    select(ChatSession).where(
+                        ChatSession.id == session_id,
+                        ChatSession.tenant_id == tenant_id,
+                        ChatSession.user_id == user_id,
+                    )
+                ).first()
+                if not session:
                     return
-                payload = {
-                    "current_title": "",
-                    "messages": [
-                        {"role": row.role, "content": row.content[:1200]}
-                        for row in messages
-                        if row.role in {"user", "assistant"}
-                    ],
-                }
-                title = ""
-                title_source = "first_user_fallback"
-                model_config = model_for_agent(db, tenant_id, agent_id or session.agent_id)
-                if model_config:
-                    try:
-                        raw = LLMClient(model_config).generate_json(SESSION_TITLE_PROMPT, payload)
-                        title = _normalize_auto_title(str(raw.get("title") or ""))
-                        if title:
-                            title_source = "first_turn_summary"
-                    except LLMError:
-                        title = ""
-                if not title:
-                    title = _fallback_session_title(messages)
-                if not title:
-                    return
-                db.refresh(session)
                 if (session.title or "").strip():
+                    return
+                existing = db.exec(
+                    select(AgentEvent).where(
+                        AgentEvent.tenant_id == tenant_id,
+                        AgentEvent.session_id == session_id,
+                        AgentEvent.event_type == SESSION_TITLE_SUMMARY_EVENT,
+                    )
+                ).first()
+                if existing:
                     return
                 session.title = title
                 db.add(session)
@@ -289,7 +301,11 @@ def _summarize_session_title_once(
                         tenant_id=tenant_id,
                         session_id=session_id,
                         event_type=SESSION_TITLE_SUMMARY_EVENT,
-                        payload_json={"title": title, "source": title_source},
+                        payload_json={
+                            "title": title,
+                            "source": title_source,
+                            "agent_id": effective_agent_id,
+                        },
                     )
                 )
                 db.commit()
@@ -467,6 +483,7 @@ def _maybe_handle_scheduled_task_request(
             event_type="user_message_received",
             payload_json={
                 "message_id": user_message.id,
+                "client_turn_id": request.client_turn_id,
                 "message": request.message,
                 "channel": request.channel,
                 "user_id": request.user_id,
@@ -673,58 +690,87 @@ def chat_stream(
     if not request.message.strip() and not request.attachments:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    def stream_events() -> Iterator[str]:
-        with Session(engine) as db:
-            ensure_tenant(db, request.tenant_id)
-            if request.session_id:
-                chat_session = _ensure_chat_session_available(db, request.tenant_id, request.user_id, request.session_id)
-                scheduled_response = _maybe_handle_scheduled_task_request(db, request, chat_session)
-                if scheduled_response:
-                    response, draft = scheduled_response
-                    yield _sse("status", {"phase": "scheduled_task_draft", "text": "生成自动任务草案"})
-                    for chunk in _reply_chunks(response.reply):
-                        yield _sse("stream_delta", {"content": chunk})
-                    yield _sse("stream_end", {})
-                    yield _sse("complete", response.model_dump(mode="json"))
-                    yield _sse("scheduled_task_draft", draft.model_dump(mode="json"))
-                    _schedule_session_title_summary(request.tenant_id, request.user_id, response.session_id, request.agent_id)
-                    return
-            for item in AgentLoop(db).handle_turn_stream(request):
-                yield _sse(item["event"], item["data"])
-                if item["event"] == "user_message_received":
-                    source_session_id = str(item["data"].get("sessionId") or request.session_id or "")
-                    _schedule_session_title_summary(
+    event_queue: queue.Queue[str | None] = queue.Queue()
+
+    def enqueue(event: object, data: object) -> None:
+        event_queue.put(_sse(event, data))
+
+    def run_stream_worker() -> None:
+        try:
+            with Session(engine) as worker_db:
+                ensure_tenant(worker_db, request.tenant_id)
+                if request.session_id:
+                    chat_session = _ensure_chat_session_available(
+                        worker_db,
                         request.tenant_id,
                         request.user_id,
-                        source_session_id,
-                        request.agent_id,
+                        request.session_id,
                     )
-                    continue
-                if item["event"] == "complete":
-                    source_session_id = str(item["data"].get("sessionId") or request.session_id or "")
-                    _schedule_session_title_summary(
-                        request.tenant_id,
-                        request.user_id,
-                        source_session_id,
-                        request.agent_id,
-                    )
-                    if source_session_id:
-                        summary_payload = _session_title_summary_payload(db, request.tenant_id, source_session_id)
-                        if summary_payload:
-                            yield _sse(SESSION_TITLE_SUMMARY_EVENT, summary_payload)
-                    if request.interaction_mode != "scheduled_task" or not request.agent_id:
+                    scheduled_response = _maybe_handle_scheduled_task_request(worker_db, request, chat_session)
+                    if scheduled_response:
+                        response, draft = scheduled_response
+                        enqueue("status", {"phase": "scheduled_task_draft", "text": "生成自动任务草案"})
+                        for chunk in _reply_chunks(response.reply):
+                            enqueue("stream_delta", {"content": chunk})
+                        enqueue("stream_end", {})
+                        enqueue("complete", response.model_dump(mode="json"))
+                        enqueue("scheduled_task_draft", draft.model_dump(mode="json"))
+                        _schedule_session_title_summary(
+                            request.tenant_id,
+                            request.user_id,
+                            response.session_id,
+                            request.agent_id,
+                        )
+                        return
+                for item in AgentLoop(worker_db).handle_turn_stream(request):
+                    enqueue(item["event"], item["data"])
+                    if item["event"] == "user_message_received":
+                        source_session_id = str(item["data"].get("sessionId") or request.session_id or "")
+                        _schedule_session_title_summary(
+                            request.tenant_id,
+                            request.user_id,
+                            source_session_id,
+                            request.agent_id,
+                        )
                         continue
-                    draft = detect_scheduled_task_draft(
-                        db,
-                        request.tenant_id,
-                        request.agent_id,
-                        request.user_id,
-                        request.message,
-                        source_session_id or None,
-                    )
-                    if draft and draft.should_create:
-                        _persist_scheduled_task_draft(db, request.tenant_id, source_session_id, draft)
-                        yield _sse("scheduled_task_draft", draft.model_dump(mode="json"))
+                    if item["event"] == "complete":
+                        source_session_id = str(item["data"].get("sessionId") or request.session_id or "")
+                        _schedule_session_title_summary(
+                            request.tenant_id,
+                            request.user_id,
+                            source_session_id,
+                            request.agent_id,
+                        )
+                        if source_session_id:
+                            summary_payload = _session_title_summary_payload(worker_db, request.tenant_id, source_session_id)
+                            if summary_payload:
+                                enqueue(SESSION_TITLE_SUMMARY_EVENT, summary_payload)
+                        if request.interaction_mode != "scheduled_task" or not request.agent_id:
+                            continue
+                        draft = detect_scheduled_task_draft(
+                            worker_db,
+                            request.tenant_id,
+                            request.agent_id,
+                            request.user_id,
+                            request.message,
+                            source_session_id or None,
+                        )
+                        if draft and draft.should_create:
+                            _persist_scheduled_task_draft(worker_db, request.tenant_id, source_session_id, draft)
+                            enqueue("scheduled_task_draft", draft.model_dump(mode="json"))
+        except Exception as exc:
+            enqueue("error", {"message": str(exc)[:300] or "stream worker failed"})
+        finally:
+            event_queue.put(None)
+
+    threading.Thread(target=run_stream_worker, daemon=True).start()
+
+    def stream_events() -> Iterator[str]:
+        while True:
+            item = event_queue.get()
+            if item is None:
+                return
+            yield item
 
     return StreamingResponse(stream_events(), media_type="text/event-stream")
 
@@ -773,8 +819,12 @@ def _persist_chat_turn_cancelled(
             client_turn_id = candidate_client_turn_id
             break
     if not message_id:
-        return False
+        message_id = requested_turn_id
+        client_turn_id = requested_turn_id
 
+    turn_ids = {message_id}
+    if client_turn_id:
+        turn_ids.add(client_turn_id)
     for event in events:
         if event.event_type not in {"assistant_message_created", "stream_cancelled"}:
             continue
@@ -789,6 +839,15 @@ def _persist_chat_turn_cancelled(
         matches_client_turn = bool(client_turn_id and client_turn_id in event_turn_ids)
         if not matches_message and not matches_client_turn:
             continue
+        if event.event_type == "stream_cancelled":
+            return _ensure_cancelled_assistant_message(
+                db,
+                tenant_id,
+                chat_session,
+                message_id,
+                client_turn_id,
+                event.created_at + timedelta(microseconds=1),
+            )
         return False
 
     now = utc_now()
@@ -808,8 +867,85 @@ def _persist_chat_turn_cancelled(
             created_at=now,
         )
     )
+    _ensure_cancelled_assistant_message(
+        db,
+        tenant_id,
+        chat_session,
+        message_id,
+        client_turn_id,
+        now + timedelta(microseconds=1),
+    )
     chat_session.status = "active"
     chat_session.updated_at = now
+    db.add(chat_session)
+    return True
+
+
+def _ensure_cancelled_assistant_message(
+    db: Session,
+    tenant_id: str,
+    chat_session: ChatSession,
+    user_message_id: str,
+    client_turn_id: str,
+    created_at,
+) -> bool:
+    user_message = db.get(Message, user_message_id)
+    if not user_message or user_message.tenant_id != tenant_id or user_message.session_id != chat_session.id:
+        return False
+    if user_message.role != "user":
+        return False
+
+    turn_ids = {user_message_id}
+    if client_turn_id:
+        turn_ids.add(client_turn_id)
+    messages = db.exec(
+        select(Message)
+        .where(Message.tenant_id == tenant_id, Message.session_id == chat_session.id, Message.role == "assistant")
+        .order_by(Message.created_at)
+    ).all()
+    for message_row in messages:
+        metadata = message_row.metadata_json or {}
+        row_turn_ids = {
+            str(metadata.get("turn_id") or "").strip(),
+            str(metadata.get("user_message_id") or "").strip(),
+            str(metadata.get("client_turn_id") or "").strip(),
+        }
+        if turn_ids & row_turn_ids:
+            return False
+
+    assistant_message = Message(
+        tenant_id=tenant_id,
+        session_id=chat_session.id,
+        role="assistant",
+        content=CANCELLED_ASSISTANT_REPLY,
+        metadata_json={
+            "turn_id": user_message_id,
+            "user_message_id": user_message_id,
+            "client_turn_id": client_turn_id or None,
+            "status": "cancelled",
+        },
+        created_at=created_at,
+    )
+    db.add(assistant_message)
+    db.add(
+        AgentEvent(
+            tenant_id=tenant_id,
+            session_id=chat_session.id,
+            event_type="assistant_message_created",
+            payload_json={
+                "message_id": assistant_message.id,
+                "assistant_message_id": assistant_message.id,
+                "user_message_id": user_message_id,
+                "turn_id": user_message_id,
+                "client_turn_id": client_turn_id or None,
+                "reply": CANCELLED_ASSISTANT_REPLY,
+                "status": "cancelled",
+            },
+            created_at=created_at,
+        )
+    )
+    chat_session.summary = f"最近回复：{CANCELLED_ASSISTANT_REPLY}"
+    chat_session.updated_at = created_at
     db.add(chat_session)
     return True
 
@@ -1660,29 +1796,31 @@ def _build_turn_traces(
         current = traces_by_turn_id.get(target_turn_id)
         if not current:
             continue
-        if current.get("completed_at"):
-            continue
-
         if event.event_type == "router_decision_created":
             target_skill_id = str(payload.get("target_skill_id") or "").strip()
             if target_skill_id:
                 skill_hints_by_turn_id[target_turn_id] = target_skill_id
 
         skill_hint = skill_hints_by_turn_id.get(target_turn_id)
+        trace_was_completed = bool(current.get("completed_at"))
         lines = _event_trace_lines(event, skill_names, skill_hint)
         for line in lines:
+            if trace_was_completed and line.get("state") == "running":
+                line = {**line, "state": "completed"}
             _upsert_trace_line(current["lines"], line)
         event_context = _skill_context_from_event(event, skill_hint=skill_hint)
         if event_context and event_context.get("skill_id"):
             skill_hints_by_turn_id[target_turn_id] = event_context["skill_id"]
         if event.event_type == "assistant_message_created":
-            current["completed_at"] = event.created_at.isoformat()
+            if not current.get("completed_at"):
+                current["completed_at"] = event.created_at.isoformat()
             _ensure_knowledge_query_line(current["lines"], current.get("_user_message_content"))
             _complete_trace_lines(current["lines"])
             if active_turn_id == target_turn_id:
                 active_turn_id = None
         elif event.event_type == "stream_cancelled":
-            current["completed_at"] = event.created_at.isoformat()
+            if not current.get("completed_at"):
+                current["completed_at"] = event.created_at.isoformat()
             _finish_trace_if_needed(current, event.created_at)
             if active_turn_id == target_turn_id:
                 active_turn_id = None
@@ -1700,15 +1838,13 @@ def _build_turn_traces(
     return _with_scheduled_draft_message_traces(traces, messages)
 
 
-def _event_trace_turn_id(event: AgentEvent, active_turn_id: str | None) -> str | None:
+def _event_trace_turn_id(event: AgentEvent, _active_turn_id: str | None) -> str | None:
     payload = event.payload_json or {}
     if event.event_type == "user_message_received":
         return str(payload.get("message_id") or payload.get("user_message_id") or "").strip() or event.id
     explicit_turn_id = str(payload.get("turn_id") or payload.get("user_message_id") or "").strip()
     if explicit_turn_id:
         return explicit_turn_id
-    if event.event_type in ACTIVE_TURN_FALLBACK_TRACE_EVENTS:
-        return active_turn_id
     return None
 
 
@@ -1878,7 +2014,13 @@ def _event_trace_line(
                 "state": "running",
             }
         if phase == "responding":
-            return None
+            return {
+                "id": "decision_responding",
+                "kind": "decision",
+                "text": text or "生成回复",
+                "detail": None,
+                "state": "running",
+            }
         if phase and phase != "received":
             return {
                 "id": f"decision_status_{phase}",
@@ -1894,7 +2036,7 @@ def _event_trace_line(
             "kind": "decision",
             "text": "已停止生成",
             "detail": None,
-            "state": "failed",
+            "state": "cancelled",
         }
     if event.event_type == "general_skill_selected":
         skill_name = str(payload.get("skill_name") or payload.get("skill_slug") or "").strip()
@@ -1954,6 +2096,28 @@ def _event_trace_line(
             "detail": str(payload.get("skill_slug") or "") or None,
             "state": "completed" if success else "failed",
         }
+    if event.event_type == "skill_state":
+        lines = []
+        for index, entry in enumerate(payload.get("currentSkills") or []):
+            if not isinstance(entry, dict):
+                continue
+            skill_id = str(entry.get("skillId") or "").strip()
+            if not skill_id:
+                continue
+            name = str(entry.get("name") or skill_id).strip()
+            state = str(entry.get("state") or "active").strip()
+            label = "挂起技能" if state == "suspended" else "等待技能" if state == "pending" else "执行技能"
+            step_id = str(entry.get("stepId") or "").strip()
+            lines.append(
+                {
+                    "id": f"skill_state_{skill_id}_{state}_{index}",
+                    "kind": "skill",
+                    "text": f"{label} {name}",
+                    "detail": f"当前步骤 {step_id}" if step_id else None,
+                    "state": "completed" if state == "suspended" else "running",
+                }
+            )
+        return lines or None
     if event.event_type == "scheduled_task_draft_created":
         title = str(payload.get("title") or "").strip()
         schedule = str(payload.get("schedule_label") or "").strip()
@@ -1973,6 +2137,47 @@ def _event_trace_line(
             "kind": "decision",
             "text": f"判断意图 {intent}" if intent else "完成技能判断",
             "detail": reason or None,
+            "state": "completed",
+        }
+    if event.event_type == "step_result":
+        tool_call = payload.get("tool_call") if isinstance(payload.get("tool_call"), dict) else {}
+        knowledge_query = payload.get("knowledge_query") if isinstance(payload.get("knowledge_query"), dict) else {}
+        next_step_id = str(payload.get("next_step_id") or "").strip()
+        reply = str(payload.get("reply") or "").strip()
+        raw_tool_name = tool_call.get("name") if isinstance(tool_call, dict) else ""
+        raw_knowledge_query = knowledge_query.get("query") if isinstance(knowledge_query, dict) else ""
+        tool_name = str(raw_tool_name or "").strip()
+        knowledge_query_text = str(raw_knowledge_query or "").strip()
+        detail = " · ".join(
+            part
+            for part in (
+                f"下一节点 {next_step_id}" if next_step_id else "",
+                f"查询：{knowledge_query_text}" if knowledge_query_text else "",
+                reply[:80] if not tool_name and not knowledge_query_text and reply else "",
+            )
+            if part
+        )
+        if tool_name:
+            return {
+                "id": f"decision_step_tool_{tool_name}",
+                "kind": "decision",
+                "text": f"决定调用工具 {tool_name}",
+                "detail": detail or None,
+                "state": "running",
+            }
+        if knowledge_query_text:
+            return {
+                "id": "decision_step_knowledge",
+                "kind": "decision",
+                "text": "决定查询知识库",
+                "detail": detail or None,
+                "state": "running",
+            }
+        return {
+            "id": "decision_step_result",
+            "kind": "decision",
+            "text": "决定下一步" if next_step_id else "完成步骤判断",
+            "detail": detail or None,
             "state": "completed",
         }
     if event.event_type in {"skill_started", "skill_suspended", "skill_resumed", "skill_step_changed"}:
@@ -2070,7 +2275,7 @@ def _event_trace_line(
             "detail": text or None,
             "state": "running",
         }
-    if event.event_type == "knowledge_query_finished":
+    if event.event_type in {"knowledge_query_finished", "knowledge_result"}:
         chunks = payload.get("chunks") if isinstance(payload.get("chunks"), list) else []
         buckets = payload.get("selected_buckets") if isinstance(payload.get("selected_buckets"), list) else []
         concepts = payload.get("selected_concepts") if isinstance(payload.get("selected_concepts"), list) else []
@@ -2087,6 +2292,26 @@ def _event_trace_line(
             "text": "读取业务资料",
             "detail": " · ".join(part for part in parts if part),
             "state": "completed",
+        }
+    if event.event_type == "tool_result":
+        content = payload.get("content") if isinstance(payload.get("content"), dict) else {}
+        raw_name = str(
+            payload.get("rawToolName")
+            or payload.get("toolId")
+            or content.get("tool_name")
+            or ""
+        ).strip()
+        display_name = str(payload.get("toolName") or raw_name).strip()
+        tool_call_id = str(payload.get("toolCallId") or raw_name or event.id)
+        success = payload.get("success")
+        is_error = bool(payload.get("isError")) if success is None else not bool(success)
+        detail_payload = content if isinstance(content, dict) else payload
+        return {
+            "id": f"tool_{tool_call_id}",
+            "kind": "tool",
+            "text": f"{'工具调用失败' if is_error else '调用工具'} {display_name}",
+            "detail": _tool_trace_detail(detail_payload),
+            "state": "failed" if is_error else "completed",
         }
     if event.event_type == "tool_call_finished":
         name = str(payload.get("tool_name") or "")
@@ -2118,7 +2343,7 @@ def _event_trace_line(
             "detail": "判断无需继续调用工具",
             "state": "completed",
         }
-    if event.event_type == "reflection_decision_created":
+    if event.event_type in {"reflection_decision_created", "reflection_decision"}:
         needs_retry = bool(payload.get("needs_retry"))
         return {
             "id": f"decision_{event.id}",
