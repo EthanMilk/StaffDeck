@@ -113,6 +113,8 @@ export type AppSidebarChatProps = {
   isSessionUnread: (session: ChatSession) => boolean;
   onOpenSession: (id: string) => void;
   onOpenGallery: () => void;
+  /** Highlights the 数字员工广场 entry as the active menu (chat gallery route). */
+  galleryActive?: boolean;
   handoffCount?: number;
   onOpenHandoffs?: () => void;
   onRenameSession: (session: ChatSession) => void;
@@ -927,13 +929,14 @@ function CollapsedChatSidebar({
   isSessionUnread,
   onOpenSession,
   onOpenGallery,
+  galleryActive = false,
   handoffCount = 0,
   onOpenHandoffs,
   onOpenAdmin,
   onToggle,
 }: Pick<
   AppSidebarChatProps,
-  'sessions' | 'sessionsLoading' | 'agents' | 'activeSessionId' | 'sessionFilter' | 'onSessionFilterChange' | 'sessionFilterOptions' | 'isSessionUnread' | 'onOpenSession' | 'onOpenGallery' | 'handoffCount' | 'onOpenHandoffs' | 'onOpenAdmin'
+  'sessions' | 'sessionsLoading' | 'agents' | 'activeSessionId' | 'sessionFilter' | 'onSessionFilterChange' | 'sessionFilterOptions' | 'isSessionUnread' | 'onOpenSession' | 'onOpenGallery' | 'galleryActive' | 'handoffCount' | 'onOpenHandoffs' | 'onOpenAdmin'
 > & { onToggle: () => void }) {
   return (
     <div className="flex h-full w-(--sidebar-width-icon) shrink-0 flex-col items-center gap-[32px] px-[20px] py-[10px]">
@@ -965,7 +968,13 @@ function CollapsedChatSidebar({
               type="button"
               onClick={onOpenGallery}
               aria-label="数字员工广场"
-              className="flex h-[32px] w-full items-center justify-center rounded-[8px] text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              aria-current={galleryActive ? 'page' : undefined}
+              className={cn(
+                'flex h-[32px] w-full items-center justify-center rounded-[8px] transition-colors',
+                galleryActive
+                  ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                  : 'text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+              )}
             >
               <IconGlobe className="size-[16px]!" />
             </button>
@@ -1063,6 +1072,7 @@ function ChatSidebarVariant({
   isSessionUnread,
   onOpenSession,
   onOpenGallery,
+  galleryActive = false,
   handoffCount = 0,
   onOpenHandoffs,
   onRenameSession,
@@ -1087,6 +1097,7 @@ function ChatSidebarVariant({
           isSessionUnread={isSessionUnread}
           onOpenSession={onOpenSession}
           onOpenGallery={onOpenGallery}
+          galleryActive={galleryActive}
           handoffCount={handoffCount}
           onOpenHandoffs={onOpenHandoffs}
           onOpenAdmin={onOpenAdmin}
@@ -1119,7 +1130,13 @@ function ChatSidebarVariant({
             <button
               type="button"
               onClick={onOpenGallery}
-              className="flex items-center gap-[12px] rounded-[8px] px-[20px] py-[10px] text-left text-[14px] text-[#858b9c] transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+              aria-current={galleryActive ? 'page' : undefined}
+              className={cn(
+                'flex items-center gap-[12px] rounded-[8px] px-[20px] py-[10px] text-left text-[14px] transition-colors',
+                galleryActive
+                  ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                  : 'text-[#858b9c] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground',
+              )}
             >
               <IconGlobe className="size-[16px]! shrink-0" />
               <span className="truncate">数字员工广场</span>

@@ -202,7 +202,7 @@ export default function ScheduledTasksPage({
 
   function openChatSession(sessionId?: string) {
     if (!sessionId) return;
-    window.open(`/chat/${sessionId}`, '_blank', 'noopener,noreferrer');
+    window.open(`/workspace/chat/${sessionId}`, '_blank', 'noopener,noreferrer');
   }
 
   const activeRows = rows.filter((item) => item.status === 'active');
@@ -443,7 +443,7 @@ export default function ScheduledTasksPage({
             <StatCard label="执行记录" value={allRunRows.length} className="basis-[220px]" />
           </div>
 
-          <div className="flex flex-col gap-[24px] p-[18px_18px_0_18px] rounded-[20px_20px_0_0] bg-[#FFF] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
+          <div className="flex flex-col gap-[24px] p-[18px_18px_18px_18px] rounded-[20px_20px_0_0] bg-[#FFF] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)]">
             <TaskSection
               icon={<IconTable className="size-[14px] shrink-0" />}
               title="任务列表"

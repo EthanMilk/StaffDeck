@@ -32,6 +32,8 @@ export type EmployeeCardProps = {
   employee: AgentProfileRead;
   canManage: boolean;
   selected?: boolean;
+  /** Show the top-right "更多" actions menu. Hidden on the 对话端 gallery. */
+  showMenu?: boolean;
   onOpen: () => void;
   onStatus: (status: 'active' | 'archived') => void;
   onGallery: (published: boolean) => void;
@@ -45,6 +47,7 @@ export default function EmployeeCard({
   employee,
   canManage,
   selected = false,
+  showMenu = true,
   onOpen,
   onStatus,
   onGallery,
@@ -139,6 +142,7 @@ export default function EmployeeCard({
       </div>
 
       {/* Actions menu */}
+      {showMenu && (
       <div className="absolute right-[12px] top-[12px] z-20">
         <DropdownMenu>
           <DropdownMenuTrigger
@@ -225,6 +229,7 @@ export default function EmployeeCard({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      )}
 
       {/* Description */}
       <p className="line-clamp-2 mt-[8px] h-[36px] shrink-0 text-[12px] leading-[18px] text-[#757F9C] dark:text-[#a8afbd]">

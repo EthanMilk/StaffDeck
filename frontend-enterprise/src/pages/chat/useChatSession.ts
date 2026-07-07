@@ -115,7 +115,7 @@ import {
   type TurnTrace,
 } from './chatTypes';
 
-const CHAT_BASE_PATH = '/chat';
+const CHAT_BASE_PATH = '/workspace/chat';
 const STREAM_TEXT_EVENTS = new Set(['stream_replace', 'stream_delta', 'token']);
 // Shared with the management shell (App.tsx `ENTERPRISE_SIDEBAR_STORAGE_KEY`) so
 // the collapse state is preserved when switching between 管理端 and 对话端.
@@ -2424,7 +2424,7 @@ export function useChatSession() {
   }, [navigate]);
 
   const openGallery = useCallback(() => {
-    navigate(CHAT_BASE_PATH);
+    navigate('/workspace/gallery');
   }, [navigate]);
 
   return {

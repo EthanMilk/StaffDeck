@@ -347,7 +347,7 @@ export default function FeedbackPage({
         </UIButton>
       </div>
 
-      <div className="flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-white p-[18px_18px_0_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)] dark:bg-(--surface)">
+      <div className="flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-white p-[18px_18px_18px_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)] dark:bg-(--surface)">
         <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c] dark:text-muted-foreground">
           <Clock className="size-[14px] shrink-0" />
           <span className="text-[14px] font-normal leading-none">对话记录</span>

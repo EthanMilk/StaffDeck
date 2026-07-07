@@ -30,6 +30,7 @@ import {
 import AccountsPage from "./pages/AccountsPage";
 import AgentsPage from "./pages/AgentsPage";
 import ChatPage from "./pages/chat/ChatPage";
+import ChatGalleryPage from "./pages/chat/ChatGalleryPage";
 import DashboardPage from "./pages/DashboardPage";
 import DistillPage from "./pages/DistillPage";
 import FeedbackPage from "./pages/FeedbackPage";
@@ -377,7 +378,7 @@ function Shell({
           navigate(EnterpriseRoute.Dashboard);
         }}
         onOpenChat={() => {
-          navigate(EnterpriseRoute.Chat);
+          navigate(EnterpriseRoute.Gallery);
         }}
       />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -725,20 +726,20 @@ function AuthedApp({
   onLogout: () => void;
 }) {
   const location = useLocation();
-  if (location.pathname.startsWith("/enterprise/chat")) {
-    return (
-      <Navigate
-        to={`${location.pathname.replace(/^\/enterprise\/chat/, EnterpriseRoute.Chat)}${location.search}${location.hash}`}
-        replace
-      />
-    );
-  }
-  if (location.pathname.startsWith(EnterpriseRoute.Chat)) {
+  if (location.pathname.startsWith(EnterpriseRoute.Workspace)) {
     return (
       <Routes>
-        <Route path="/chat" element={<ChatPage />} />
-        <Route path="/chat/draft/:draftAgentId" element={<ChatPage />} />
-        <Route path="/chat/:sessionId" element={<ChatPage />} />
+        <Route
+          path="/workspace"
+          element={<Navigate to="/workspace/gallery" replace />}
+        />
+        <Route path="/workspace/gallery" element={<ChatGalleryPage />} />
+        <Route path="/workspace/chat" element={<ChatPage />} />
+        <Route
+          path="/workspace/chat/draft/:draftAgentId"
+          element={<ChatPage />}
+        />
+        <Route path="/workspace/chat/:sessionId" element={<ChatPage />} />
       </Routes>
     );
   }

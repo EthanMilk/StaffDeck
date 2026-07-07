@@ -253,8 +253,8 @@ export default function DashboardPage({
         <section className="employee-hero org-hero">
           <div>
             <span className="section-kicker">开放广场</span>
-            <h2 className="ant-typography">开放广场</h2>
-            <p className="ant-typography">
+            <h2 className="ui-typography">开放广场</h2>
+            <p className="ui-typography">
               汇集所有可共享的 SOP、知识库、技能和工具，新建数字员工时可以从这里复制配置作为起点。
             </p>
           </div>
@@ -273,7 +273,7 @@ export default function DashboardPage({
           <DashboardStat title="好评" value={positiveFeedback || feedbackSummary?.up_count || 0} icon={<StaffdeckIcon name="chat" />} />
           <DashboardStat title="差评" value={negativeFeedback || feedbackSummary?.down_count || 0} icon={<StaffdeckIcon name="chat" />} />
           <div className="org-dashboard-card">
-            <div className="ant-card-body p-[24px]">
+            <div className="ui-card-body p-[24px]">
               <span className="org-dashboard-icon"><StaffdeckIcon name="model" /></span>
               <span className="text-[13px] text-muted-foreground">默认模型</span>
               <span className="text-[15px] text-foreground">{defaultModel ? `${defaultModel.name} / ${defaultModel.model}` : '未配置'}</span>
@@ -408,7 +408,7 @@ export default function DashboardPage({
                 <UiButton
                   variant="outline"
                   className={heroActionButtonClass}
-                  onClick={() => { window.location.href = '/chat'; }}
+                  onClick={() => { window.location.href = '/workspace/chat'; }}
                 >
                   <IconChat className="size-[14px]" />
                   去对话
@@ -560,7 +560,7 @@ export default function DashboardPage({
 function DashboardStat({ title, value, icon }: { title: string; value: number; icon: ReactNode }) {
   return (
     <div className="org-dashboard-card">
-      <div className="ant-card-body p-[24px]">
+      <div className="ui-card-body p-[24px]">
         <span className="org-dashboard-icon">{icon}</span>
         <span className="text-[13px] text-muted-foreground">{title}</span>
         <strong>{value}</strong>

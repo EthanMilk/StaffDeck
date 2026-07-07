@@ -11,7 +11,7 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
-  base: '/enterprise/',
+  base: '/',
   server: {
     port: 5173,
     proxy: {

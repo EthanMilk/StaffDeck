@@ -194,7 +194,7 @@ export default function MemoriesPage({
     >
       <AppHeader onLogout={onLogout} userName={currentUser?.username} title="员工记忆" />
 
-      <div className="mt-[20px] flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-white p-[18px_18px_0_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)] dark:bg-(--surface)">
+      <div className="mt-[20px] flex flex-col gap-[24px] rounded-[20px_20px_0_0] bg-white p-[18px_18px_18px_18px] shadow-[0_-4px_16px_0_rgba(0,0,0,0.05)] dark:bg-(--surface)">
         <div className="flex flex-col gap-[18px]">
           <div className="flex items-center gap-[6px] px-[12px] text-[#757f9c] dark:text-muted-foreground">
             <IconListBulleted className="size-[14px] shrink-0" />

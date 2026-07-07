@@ -1,8 +1,6 @@
 import { UnderlineTabs, type UnderlineTabItem } from '@/components/ui';
 import { notify } from '@/components/ui/app-toast';
-import { cn } from '@/lib/utils';
 
-import IconPlus from '../assets/icons/plus.svg?react';
 import IconSearch from '../assets/icons/search.svg?react';
 
 import { useEffect, useMemo, useState } from 'react';
@@ -21,15 +19,15 @@ import type { AgentProfileRead } from '../types';
 
 const ENTERPRISE_AGENT_STORAGE_KEY = 'ultrarag_enterprise_agent_scope';
 
-export default function AgentsPage({
+type GalleryScope = 'all' | 'mine' | 'gallery';
+
+export default function EmployeeGalleryPage({
   currentUser,
   isAdmin = false,
-  onCreateAgent,
   onLogout,
 }: {
   currentUser?: EnterpriseAuthUser;
   isAdmin?: boolean;
-  onCreateAgent?: () => void;
   onLogout?: () => void;
 }) {
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
@@ -39,10 +37,7 @@ export default function AgentsPage({
   const [deleteTarget, setDeleteTarget] = useState<AgentProfileRead | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [employeeFilter, setEmployeeFilter] = useState<'all' | 'online' | 'offline' | 'pending'>('all');
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
-    () => window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY),
-  );
+  const [scope, setScope] = useState<GalleryScope>('all');
   const navigate = useNavigate();
 
   async function load() {
@@ -61,54 +56,42 @@ export default function AgentsPage({
     void load();
   }, []);
 
-  useEffect(() => {
-    const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ agentId?: string }>).detail;
-      setSelectedAgentId(detail?.agentId ?? window.localStorage.getItem(ENTERPRISE_AGENT_STORAGE_KEY));
-    };
-    window.addEventListener('ultrarag-enterprise-agent-scope-change', handler);
-    return () => window.removeEventListener('ultrarag-enterprise-agent-scope-change', handler);
-  }, []);
-
   const overallAgent = agents.find((item) => item.is_overall);
-  const employees = useMemo(
-    () => agents.filter((item) => (
-      !item.is_overall && (isAdmin || isEmployeeOwnedBy(item, currentUser) || isGalleryEmployee(item))
-    )),
-    [agents, currentUser, isAdmin],
+  // Mirror the frontend-chat gallery filtering (visibleChatEmployees + personal/gallery split):
+  // - 所有员工: every active, non-overall employee
+  // - 我的数字员工: employees that are NOT published to the gallery, OR are owned by me
+  // - 数字员工广场: gallery employees that don't already belong to "我的数字员工"
+  const availableAgents = useMemo(
+    () => agents.filter((item) => !item.is_overall && item.status === 'active'),
+    [agents],
   );
-  const offlineEmployees = employees.filter((item) => item.status !== 'active');
-  const onlineEmployees = employees.filter((item) => item.status === 'active');
-  const pendingEmployees = employees.filter((item) => {
-    const metadata = item.metadata || {};
-    return item.status === 'pending'
-      || metadata.review_status === 'pending'
-      || metadata.approval_status === 'pending'
-      || metadata.audit_status === 'pending';
-  });
-  const filteredEmployees = employees.filter((item) => {
+  const myEmployees = useMemo(
+    () => availableAgents.filter((item) => !isGalleryEmployee(item) || isEmployeeOwnedBy(item, currentUser)),
+    [availableAgents, currentUser],
+  );
+  const galleryEmployees = useMemo(() => {
+    const myIds = new Set(myEmployees.map((item) => item.id));
+    return availableAgents.filter((item) => isGalleryEmployee(item) && !myIds.has(item.id));
+  }, [availableAgents, myEmployees]);
+
+  const scopedEmployees = scope === 'mine'
+    ? myEmployees
+    : scope === 'gallery'
+      ? galleryEmployees
+      : availableAgents;
+
+  const filteredEmployees = scopedEmployees.filter((item) => {
     const profile = employeeProfile(item);
     const keyword = searchTerm.trim().toLowerCase();
-    const matchesFilter = employeeFilter === 'all'
-      || (employeeFilter === 'online' && item.status === 'active')
-      || (employeeFilter === 'offline' && item.status !== 'active')
-      || (employeeFilter === 'pending' && pendingEmployees.includes(item));
-    if (!matchesFilter) return false;
     if (!keyword) return true;
     return [
       employeeDisplayName(item),
       profile.roleName,
       item.description || '',
       profile.workStyles.join(' '),
+      profile.expertiseTags.join(' '),
     ].some((value) => value.toLowerCase().includes(keyword));
   });
-
-  function selectEmployee(row: AgentProfileRead) {
-    setSelectedAgentId(row.id);
-    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, row.id);
-    window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', { detail: { agentId: row.id } }));
-    navigate('/enterprise/dashboard');
-  }
 
   function startEmployeeChat(row: AgentProfileRead) {
     navigate(`/workspace/chat/draft/${row.id}`);
@@ -174,24 +157,13 @@ export default function AgentsPage({
     setAgents((current) => current.map((item) => (item.id === row.id ? row : item)));
   }
 
-  const employeeTabs: UnderlineTabItem<typeof employeeFilter>[] = [
-    { value: 'all', label: '全部员工' },
-    { value: 'online', label: '在线员工' },
-    { value: 'offline', label: '下线员工' },
+  const galleryTabs: UnderlineTabItem<GalleryScope>[] = [
+    { value: 'all', label: '所有员工' },
+    { value: 'mine', label: '我的数字员工' },
+    { value: 'gallery', label: '数字员工广场' },
   ];
 
-  const summaryCardClass =
-    'flex h-[100px] flex-1 basis-[220px] items-center gap-[16px] rounded-[20px] bg-[#f6f6f6] px-[32px] py-[20px] text-left transition-shadow dark:bg-[#26272d]';
-  const summaryStats: { key: typeof employeeFilter; value: number; label: string; sub: string }[] = [
-    { key: 'all', value: employees.length, label: '员工总数', sub: `${onlineEmployees.length}位在线` },
-    { key: 'offline', value: offlineEmployees.length, label: '下线员工', sub: '0位在线' },
-    {
-      key: 'pending',
-      value: pendingEmployees.length,
-      label: '待审批',
-      sub: `${pendingEmployees.filter((item) => item.status === 'active').length}位在线`,
-    },
-  ];
+  const emptyText = searchTerm ? '没有匹配的数字员工' : '暂无数字员工';
 
   return (
     <div className="min-h-full box-border px-[48px] pt-[32px] pb-[43px] max-[900px]:px-[16px]" aria-busy={loading}>
@@ -205,49 +177,19 @@ export default function AgentsPage({
               value={searchTerm}
               onChange={(event) => setSearchTerm(event.target.value)}
               placeholder="搜索"
-              aria-label="搜索员工"
+              aria-label="搜索数字员工"
               className="min-w-0 flex-1 border-0 bg-transparent text-[14px] text-[#18181A] outline-none placeholder:text-[#757F9C] dark:text-white"
             />
           </div>
         )}
       />
 
-
-      <div className="flex flex-wrap items-stretch gap-[20px] my-[36px]" aria-label="数字员工统计">
-        {summaryStats.map((stat) => (
-          <button
-            key={stat.key}
-            type="button"
-            aria-pressed={employeeFilter === stat.key}
-            onClick={() => setEmployeeFilter(stat.key)}
-            className={cn(
-              summaryCardClass,
-            )}
-          >
-            <span className="shrink-0 text-[34px] font-semibold leading-none text-[#18181A] dark:text-white">{stat.value}</span>
-            <span className="flex min-w-0 flex-col gap-[4px]">
-              <span className="whitespace-nowrap text-[14px] text-[#464C5E] dark:text-[#e5e7eb]">{stat.label}</span>
-              <span className="whitespace-nowrap text-[12px] text-[#757F9C]">{stat.sub}</span>
-            </span>
-          </button>
-        ))}
-        <button type="button" onClick={onCreateAgent} className={cn(summaryCardClass, 'hover:shadow-[0_16px_30px_0_rgba(0,0,0,0.10)]')}>
-          <span className="grid size-[38px] shrink-0 place-items-center text-[#18181A] dark:text-white">
-            <IconPlus className="size-[38px]" />
-          </span>
-          <span className="flex min-w-0 flex-col gap-[4px]">
-            <span className="whitespace-nowrap text-[14px] text-[#464C5E] dark:text-[#e5e7eb]">创建新员工</span>
-            <span className="whitespace-nowrap text-[12px] text-[#757F9C]">几步搭好你的数字员工</span>
-          </span>
-        </button>
-      </div>
-
       <UnderlineTabs
-        className="mb-[16px]"
+        className="mt-[36px] mb-[16px]"
         aria-label="数字员工分类"
-        value={employeeFilter}
-        onChange={setEmployeeFilter}
-        items={employeeTabs}
+        value={scope}
+        onChange={setScope}
+        items={galleryTabs}
       />
 
       <div className="grid auto-rows-[minmax(262px,auto)] grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]">
@@ -256,8 +198,8 @@ export default function AgentsPage({
             key={employee.id}
             employee={employee}
             canManage={isAdmin || isEmployeeOwnedBy(employee, currentUser)}
-            selected={employee.id === selectedAgentId}
-            onOpen={() => selectEmployee(employee)}
+            showMenu={false}
+            onOpen={() => startEmployeeChat(employee)}
             onStatus={(status) => void updateStatus(employee, status)}
             onGallery={(published) => void updateGalleryState(employee, published)}
             onDelete={() => setDeleteTarget(employee)}
@@ -269,10 +211,11 @@ export default function AgentsPage({
         {!filteredEmployees.length && (
           <div className="grid h-[262px] w-[294px] max-w-full place-items-center content-center gap-[10px] rounded-[18px] border border-dashed border-[#dfe4ec] bg-[#fbfcfd] font-bold text-[#8b94aa] dark:border-[#343741] dark:bg-[#202126] dark:text-[#a8afbd]">
             <IconSearch className="size-[20px] shrink-0" />
-            <span>没有匹配的数字员工</span>
+            <span>{emptyText}</span>
           </div>
         )}
       </div>
+
       <EmployeeAvatarEditor
         agent={avatarAgent}
         open={Boolean(avatarAgent)}
