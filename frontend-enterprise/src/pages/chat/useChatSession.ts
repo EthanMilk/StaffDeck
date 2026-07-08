@@ -214,6 +214,18 @@ function scheduledTaskStatusTraceLine(phase: string, data: Record<string, unknow
 
 export type UseChatSession = ReturnType<typeof useChatSession>;
 
+type PreparedChatTurn = {
+  queueId: string;
+  conversationId: string;
+  agentId: string;
+  turnId: string;
+  text: string;
+  attachments: ChatAttachmentRead[];
+  interactionMode: ComposerInteractionMode;
+  modelConfigId?: string;
+  createdAt: string;
+};
+
 export function useChatSession() {
   const { sessionId, draftAgentId } = useParams<{ sessionId?: string; draftAgentId?: string }>();
   const navigate = useNavigate();
@@ -225,7 +237,9 @@ export function useChatSession() {
   const [sessionReadTimes, setSessionReadTimes] = useState<Record<string, string>>(() => loadSessionReadTimes(userId));
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem(SELECTED_AGENT_STORAGE_KEY) || '');
-  const [sessionAgentFilter, setSessionAgentFilter] = useState('all');
+  const [sessionAgentFilter, setSessionAgentFilter] = useState(() => (
+    window.localStorage.getItem(SELECTED_AGENT_STORAGE_KEY) || 'all'
+  ));
   const [modelConfigs, setModelConfigs] = useState<ModelConfigRead[]>([]);
   const [selectedModelConfigId, setSelectedModelConfigId] = useState(
     () => window.localStorage.getItem(modelStorageKey(tenantId)) || '',
@@ -243,6 +257,7 @@ export function useChatSession() {
   const [streamTick, setStreamTick] = useState(0);
   const [traceTick, setTraceTick] = useState(0);
   const [feedbackTick, setFeedbackTick] = useState(0);
+  const [queuedTurnsTick, setQueuedTurnsTick] = useState(0);
   const [expandedTraceIds, setExpandedTraceIds] = useState<string[]>([]);
   const [collapsedTraceIds, setCollapsedTraceIds] = useState<string[]>([]);
   const [scheduledDrafts, setScheduledDrafts] = useState<Record<string, ScheduledTaskDraftRead>>({});
@@ -282,7 +297,10 @@ export function useChatSession() {
   const knownSessionIdsRef = useRef(new Set<string>());
   const optimisticSessionIdsRef = useRef(new Set<string>());
   const pendingPromotedSessionIdRef = useRef<string | null>(null);
+  const queuedTurnsRef = useRef<PreparedChatTurn[]>([]);
+  const queuedTurnProcessingRef = useRef(false);
   const sessionsInitializedRef = useRef(false);
+  const sessionFilterInitializedRef = useRef(false);
   const autoOpenedSessionIdsRef = useRef(new Set<string>());
   const loadErrorNoticeRef = useRef<Record<string, number>>({});
   const uploadControllersRef = useRef(new Map<string, AbortController>());
@@ -291,6 +309,7 @@ export function useChatSession() {
   const notifyStream = useCallback(() => setStreamTick((value) => value + 1), []);
   const notifyTrace = useCallback(() => setTraceTick((value) => value + 1), []);
   const notifyFeedback = useCallback(() => setFeedbackTick((value) => value + 1), []);
+  const notifyQueue = useCallback(() => setQueuedTurnsTick((value) => value + 1), []);
 
   const redirectToLogin = useCallback(() => {
     clearEnterpriseAuthSession();
@@ -426,9 +445,7 @@ export function useChatSession() {
       if (!session.agent_id) return;
       counts.set(session.agent_id, (counts.get(session.agent_id) || 0) + 1);
     });
-    const rows = Array.from(counts.keys())
-      .map((agentId) => availableAgents.find((agent) => agent.id === agentId))
-      .filter((agent): agent is AgentProfileRead => Boolean(agent))
+    const rows = availableAgents
       .sort((a, b) => employeeDisplayName(a).localeCompare(employeeDisplayName(b), 'zh-Hans-CN'));
     return [
       { value: 'all', label: `全部会话 · ${sessions.length}` },
@@ -438,6 +455,13 @@ export function useChatSession() {
       })),
     ];
   }, [availableAgents, sessions]);
+  useEffect(() => {
+    if (sessionFilterInitializedRef.current) return;
+    const preferred = selectedAgentId || sessionFilterOptions.find((item) => item.value !== 'all')?.value || '';
+    if (!preferred) return;
+    sessionFilterInitializedRef.current = true;
+    setSessionAgentFilter((current) => (current === 'all' ? preferred : current));
+  }, [selectedAgentId, sessionFilterOptions]);
   const visibleSidebarSessions = useMemo(() => (
     sessionAgentFilter === 'all'
       ? sessions
@@ -542,6 +566,10 @@ export function useChatSession() {
   const forgetMissingSession = useCallback((id: string) => {
     knownSessionIdsRef.current.delete(id);
     optimisticSessionIdsRef.current.delete(id);
+    if (queuedTurnsRef.current.some((item) => item.conversationId === id)) {
+      queuedTurnsRef.current = queuedTurnsRef.current.filter((item) => item.conversationId !== id);
+      notifyQueue();
+    }
     storeRef.current.delete(id);
     streamRef.current.delete(id);
     locallyCancelledSessionIdsRef.current.delete(id);
@@ -561,7 +589,7 @@ export function useChatSession() {
     });
     notifyStore();
     notifyStream();
-  }, [notifyStore, notifyStream]);
+  }, [notifyQueue, notifyStore, notifyStream]);
 
   const upsertOptimisticSession = useCallback((session: ChatSession) => {
     optimisticSessionIdsRef.current.add(session.id);
@@ -773,11 +801,10 @@ export function useChatSession() {
   ), [activeRunningTraceId, currentStream.turnId, currentTraceRunning]);
 
   useEffect(() => {
-    if (sessionAgentFilter === 'all') return;
     if (!sessionFilterOptions.some((item) => item.value === sessionAgentFilter)) {
-      setSessionAgentFilter('all');
+      setSessionAgentFilter(selectedAgentId || sessionFilterOptions.find((item) => item.value !== 'all')?.value || 'all');
     }
-  }, [sessionAgentFilter, sessionFilterOptions]);
+  }, [selectedAgentId, sessionAgentFilter, sessionFilterOptions]);
   const currentScheduledDraft = activeConversationId ? scheduledDrafts[activeConversationId] : undefined;
   const hasVisibleMessageScheduledDraft = displayedMessages.some((item) => (
     item.role === 'assistant'
@@ -1060,6 +1087,36 @@ export function useChatSession() {
     }
     notifyStore();
   }, [getSlot, notifyStore]);
+
+  const appendQueuedTurnPreview = useCallback((turn: PreparedChatTurn) => {
+    appendRealtime(turn.conversationId, {
+      id: `queued_${turn.turnId}`,
+      turnId: turn.turnId,
+      role: 'user',
+      content: turn.text,
+      metadata: {
+        queued: true,
+        ...(turn.attachments.length ? { attachments: turn.attachments } : {}),
+        ...(turn.interactionMode === 'scheduled_task' ? { interaction_mode: 'scheduled_task' } : {}),
+      },
+      created_at: turn.createdAt,
+    });
+  }, [appendRealtime]);
+
+  const removeQueuedTurnPreview = useCallback((turn: PreparedChatTurn) => {
+    const slot = getSlot(turn.conversationId);
+    const nextMessages = slot.realtimeMessages.filter((item) => item.id !== `queued_${turn.turnId}`);
+    if (nextMessages.length === slot.realtimeMessages.length) return;
+    slot.realtimeMessages = nextMessages;
+    notifyStore();
+  }, [getSlot, notifyStore]);
+
+  const enqueuePreparedTurn = useCallback((turn: PreparedChatTurn) => {
+    queuedTurnsRef.current = [...queuedTurnsRef.current, turn];
+    appendQueuedTurnPreview(turn);
+    notifyQueue();
+    notify.info('已加入发送队列');
+  }, [appendQueuedTurnPreview, notifyQueue]);
 
   const updateMessageFeedback = useCallback((
     id: string,
@@ -2069,10 +2126,6 @@ export function useChatSession() {
   const uploadComposerFiles = useCallback((files: File[]) => {
     const validFiles = files.filter((file) => file.size > 0);
     if (!validFiles.length) return;
-    if (currentSessionRunning) {
-      notify.warning('当前对话正在执行，结束后再上传文件');
-      return;
-    }
     validFiles.forEach((file) => {
       const uploadKey = `upload_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       const controller = new AbortController();
@@ -2111,7 +2164,7 @@ export function useChatSession() {
           uploadControllersRef.current.delete(uploadKey);
         });
     });
-  }, [currentSessionRunning, tenantId]);
+  }, [tenantId]);
 
   const removeComposerAttachment = useCallback((uploadKey: string) => {
     uploadControllersRef.current.get(uploadKey)?.abort();
@@ -2177,40 +2230,24 @@ export function useChatSession() {
     return () => window.clearInterval(timer);
   }, [auth, pollScheduledSessionEvents, sessionId, sessions, streamTick]);
 
-  const send = useCallback(async (interactionMode?: ComposerInteractionMode) => {
-    const resolvedInteractionMode = interactionMode || composerIntent || 'normal';
-    if (!activeConversationId) return;
-    if (resolvedInteractionMode === 'scheduled_task' && !input.trim()) {
-      notify.warning('请输入要创建的定时任务内容');
-      return;
-    }
-    if (!input.trim() && readyComposerAttachments.length === 0) return;
-    if (uploadingComposerAttachment) {
-      notify.warning('文件还在解析中，请稍后发送');
-      return;
-    }
-    const currentConversationId = activeConversationId;
-    const activeSession = sessionId ? sessions.find((item) => item.id === sessionId) || null : null;
-    if (!isDraftConversation && !activeSession) {
-      notify.warning('任务信息还在加载，请稍后再发送');
-      return;
-    }
-    const sessionAgentId = activeSession?.agent_id || activeDraftAgentId || selectedAgentId || displayedAgent?.id || '';
-    if (!sessionAgentId) {
-      notify.warning('该任务没有绑定数字员工，请新建任务后再发送');
-      return;
-    }
+  const executePreparedTurn = useCallback(async (
+    prepared: PreparedChatTurn,
+    options: { queued?: boolean } = {},
+  ) => {
+    const resolvedInteractionMode = prepared.interactionMode;
+    const currentConversationId = prepared.conversationId;
+    const sessionAgentId = prepared.agentId;
+    const userText = prepared.text;
+    const outgoingAttachments = prepared.attachments;
+    const turnId = prepared.turnId;
+    const startedAsDraftConversation = isDraftConversationKey(currentConversationId);
     const stream = getStreamSlot(currentConversationId);
-    if (stream.loading || currentSessionRunning) return;
-    const userText = input.trim();
-    const outgoingAttachments = readyComposerAttachments.map(toRequestAttachment);
-    const turnId = `turn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     let liveConversationId = currentConversationId;
     let createdSessionId = '';
     locallyCancelledSessionIdsRef.current.delete(currentConversationId);
-    setInput('');
-    setComposerAttachments([]);
-    setComposerIntent(null);
+    if (options.queued) {
+      removeQueuedTurnPreview(prepared);
+    }
     stream.accumulated = '';
     stream.cancelledTurnId = null;
     stream.turnId = turnId;
@@ -2223,7 +2260,7 @@ export function useChatSession() {
         ...(outgoingAttachments.length ? { attachments: outgoingAttachments } : {}),
         ...(resolvedInteractionMode === 'scheduled_task' ? { interaction_mode: 'scheduled_task' } : {}),
       },
-      created_at: new Date().toISOString(),
+      created_at: prepared.createdAt,
     });
     upsertTraceLine(turnId, { id: 'decision_router', kind: 'decision', text: '判断意图', state: 'running' });
     setCollapsedTraceIds((current) => current.filter((item) => item !== turnId));
@@ -2300,7 +2337,7 @@ export function useChatSession() {
     };
 
     const promoteDraftConversation = (nextSessionId: string) => {
-      if (!isDraftConversation || !nextSessionId || nextSessionId === liveConversationId) return;
+      if (!startedAsDraftConversation || !nextSessionId || nextSessionId === liveConversationId) return;
       // Keep the active conversation resolvable to the real session until the route
       // param catches up, so the transition frame doesn't fall back to the deleted
       // draft slot and briefly render ChatEmptyState.
@@ -2324,6 +2361,12 @@ export function useChatSession() {
       if (locallyCancelledSessionIdsRef.current.has(previousId)) {
         locallyCancelledSessionIdsRef.current.delete(previousId);
         locallyCancelledSessionIdsRef.current.add(nextSessionId);
+      }
+      if (queuedTurnsRef.current.some((item) => item.conversationId === previousId)) {
+        queuedTurnsRef.current = queuedTurnsRef.current.map((item) => (
+          item.conversationId === previousId ? { ...item, conversationId: nextSessionId } : item
+        ));
+        notifyQueue();
       }
       setScheduledDrafts((prev) => {
         if (!prev[previousId]) return prev;
@@ -2369,9 +2412,9 @@ export function useChatSession() {
         attachments: outgoingAttachments,
         channel: 'web',
         interaction_mode: resolvedInteractionMode,
-        model_config_id: selectedModelConfig?.id,
+        model_config_id: prepared.modelConfigId,
       };
-      if (!isDraftConversation) {
+      if (!startedAsDraftConversation) {
         requestBody.session_id = currentConversationId;
       }
       armStreamWatchdog();
@@ -2383,7 +2426,7 @@ export function useChatSession() {
           createdSessionId = String(item.data.newSessionId || item.data.sessionId || '');
           return;
         }
-        const eventSessionId = isDraftConversation
+        const eventSessionId = startedAsDraftConversation
           ? currentConversationId
           : String(item.data.sessionId || liveConversationId);
         const eventStream = getStreamSlot(eventSessionId);
@@ -2404,8 +2447,8 @@ export function useChatSession() {
           markStreamTerminal();
           const result = item.data as unknown as ChatTurnResponse;
           const completedSessionId = result.session_id || createdSessionId || String(item.data.sessionId || '');
-          handleStreamEvent(item, isDraftConversation ? currentConversationId : (String(item.data.sessionId || liveConversationId)), turnId);
-          if (isDraftConversation && completedSessionId) {
+          handleStreamEvent(item, startedAsDraftConversation ? currentConversationId : (String(item.data.sessionId || liveConversationId)), turnId);
+          if (startedAsDraftConversation && completedSessionId) {
             promoteDraftConversation(completedSessionId);
           }
           return;
@@ -2474,40 +2517,111 @@ export function useChatSession() {
       }
     }
   }, [
-    activeConversationId,
-    activeDraftAgentId,
     appendRealtime,
     bindRealtimeUserToServerMessage,
     clearStreamSlot,
-    composerIntent,
-    currentSessionRunning,
-    displayedAgent?.id,
     finalizeStreaming,
     finishTrace,
     getStreamSlot,
     handleStreamEvent,
-    input,
-    isDraftConversation,
     loadMessages,
     loadSessions,
     loadTraces,
     navigate,
+    notifyQueue,
     notifyRequestError,
     notifyStore,
     notifyStream,
-    readyComposerAttachments,
     redirectToLogin,
-    selectedAgentId,
-    selectedModelConfig?.id,
-    sessionId,
-    sessions,
+    removeQueuedTurnPreview,
     tenantId,
     updateStreaming,
-    uploadingComposerAttachment,
     upsertOptimisticSession,
     upsertTraceLine,
     userId,
   ]);
+
+  const send = useCallback(async (interactionMode?: ComposerInteractionMode) => {
+    const resolvedInteractionMode = interactionMode || composerIntent || 'normal';
+    if (!activeConversationId) return;
+    if (resolvedInteractionMode === 'scheduled_task' && !input.trim()) {
+      notify.warning('请输入要创建的定时任务内容');
+      return;
+    }
+    if (!input.trim() && readyComposerAttachments.length === 0) return;
+    if (uploadingComposerAttachment) {
+      notify.warning('文件还在解析中，请稍后发送');
+      return;
+    }
+    const currentConversationId = activeConversationId;
+    const activeSession = sessionId ? sessions.find((item) => item.id === sessionId) || null : null;
+    if (!isDraftConversation && !activeSession && !optimisticSessionIdsRef.current.has(currentConversationId)) {
+      notify.warning('任务信息还在加载，请稍后再发送');
+      return;
+    }
+    const sessionAgentId = activeSession?.agent_id || activeDraftAgentId || selectedAgentId || displayedAgent?.id || '';
+    if (!sessionAgentId) {
+      notify.warning('该任务没有绑定数字员工，请新建任务后再发送');
+      return;
+    }
+    const prepared: PreparedChatTurn = {
+      queueId: `queue_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      conversationId: currentConversationId,
+      agentId: sessionAgentId,
+      turnId: `turn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      text: input.trim(),
+      attachments: readyComposerAttachments.map(toRequestAttachment),
+      interactionMode: resolvedInteractionMode,
+      modelConfigId: selectedModelConfig?.id,
+      createdAt: new Date().toISOString(),
+    };
+    setInput('');
+    setComposerAttachments([]);
+    setComposerIntent(null);
+    const stream = getStreamSlot(currentConversationId);
+    if (stream.loading || currentSessionRunning) {
+      enqueuePreparedTurn(prepared);
+      return;
+    }
+    await executePreparedTurn(prepared);
+  }, [
+    activeConversationId,
+    activeDraftAgentId,
+    composerIntent,
+    currentSessionRunning,
+    displayedAgent?.id,
+    enqueuePreparedTurn,
+    executePreparedTurn,
+    getStreamSlot,
+    input,
+    isDraftConversation,
+    readyComposerAttachments,
+    selectedAgentId,
+    selectedModelConfig?.id,
+    sessionId,
+    sessions,
+    uploadingComposerAttachment,
+  ]);
+
+  const drainQueuedTurns = useCallback(() => {
+    if (queuedTurnProcessingRef.current) return;
+    const nextTurn = queuedTurnsRef.current[0];
+    if (!nextTurn) return;
+    const stream = getStreamSlot(nextTurn.conversationId);
+    if (stream.loading || runningTurn?.sessionId === nextTurn.conversationId) return;
+    queuedTurnsRef.current = queuedTurnsRef.current.slice(1);
+    notifyQueue();
+    queuedTurnProcessingRef.current = true;
+    void executePreparedTurn(nextTurn, { queued: true }).finally(() => {
+      queuedTurnProcessingRef.current = false;
+      notifyQueue();
+    });
+  }, [executePreparedTurn, getStreamSlot, notifyQueue, runningTurn]);
+
+  useEffect(() => {
+    void queuedTurnsTick;
+    drainQueuedTurns();
+  }, [drainQueuedTurns, queuedTurnsTick, streamTick]);
 
   const handleComposerPaste = useCallback((event: ClipboardEvent<HTMLTextAreaElement>) => {
     const clipboardData = event.clipboardData;

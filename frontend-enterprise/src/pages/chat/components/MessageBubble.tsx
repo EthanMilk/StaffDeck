@@ -83,6 +83,7 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
     statusOnly,
     showTypingCaret,
   } = render;
+  const queuedMessage = item.role === 'user' && item.metadata?.queued === true;
 
   return (
     <div className={CHAT_MESSAGE_ITEM_CLASS}>
@@ -105,6 +106,12 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
               <MarkdownMessage content={visibleContent} />
             ) : (
               <div className={CHAT_PLAIN_ANSWER_CLASS}>
+                {queuedMessage && (
+                  <span className={CHAT_MESSAGE_MODE_CHIP_CLASS}>
+                    <StaffdeckIcon name="clock" size={13} />
+                    排队中
+                  </span>
+                )}
                 {scheduledTaskPrompt && (
                   <span className={CHAT_MESSAGE_MODE_CHIP_CLASS}>
                     <StaffdeckIcon name="clock" size={13} />

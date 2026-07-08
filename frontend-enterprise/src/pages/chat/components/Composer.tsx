@@ -1,3 +1,4 @@
+import type { FormEvent, MouseEvent } from 'react';
 import { useEffect, useRef, useState } from 'react';
 
 import EmployeeAvatar from '@/components/EmployeeAvatar';
@@ -85,6 +86,7 @@ export default function Composer({ chat }: { chat: UseChatSession }) {
   } = chat;
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const stopClickArmedRef = useRef(false);
   const [scheduleIntentHovered, setScheduleIntentHovered] = useState(false);
 
   useEffect(() => {
@@ -102,6 +104,35 @@ export default function Composer({ chat }: { chat: UseChatSession }) {
 
   const sendDisabled = !currentSessionRunning
     && ((!input.trim() && readyComposerAttachments.length === 0) || uploadingComposerAttachment);
+
+  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (stopClickArmedRef.current) {
+      stopClickArmedRef.current = false;
+      return;
+    }
+    void send();
+  };
+
+  const handleSendButtonMouseDown = (event: MouseEvent<HTMLButtonElement>) => {
+    if (!currentSessionRunning) return;
+    event.preventDefault();
+    event.stopPropagation();
+    stopClickArmedRef.current = true;
+    abortStream();
+  };
+
+  const handleSendButtonClick = (event: MouseEvent<HTMLButtonElement>) => {
+    if (currentSessionRunning || stopClickArmedRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      const shouldAbort = currentSessionRunning;
+      stopClickArmedRef.current = false;
+      if (shouldAbort) abortStream();
+      return;
+    }
+    void send();
+  };
 
   return (
     <div className={CHAT_INPUT_SHELL_CLASS}>
@@ -192,10 +223,7 @@ export default function Composer({ chat }: { chat: UseChatSession }) {
           onDragOver={handleComposerDragOver}
           onDragLeave={handleComposerDragLeave}
           onDrop={handleComposerDrop}
-          onSubmit={(event) => {
-            event.preventDefault();
-            void send();
-          }}
+          onSubmit={handleSubmit}
         >
           <input
             ref={fileInputRef}
@@ -274,7 +302,6 @@ export default function Composer({ chat }: { chat: UseChatSession }) {
                   <button
                     type="button"
                     className={CHAT_COMPOSER_PLUS_BTN_CLASS}
-                    disabled={currentSessionRunning}
                     aria-label="添加"
                     title="添加"
                   >
@@ -332,7 +359,7 @@ export default function Composer({ chat }: { chat: UseChatSession }) {
                   <button
                     type="button"
                     className={CHAT_COMPOSER_MODEL_BTN_CLASS}
-                    disabled={currentSessionRunning || !enabledModelConfigs.length}
+                    disabled={!enabledModelConfigs.length}
                   >
                     <span>{selectedModelConfig ? modelDisplayName(selectedModelConfig) : '默认模型'}</span>
                     <StaffdeckIcon name="arrow" size={14} style={{ transform: 'rotate(90deg)' }} />
@@ -359,13 +386,10 @@ export default function Composer({ chat }: { chat: UseChatSession }) {
                 </DropdownMenuContent>
               </DropdownMenu>
               <button
-                type={currentSessionRunning ? 'button' : 'submit'}
+                type="button"
                 className={cn(CHAT_COMPOSER_SEND_BTN_CLASS, currentSessionRunning && CHAT_COMPOSER_STOP_BTN_CLASS)}
-                onMouseDown={currentSessionRunning ? (event) => {
-                  event.preventDefault();
-                  abortStream();
-                } : undefined}
-                onClick={currentSessionRunning ? abortStream : undefined}
+                onMouseDown={handleSendButtonMouseDown}
+                onClick={handleSendButtonClick}
                 disabled={sendDisabled}
                 aria-label={currentSessionRunning ? '停止生成' : '发送'}
               >
