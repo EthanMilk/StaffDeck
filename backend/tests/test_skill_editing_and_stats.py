@@ -15,7 +15,8 @@ from app.api.skills import (
     rollback_skill_version,
     skill_read,
 )
-from app.db.models import AgentEvent, Message, Skill, SkillFeedback, SkillVersion, Tenant
+from app.agents.branching import ensure_open_gallery_binding
+from app.db.models import AgentEvent, AgentProfile, Message, Skill, SkillFeedback, SkillVersion, Tenant
 from app.db.models import ModelConfig
 from app.skills.skill_distiller import SkillDistiller
 from app.skills.skill_editor import SkillEditor
@@ -657,18 +658,20 @@ def test_skill_read_uses_current_version_stats_for_skill_list() -> None:
 def test_skill_read_includes_total_and_recent_version_ranking_stats() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
         content = _skill_card()
         current = content.model_copy(update={"version": "1.3.0"})
-        db.add(
-            Skill(
-                tenant_id="tenant_demo",
-                skill_id=content.skill_id,
-                version="1.3.0",
-                name=content.name,
-                content_json=current.model_dump(),
-                status="published",
-            )
+        skill = Skill(
+            tenant_id="tenant_demo",
+            skill_id=content.skill_id,
+            version="1.3.0",
+            name=content.name,
+            content_json=current.model_dump(),
+            status="published",
         )
+        db.add(skill)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", skill.id, "active")
         for version in ["1.0.0", "1.1.0", "1.2.0", "1.3.0"]:
             version_content = content.model_copy(update={"version": version})
             db.add(

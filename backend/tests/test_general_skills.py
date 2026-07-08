@@ -19,9 +19,20 @@ from app.api.general_skills import (
     publish_general_skill,
     run_general_skill,
 )
+from app.agents.branching import ensure_open_gallery_binding
 from app.core import AgentLoop
 from app.core.reflection_agent import ReflectionDecision
-from app.db.models import AgentEvent, AgentProfile, ChatSession, GeneralSkill, ModelConfig, Skill, Tenant, User
+from app.db.models import (
+    AgentEvent,
+    AgentProfile,
+    AgentResourceBinding,
+    ChatSession,
+    GeneralSkill,
+    ModelConfig,
+    Skill,
+    Tenant,
+    User,
+)
 from app.general_skills.runner import GeneralSkillRunner, GeneralSkillSelector
 from app.general_skills.schema import (
     GeneralSkillClawHubImportRequest,
@@ -47,6 +58,8 @@ python weather.py -json -today <地区名称>
 def test_import_general_skill_uses_user_supplied_metadata() -> None:
     with _test_session() as db:
         _seed_minimal_tenant(db)
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        db.commit()
 
         first = import_general_skill(
             GeneralSkillImportRequest(
@@ -85,6 +98,8 @@ def test_import_general_skill_uses_user_supplied_metadata() -> None:
 def test_import_general_skill_without_original_slug_does_not_overwrite_existing() -> None:
     with _test_session() as db:
         _seed_minimal_tenant(db)
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        db.commit()
 
         first = import_general_skill(
             GeneralSkillImportRequest(
@@ -116,6 +131,74 @@ def test_import_general_skill_without_original_slug_does_not_overwrite_existing(
         assert rows[0].id == first.id
         assert rows[0].name == "已有天气技能"
         assert rows[0].skill_markdown == WEATHER_SKILL_MD.strip()
+
+
+def test_deleted_open_gallery_general_skill_binding_is_not_restored_by_ensure() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        db.commit()
+
+        imported = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="天气技能",
+                slug="weather-zh",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+        )
+
+        deleted = delete_general_skill(imported.slug, "tenant_demo", db, agent_id="agent_overall")
+        assert deleted == {"status": "hidden", "slug": "weather-zh"}
+
+        ensure_open_gallery_binding(db, "tenant_demo", "general_skill", imported.id, "active")
+        db.commit()
+
+        binding = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == "tenant_demo",
+                AgentResourceBinding.agent_id == "agent_overall",
+                AgentResourceBinding.resource_type == "general_skill",
+                AgentResourceBinding.resource_id == imported.id,
+            )
+        ).one()
+        assert binding.status == "deleted"
+        assert list_general_skills("tenant_demo", db) == []
+
+
+def test_deleted_open_gallery_general_skill_is_hidden_from_agent_branch_binding() -> None:
+    with _test_session() as db:
+        _seed_minimal_tenant(db)
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        db.add(AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="研发员工", is_overall=False))
+        db.commit()
+
+        imported = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                name="天气技能",
+                slug="weather-zh",
+                markdown=WEATHER_SKILL_MD,
+            ),
+            db,
+        )
+        db.add(
+            AgentResourceBinding(
+                tenant_id="tenant_demo",
+                agent_id="agent_branch",
+                resource_type="general_skill",
+                resource_id=imported.id,
+                status="active",
+            )
+        )
+        db.commit()
+        assert [row.id for row in list_general_skills("tenant_demo", db, agent_id="agent_branch")] == [imported.id]
+
+        deleted = delete_general_skill(imported.slug, "tenant_demo", db, agent_id="agent_overall")
+        assert deleted == {"status": "hidden", "slug": "weather-zh"}
+
+        assert list_general_skills("tenant_demo", db, agent_id="agent_branch") == []
 
 
 def test_import_general_skill_folder_reads_skill_md_metadata() -> None:
@@ -558,18 +641,22 @@ def test_chat_turn_uses_general_skill_after_scene_router_skips_unmatched_scene(
 
     with _test_session() as db:
         _seed_minimal_tenant(db)
-        db.add(_purchase_scene_skill())
-        db.add(
-            GeneralSkill(
-                tenant_id="tenant_demo",
-                slug="weather-zh",
-                name="中国城市天气",
-                description="中国城市天气查询工具",
-                homepage="https://www.weather.com.cn/",
-                skill_markdown=WEATHER_SKILL_MD,
-                status="published",
-            )
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        scene_skill = _purchase_scene_skill()
+        general_skill = GeneralSkill(
+            tenant_id="tenant_demo",
+            slug="weather-zh",
+            name="中国城市天气",
+            description="中国城市天气查询工具",
+            homepage="https://www.weather.com.cn/",
+            skill_markdown=WEATHER_SKILL_MD,
+            status="published",
         )
+        db.add(scene_skill)
+        db.add(general_skill)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", scene_skill.id, "active")
+        ensure_open_gallery_binding(db, "tenant_demo", "general_skill", general_skill.id, "active")
         db.commit()
 
         response = AgentLoop(db).handle_turn(
@@ -648,18 +735,19 @@ def test_general_skill_response_keeps_active_scene_context(monkeypatch) -> None:
 
     with _test_session() as db:
         _seed_minimal_tenant(db)
-        db.add(_purchase_scene_skill())
-        db.add(
-            GeneralSkill(
-                tenant_id="tenant_demo",
-                slug="weather-zh",
-                name="中国城市天气",
-                description="中国城市天气查询工具",
-                homepage="https://www.weather.com.cn/",
-                skill_markdown=WEATHER_SKILL_MD,
-                status="published",
-            )
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        scene_skill = _purchase_scene_skill()
+        general_skill = GeneralSkill(
+            tenant_id="tenant_demo",
+            slug="weather-zh",
+            name="中国城市天气",
+            description="中国城市天气查询工具",
+            homepage="https://www.weather.com.cn/",
+            skill_markdown=WEATHER_SKILL_MD,
+            status="published",
         )
+        db.add(scene_skill)
+        db.add(general_skill)
         db.add(
             ChatSession(
                 id="session_weather_inside_purchase",
@@ -670,6 +758,9 @@ def test_general_skill_response_keeps_active_scene_context(monkeypatch) -> None:
                 slots_json={"user_name": "hm"},
             )
         )
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", scene_skill.id, "active")
+        ensure_open_gallery_binding(db, "tenant_demo", "general_skill", general_skill.id, "active")
         db.commit()
 
         response = AgentLoop(db).handle_turn(
@@ -1072,18 +1163,22 @@ def test_chat_turn_treats_unmatched_scene_as_chat_when_general_skill_not_selecte
 
     with _test_session() as db:
         _seed_minimal_tenant(db)
-        db.add(_purchase_scene_skill())
-        db.add(
-            GeneralSkill(
-                tenant_id="tenant_demo",
-                slug="weather-zh",
-                name="中国城市天气",
-                description="中国城市天气查询工具",
-                homepage="https://www.weather.com.cn/",
-                skill_markdown=WEATHER_SKILL_MD,
-                status="published",
-            )
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        scene_skill = _purchase_scene_skill()
+        general_skill = GeneralSkill(
+            tenant_id="tenant_demo",
+            slug="weather-zh",
+            name="中国城市天气",
+            description="中国城市天气查询工具",
+            homepage="https://www.weather.com.cn/",
+            skill_markdown=WEATHER_SKILL_MD,
+            status="published",
         )
+        db.add(scene_skill)
+        db.add(general_skill)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", scene_skill.id, "active")
+        ensure_open_gallery_binding(db, "tenant_demo", "general_skill", general_skill.id, "active")
         db.commit()
 
         response = AgentLoop(db).handle_turn(

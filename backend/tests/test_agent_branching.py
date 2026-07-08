@@ -56,6 +56,8 @@ def test_agent_skill_branch_is_copy_on_write_and_reports_branch_state() -> None:
         )
         db.add(agent)
         db.add(skill)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", skill.id, "active")
         db.commit()
 
         copy_overall_scope_to_agent(db, "tenant_demo", agent)
@@ -122,7 +124,64 @@ def test_open_gallery_delete_skill_hides_gallery_without_removing_agent_binding(
         ).one()
         assert branch_binding.status == "active"
         assert visible_skill_rows(db, "tenant_demo", "agent_overall") == []
-        assert visible_skill_rows(db, "tenant_demo", "agent_branch")[0].id == skill.id
+        assert visible_skill_rows(db, "tenant_demo", "agent_branch") == []
+
+
+def test_open_gallery_deleted_skill_binding_is_not_restored_by_ensure() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        skill = Skill(
+            id="skill_deleted_gallery_row",
+            tenant_id="tenant_demo",
+            skill_id="skill_deleted_gallery",
+            version="1.0.0",
+            name="已从广场移除的流程",
+            business_domain="工具",
+            description="删除后不应被旧同步逻辑恢复",
+            status="published",
+            content_json=_graph("已从广场移除的流程", "1.0.0"),
+        )
+        db.add(skill)
+        db.commit()
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", skill.id, "active")
+        db.commit()
+        assert delete_skill(skill.skill_id, "tenant_demo", db, agent_id="agent_overall") == {"status": "hidden"}
+
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", skill.id, "active")
+        db.commit()
+
+        binding = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == "tenant_demo",
+                AgentResourceBinding.agent_id == "agent_overall",
+                AgentResourceBinding.resource_type == "skill",
+                AgentResourceBinding.resource_id == skill.id,
+            )
+        ).one()
+        assert binding.status == "deleted"
+        assert visible_skill_rows(db, "tenant_demo", "agent_overall") == []
+
+
+def test_open_gallery_skill_requires_explicit_overall_binding() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        skill = Skill(
+            id="skill_without_gallery_binding_row",
+            tenant_id="tenant_demo",
+            skill_id="skill_without_gallery_binding",
+            version="1.0.0",
+            name="未开放流程",
+            business_domain="工具",
+            description="没有绑定就不属于开放广场",
+            status="published",
+            content_json=_graph("未开放流程", "1.0.0"),
+        )
+        db.add(skill)
+        db.commit()
+
+        assert visible_skill_rows(db, "tenant_demo", "agent_overall") == []
 
 
 def test_open_gallery_skill_read_returns_system_creator_metadata() -> None:
@@ -231,6 +290,7 @@ def test_copy_overall_scope_to_agent_inherits_open_gallery_tools_only() -> None:
         db.add(open_tool)
         db.add(private_tool)
         db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "tool", open_tool.id, "active")
         ensure_private_resource_binding(db, "tenant_demo", owner.id, "tool", private_tool.id, "active")
         db.commit()
 
@@ -291,6 +351,9 @@ def test_management_rows_keep_archived_global_and_inactive_branch_skills() -> No
         db.add(agent)
         db.add(global_archived)
         db.add(branch_skill)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", global_archived.id, "inactive")
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", branch_skill.id, "active")
         db.commit()
 
         copy_overall_scope_to_agent(db, "tenant_demo", agent)
@@ -316,6 +379,7 @@ def test_management_rows_keep_archived_global_and_inactive_branch_skills() -> No
 def test_updating_inactive_branch_skill_keeps_it_inactive() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
         agent = AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="客服分支", is_overall=False)
         skill = Skill(
             tenant_id="tenant_demo",
@@ -329,6 +393,8 @@ def test_updating_inactive_branch_skill_keeps_it_inactive() -> None:
         )
         db.add(agent)
         db.add(skill)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", skill.id, "active")
         db.commit()
 
         copy_overall_scope_to_agent(db, "tenant_demo", agent)
@@ -364,6 +430,7 @@ def test_updating_inactive_branch_skill_keeps_it_inactive() -> None:
 def test_inactive_bound_skill_can_be_loaded_and_saved_from_management_api() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
         agent = AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="客服分支", is_overall=False)
         skill_content = _graph("停用分支技能", "1.0.0")
         skill_content["skill_id"] = "branch_inactive_api_edit"
@@ -379,6 +446,8 @@ def test_inactive_bound_skill_can_be_loaded_and_saved_from_management_api() -> N
         )
         db.add(agent)
         db.add(skill)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "skill", skill.id, "active")
         db.commit()
 
         copy_overall_scope_to_agent(db, "tenant_demo", agent)

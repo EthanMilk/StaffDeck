@@ -13,6 +13,7 @@ from app.agents.branching import (
     ensure_open_gallery_binding,
     get_agent,
     hide_open_gallery_binding,
+    is_bound_resource_visible_for_agent,
     is_open_gallery_resource,
     knowledge_version_for_upload,
     mark_resource_open_gallery,
@@ -766,8 +767,19 @@ def _management_knowledge_base_versions(
         result: dict[str, KnowledgeBaseVersion] = {}
         for branch in branches:
             kb = db.get(KnowledgeBase, branch.knowledge_base_id)
-            if kb and kb.tenant_id == tenant_id:
-                result[kb.id] = ensure_knowledge_base_version(db, kb, branch.head_version)
+            if not kb or kb.tenant_id != tenant_id:
+                continue
+            binding = db.exec(
+                select(AgentResourceBinding).where(
+                    AgentResourceBinding.tenant_id == tenant_id,
+                    AgentResourceBinding.agent_id == agent.id,
+                    AgentResourceBinding.resource_type == "knowledge_base",
+                    AgentResourceBinding.resource_id == kb.id,
+                )
+            ).first()
+            if not binding or not is_bound_resource_visible_for_agent(db, tenant_id, "knowledge_base", kb, binding):
+                continue
+            result[kb.id] = ensure_knowledge_base_version(db, kb, branch.head_version)
         return result
     rows = db.exec(select(KnowledgeBase).where(KnowledgeBase.tenant_id == tenant_id)).all()
     rows = [row for row in rows if is_open_gallery_resource(db, tenant_id, "knowledge_base", row)]

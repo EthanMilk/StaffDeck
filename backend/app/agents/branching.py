@@ -269,30 +269,35 @@ def is_open_gallery_resource(db: Session, tenant_id: str, resource_type: str, re
     if not resource_id or getattr(resource, "tenant_id", None) != tenant_id:
         return False
     overall = get_overall_agent(db, tenant_id)
-    if overall:
-        overall_binding = db.exec(
-            select(AgentResourceBinding).where(
-                AgentResourceBinding.tenant_id == tenant_id,
-                AgentResourceBinding.agent_id == overall.id,
-                AgentResourceBinding.resource_type == resource_type,
-                AgentResourceBinding.resource_id == resource_id,
-            )
-        ).first()
-        if overall_binding:
-            return overall_binding.status != "deleted" and not _binding_is_private(overall_binding)
-    metadata = _resource_metadata(resource)
-    if _metadata_is_private(metadata):
+    if not overall:
         return False
-    private_binding = db.exec(
+    overall_binding = db.exec(
         select(AgentResourceBinding).where(
             AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.agent_id == overall.id,
             AgentResourceBinding.resource_type == resource_type,
             AgentResourceBinding.resource_id == resource_id,
         )
-    ).all()
-    if any(_binding_is_private(binding) for binding in private_binding):
+    ).first()
+    if not overall_binding:
         return False
-    return True
+    return overall_binding.status != "deleted" and not _binding_is_private(overall_binding)
+
+
+def is_bound_resource_visible_for_agent(
+    db: Session,
+    tenant_id: str,
+    resource_type: str,
+    resource: object,
+    binding: AgentResourceBinding,
+) -> bool:
+    if binding.status == "deleted":
+        return False
+    if getattr(resource, "tenant_id", None) != tenant_id:
+        return False
+    if _binding_is_private(binding) or _metadata_is_private(_resource_metadata(resource)):
+        return True
+    return is_open_gallery_resource(db, tenant_id, resource_type, resource)
 
 
 def project_skill_with_branch(
@@ -367,6 +372,8 @@ def visible_skill_rows(
         skill = db.get(Skill, binding.resource_id)
         if not skill or skill.tenant_id != tenant_id:
             continue
+        if not is_bound_resource_visible_for_agent(db, tenant_id, "skill", skill, binding):
+            continue
         branch = ensure_agent_skill_branch(db, tenant_id, agent.id, skill)
         if not include_inactive and branch.status != "active":
             continue
@@ -403,6 +410,8 @@ def visible_skill(db: Session, tenant_id: str, skill_id: str, agent_id: str | No
         )
     ).first()
     if not binding:
+        return None
+    if not is_bound_resource_visible_for_agent(db, tenant_id, "skill", skill, binding):
         return None
     branch = ensure_agent_skill_branch(db, tenant_id, agent.id, skill)
     if branch.status != "active":
@@ -597,6 +606,16 @@ def visible_knowledge_base_versions(
     for branch in branches:
         kb = db.get(KnowledgeBase, branch.knowledge_base_id)
         if not kb or kb.tenant_id != tenant_id or kb.status == "deleted":
+            continue
+        binding = db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == tenant_id,
+                AgentResourceBinding.agent_id == agent.id,
+                AgentResourceBinding.resource_type == "knowledge_base",
+                AgentResourceBinding.resource_id == kb.id,
+            )
+        ).first()
+        if not binding or not is_bound_resource_visible_for_agent(db, tenant_id, "knowledge_base", kb, binding):
             continue
         result[kb.id] = ensure_knowledge_base_version(db, kb, branch.head_version)
     return result
@@ -938,6 +957,12 @@ def _ensure_binding(
         )
     ).first()
     if existing:
+        if existing.status == "deleted" and status != "deleted":
+            if metadata_json is not None and not existing.metadata_json:
+                existing.metadata_json = metadata_json
+                existing.updated_at = utc_now()
+                db.add(existing)
+            return
         existing.status = status
         if metadata_json is not None:
             existing.metadata_json = metadata_json

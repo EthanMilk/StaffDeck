@@ -25,6 +25,7 @@ from app.agents.branching import (
     ensure_private_resource_binding,
     get_agent,
     hide_open_gallery_binding,
+    is_bound_resource_visible_for_agent,
     is_open_gallery_resource,
     mark_resource_open_gallery,
     mark_resource_private_for_agent,
@@ -348,14 +349,20 @@ def list_general_skills(
                 )
             ).all()
         }
-        return [
-            general_skill_read(
-                rows_by_id[binding.resource_id],
-                status_override="published" if binding.status == "active" else "archived",
+        visible_rows: list[GeneralSkillRead] = []
+        for binding in bindings:
+            row = rows_by_id.get(binding.resource_id)
+            if not row:
+                continue
+            if not is_bound_resource_visible_for_agent(db, tenant_id, "general_skill", row, binding):
+                continue
+            visible_rows.append(
+                general_skill_read(
+                    row,
+                    status_override="published" if binding.status == "active" else "archived",
+                )
             )
-            for binding in bindings
-            if binding.status != "deleted" and binding.resource_id in rows_by_id
-        ]
+        return visible_rows
     rows = db.exec(
         select(GeneralSkill).where(GeneralSkill.tenant_id == tenant_id).order_by(GeneralSkill.updated_at.desc())
     ).all()

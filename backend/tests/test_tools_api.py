@@ -97,7 +97,7 @@ def test_open_gallery_delete_tool_hides_gallery_without_removing_agent_binding()
         ).one()
         assert branch_binding.status == "active"
         assert list_tools("tenant_demo", bucket=None, agent_id="agent_overall", db=db) == []
-        assert list_tools("tenant_demo", bucket=None, agent_id="agent_branch", db=db)[0].id == tool.id
+        assert list_tools("tenant_demo", bucket=None, agent_id="agent_branch", db=db) == []
 
 
 def test_open_gallery_tool_read_returns_system_creator_metadata() -> None:

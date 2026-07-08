@@ -11,6 +11,7 @@ from app.agents.branching import (
     ensure_private_resource_binding,
     get_agent,
     hide_open_gallery_binding,
+    is_bound_resource_visible_for_agent,
     is_open_gallery_resource,
     require_overall_agent,
     resource_binding_metadata,
@@ -343,14 +344,22 @@ def _visible_tool_rows(
         stmt = stmt.where(Tool.bucket == bucket)
     rows = list(db.exec(stmt.order_by(Tool.bucket, Tool.name)).all())
     if agent and not agent.is_overall:
-        return rows
+        binding_by_id = {binding.resource_id: binding for binding in bindings}
+        return [
+            row
+            for row in rows
+            if (binding := binding_by_id.get(row.id))
+            and is_bound_resource_visible_for_agent(db, tenant_id, "tool", row, binding)
+        ]
     return [row for row in rows if is_open_gallery_resource(db, tenant_id, "tool", row)]
 
 
 def _ensure_tool_visible(db: Session, tenant_id: str, row: Tool, agent_id: str | None) -> None:
     agent = get_agent(db, tenant_id, agent_id)
-    if agent and not agent.is_overall and not _tool_binding(db, tenant_id, agent.id, row.id):
-        raise HTTPException(status_code=404, detail="Tool not visible to this agent")
+    if agent and not agent.is_overall:
+        binding = _tool_binding(db, tenant_id, agent.id, row.id)
+        if not binding or not is_bound_resource_visible_for_agent(db, tenant_id, "tool", row, binding):
+            raise HTTPException(status_code=404, detail="Tool not visible to this agent")
     if agent and agent.is_overall and not is_open_gallery_resource(db, tenant_id, "tool", row):
         raise HTTPException(status_code=404, detail="Tool not visible in open gallery")
 
