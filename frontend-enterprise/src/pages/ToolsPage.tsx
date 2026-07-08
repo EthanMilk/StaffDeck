@@ -135,7 +135,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
   const canManageCurrentScope = currentAgent
     ? canManageEmployeeAgent(currentAgent, currentUser)
     : isEnterpriseAdmin(currentUser) && isOverallAgent;
-  const canOpenCreateMenu = canManageCurrentScope || !isOverallAgent;
+  const canOpenCreateMenu = canManageCurrentScope;
 
   const agentQuery = agentId ? `&agent_id=${encodeURIComponent(agentId)}` : '';
   const load = () => {
