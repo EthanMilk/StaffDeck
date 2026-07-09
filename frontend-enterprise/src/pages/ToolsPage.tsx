@@ -1,4 +1,4 @@
-import { ApiOutlined, ExperimentOutlined, ToolOutlined } from '../icons';
+import { ApiOutlined, CheckOutlined, ExperimentOutlined, ToolOutlined } from '../icons';
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -921,18 +921,34 @@ function ToolTypeSwitcher({ active }: { active: 'http' | 'mcp' }) {
                 if (!isActive) navigate(option.to);
               }}
               className={cn(
-                'flex min-w-[200px] flex-1 flex-col gap-[4px] rounded-[12px] border px-[16px] py-[12px] text-left transition-colors',
+                'relative flex min-w-[200px] flex-1 items-start gap-[10px] rounded-[12px] border px-[16px] py-[12px] text-left transition-all',
                 isActive
-                  ? 'border-[#18181a] bg-[#f7f7f8]'
-                  : 'border-[#eceef1] bg-white hover:border-[#cbd3e6]',
+                  ? 'border-[#18181a] bg-[#18181a] shadow-[0_4px_12px_0_rgba(24,24,26,0.18)]'
+                  : 'border-[#e3e7f1] bg-white hover:border-[#cbd3e6] hover:bg-[#fafbfc]',
               )}
               aria-pressed={isActive}
             >
-              <span className="flex items-center gap-[6px] text-[13px] font-medium text-[#18181a]">
-                {option.value === 'mcp' ? <ApiOutlined className="size-[14px] shrink-0" /> : <IconTool className="size-[14px] shrink-0" />}
-                {option.label}
+              <span
+                className={cn(
+                  'flex size-[28px] shrink-0 items-center justify-center rounded-[8px]',
+                  isActive ? 'bg-white/15 text-white' : 'bg-[#f2f3f7] text-[#757f9c]',
+                )}
+              >
+                {option.value === 'mcp' ? <ApiOutlined className="size-[15px] shrink-0" /> : <IconTool className="size-[15px] shrink-0" />}
               </span>
-              <span className="text-[12px] leading-[1.5] text-[#858b9c]">{option.hint}</span>
+              <span className="flex min-w-0 flex-1 flex-col gap-[2px]">
+                <span className={cn('text-[13px] font-semibold', isActive ? 'text-white' : 'text-[#18181a]')}>
+                  {option.label}
+                </span>
+                <span className={cn('text-[12px] leading-[1.5]', isActive ? 'text-white/70' : 'text-[#858b9c]')}>
+                  {option.hint}
+                </span>
+              </span>
+              {isActive && (
+                <span className="absolute top-[10px] right-[10px] flex size-[16px] shrink-0 items-center justify-center rounded-full bg-white text-[#18181a]">
+                  <CheckOutlined className="size-[10px] shrink-0" />
+                </span>
+              )}
             </button>
           );
         })}
