@@ -106,7 +106,7 @@ def _test_engine():
 
 
 def _seed_handoff_users(db: Session) -> tuple[User, User, User]:
-    admin = User(id="admin_user", tenant_id="tenant_demo", username="admin", password_hash="x")
+    admin = User(id="admin_user", tenant_id="tenant_demo", username="admin", role="admin", password_hash="x")
     user = User(id="user_demo", tenant_id="tenant_demo", username="user_demo", password_hash="x")
     other = User(id="other_user", tenant_id="tenant_demo", username="other", password_hash="x")
     db.add(Tenant(id="tenant_demo", name="Demo"))
@@ -499,6 +499,7 @@ def test_reply_human_handoff_restores_session_and_schedules_resume(monkeypatch):
             id="admin_user",
             tenant_id="tenant_demo",
             username="admin",
+            role="admin",
             password_hash="x",
         ),
         db=db,
@@ -536,6 +537,7 @@ def test_reply_human_handoff_rejects_non_pending_request(monkeypatch):
                 id="admin_user",
                 tenant_id="tenant_demo",
                 username="admin",
+                role="admin",
                 password_hash="x",
             ),
             db=db,
@@ -566,6 +568,7 @@ def test_reply_human_handoff_rejects_missing_original_session(monkeypatch):
                 id="admin_user",
                 tenant_id="tenant_demo",
                 username="admin",
+                role="admin",
                 password_hash="x",
             ),
             db=db,

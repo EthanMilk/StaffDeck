@@ -21,8 +21,13 @@ from app.agents.branching import (
 from app.config import get_settings
 from app.db import get_session
 from app.db.models import AgentProfile, AgentResourceBinding, MCPServer, Tool, User, utc_now
-from app.security.auth import ensure_current_user_tenant, get_current_user, require_current_tenant
-from app.security.permissions import ensure_agent_scope_manager, ensure_open_gallery_admin
+from app.security.auth import ensure_current_user_tenant, get_current_user
+from app.security.permissions import (
+    ensure_agent_scope_manager,
+    ensure_open_gallery_admin,
+    require_agent_scope_viewer,
+    require_tenant_admin,
+)
 from app.security.tenant import ensure_tenant
 from app.tools import ToolExecutor
 from app.tools.http_request import prepare_get_request
@@ -78,7 +83,7 @@ def tool_read(row: Tool, metadata: dict[str, Any] | None = None) -> ToolRead:
     )
 
 
-@router.get("", response_model=list[ToolRead], dependencies=[Depends(require_current_tenant)])
+@router.get("", response_model=list[ToolRead], dependencies=[Depends(require_agent_scope_viewer)])
 def list_tools(
     tenant_id: str = Query(...),
     bucket: str | None = Query(default=None),
@@ -91,7 +96,7 @@ def list_tools(
     return [tool_read(row, metadata_by_id.get(row.id)) for row in rows]
 
 
-@router.get("/buckets", response_model=list[ToolBucketRead], dependencies=[Depends(require_current_tenant)])
+@router.get("/buckets", response_model=list[ToolBucketRead], dependencies=[Depends(require_agent_scope_viewer)])
 def list_tool_buckets(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(default=None),
@@ -239,7 +244,7 @@ def probe_tool(
     )
 
 
-@router.get("/{tool_id}", response_model=ToolRead, dependencies=[Depends(require_current_tenant)])
+@router.get("/{tool_id}", response_model=ToolRead, dependencies=[Depends(require_agent_scope_viewer)])
 def get_tool(
     tool_id: str,
     tenant_id: str = Query(...),
@@ -587,7 +592,7 @@ def mcp_server_read(row: MCPServer, db: Session) -> MCPServerRead:
     )
 
 
-@mcp_router.get("", response_model=list[MCPServerRead], dependencies=[Depends(require_current_tenant)])
+@mcp_router.get("", response_model=list[MCPServerRead], dependencies=[Depends(require_tenant_admin)])
 def list_mcp_servers(tenant_id: str = Query(...), db: Session = Depends(get_session)) -> list[MCPServerRead]:
     ensure_tenant(db, tenant_id)
     rows = db.exec(
@@ -631,7 +636,7 @@ def create_mcp_server(
     return mcp_server_read(row, db)
 
 
-@mcp_router.get("/{server_id}", response_model=MCPServerRead, dependencies=[Depends(require_current_tenant)])
+@mcp_router.get("/{server_id}", response_model=MCPServerRead, dependencies=[Depends(require_tenant_admin)])
 def get_mcp_server(server_id: str, tenant_id: str = Query(...), db: Session = Depends(get_session)) -> MCPServerRead:
     row = _get_mcp_server(db, tenant_id, server_id)
     return mcp_server_read(row, db)

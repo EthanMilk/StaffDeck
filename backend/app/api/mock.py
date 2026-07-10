@@ -291,8 +291,8 @@ def mock_fulfillment_reroute_plan(request: MockFulfillmentReroutePlanRequest) ->
     }
 
 
-@router.post("/product/price-query")
-@router.post("/product/price_query")
+@router.post("/product/price-query", operation_id="mock_product_price_query")
+@router.post("/product/price_query", operation_id="mock_product_price_query_legacy")
 def mock_product_price_query(request: MockProductPriceQueryRequest) -> dict[str, Any]:
     product_name = request.product_name.strip()
     record = _find_product_record(product_name)

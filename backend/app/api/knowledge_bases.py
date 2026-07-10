@@ -56,13 +56,21 @@ from app.knowledge.okf import (
     upsert_concepts,
 )
 from app.security.auth import get_current_user
-from app.security.permissions import ensure_agent_scope_manager, ensure_open_gallery_admin
+from app.security.permissions import (
+    ensure_agent_scope_manager,
+    ensure_open_gallery_admin,
+    require_agent_scope_viewer,
+)
 from app.security.tenant import ensure_tenant
 
-router = APIRouter(prefix="/api/enterprise/knowledge-bases", tags=["enterprise:knowledge-bases"])
+router = APIRouter(
+    prefix="/api/enterprise/knowledge-bases",
+    tags=["enterprise:knowledge-bases"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
-@router.get("", response_model=list[KnowledgeBaseRead])
+@router.get("", response_model=list[KnowledgeBaseRead], dependencies=[Depends(require_agent_scope_viewer)])
 def list_knowledge_bases(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
@@ -182,7 +190,11 @@ def create_knowledge_base(
     return knowledge_base_read(row, {}, version_row=ensure_knowledge_base_version(db, row))
 
 
-@router.get("/{knowledge_base_id}", response_model=KnowledgeBaseRead)
+@router.get(
+    "/{knowledge_base_id}",
+    response_model=KnowledgeBaseRead,
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
 def get_knowledge_base(
     knowledge_base_id: str,
     tenant_id: str = Query(...),
@@ -190,17 +202,17 @@ def get_knowledge_base(
     db: Session = Depends(get_session),
 ) -> KnowledgeBaseRead:
     row = _get_knowledge_base(db, tenant_id, knowledge_base_id)
-    visible_versions = _management_knowledge_base_versions(db, tenant_id, agent_id)
+    visible_version = _visible_knowledge_version(db, tenant_id, knowledge_base_id, agent_id)
     stats = _knowledge_base_stats(
         db,
         tenant_id,
-        [visible_versions[row.id].id] if row.id in visible_versions else None,
+        [visible_version.id],
     )
     branch_meta = _knowledge_branch_meta(db, tenant_id, agent_id).get(row.id)
     return knowledge_base_read(
         row,
         stats.get(row.id, {}),
-        version_row=visible_versions.get(row.id),
+        version_row=visible_version,
         branch_meta=branch_meta,
     )
 
@@ -301,7 +313,7 @@ def update_knowledge_base(
     )
 
 
-@router.get("/{knowledge_base_id}/versions")
+@router.get("/{knowledge_base_id}/versions", dependencies=[Depends(require_agent_scope_viewer)])
 def list_knowledge_base_versions(
     knowledge_base_id: str,
     tenant_id: str = Query(...),
@@ -309,6 +321,7 @@ def list_knowledge_base_versions(
     db: Session = Depends(get_session),
 ) -> list[dict[str, object]]:
     row = _get_knowledge_base(db, tenant_id, knowledge_base_id)
+    _visible_knowledge_version(db, tenant_id, knowledge_base_id, agent_id)
     agent = get_agent(db, tenant_id, agent_id)
     branch = None
     if agent and not agent.is_overall:
@@ -324,6 +337,15 @@ def list_knowledge_base_versions(
         .where(KnowledgeBaseVersion.tenant_id == tenant_id, KnowledgeBaseVersion.knowledge_base_id == row.id)
         .order_by(KnowledgeBaseVersion.updated_at.desc())
     ).all()
+    if agent and not agent.is_overall and branch:
+        rows = [
+            version
+            for version in rows
+            if version.version == branch.base_version
+            or (version.metadata_json or {}).get("owner_agent_id") == agent.id
+        ]
+    else:
+        rows = [version for version in rows if (version.metadata_json or {}).get("scope") != "agent_private"]
     return [
         {
             "id": version.id,
@@ -340,7 +362,11 @@ def list_knowledge_base_versions(
     ]
 
 
-@router.get("/{knowledge_base_id}/okf/concepts", response_model=list[KnowledgeConceptRead])
+@router.get(
+    "/{knowledge_base_id}/okf/concepts",
+    response_model=list[KnowledgeConceptRead],
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
 def list_okf_concepts(
     knowledge_base_id: str,
     tenant_id: str = Query(...),
@@ -362,7 +388,11 @@ def list_okf_concepts(
     return [concept_read(row) for row in rows]
 
 
-@router.get("/{knowledge_base_id}/okf/concepts/{concept_id:path}", response_model=KnowledgeConceptRead)
+@router.get(
+    "/{knowledge_base_id}/okf/concepts/{concept_id:path}",
+    response_model=KnowledgeConceptRead,
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
 def get_okf_concept(
     knowledge_base_id: str,
     concept_id: str,
@@ -405,7 +435,7 @@ def upsert_okf_concept(
     return concept_read(rows[0])
 
 
-@router.get("/{knowledge_base_id}/okf/export")
+@router.get("/{knowledge_base_id}/okf/export", dependencies=[Depends(require_agent_scope_viewer)])
 def export_okf(
     knowledge_base_id: str,
     tenant_id: str = Query(...),
@@ -439,7 +469,7 @@ def export_okf(
     )
 
 
-@router.post("/{knowledge_base_id}/okf/lint")
+@router.post("/{knowledge_base_id}/okf/lint", dependencies=[Depends(require_agent_scope_viewer)])
 def lint_okf(
     knowledge_base_id: str,
     tenant_id: str = Query(...),
@@ -668,7 +698,7 @@ def _writable_knowledge_version(
     tenant_id: str,
     knowledge_base_id: str,
     agent_id: str | None,
-    current_user: object | None = None,
+    current_user: User,
 ) -> KnowledgeBaseVersion:
     _get_knowledge_base(db, tenant_id, knowledge_base_id)
     agent = ensure_agent_scope_manager(db, tenant_id, agent_id, current_user)

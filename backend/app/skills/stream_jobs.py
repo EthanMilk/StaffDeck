@@ -18,6 +18,8 @@ class SkillStreamEvent:
 class SkillStreamJob:
     id: str
     name: str
+    tenant_id: str
+    user_id: str
     status: str = "queued"
     events: list[SkillStreamEvent] = field(default_factory=list)
     error: str | None = None
@@ -32,8 +34,8 @@ class SkillStreamJobStore:
         self._jobs: dict[str, SkillStreamJob] = {}
         self._max_jobs = max_jobs
 
-    def create(self, name: str) -> SkillStreamJob:
-        job = SkillStreamJob(id=new_id("skilljob"), name=name)
+    def create(self, name: str, tenant_id: str, user_id: str) -> SkillStreamJob:
+        job = SkillStreamJob(id=new_id("skilljob"), name=name, tenant_id=tenant_id, user_id=user_id)
         with self._lock:
             self._jobs[job.id] = job
             self._trim_locked()
@@ -73,6 +75,8 @@ class SkillStreamJobStore:
             return SkillStreamJob(
                 id=job.id,
                 name=job.name,
+                tenant_id=job.tenant_id,
+                user_id=job.user_id,
                 status=job.status,
                 events=list(job.events),
                 error=job.error,
@@ -90,6 +94,8 @@ class SkillStreamJobStore:
             copy = SkillStreamJob(
                 id=job.id,
                 name=job.name,
+                tenant_id=job.tenant_id,
+                user_id=job.user_id,
                 status=job.status,
                 events=[],
                 error=job.error,

@@ -55,6 +55,10 @@ python weather.py -json -today <地区名称>
 """
 
 
+def _admin_user() -> User:
+    return User(id="user_admin", tenant_id="tenant_demo", username="admin", role="admin", password_hash="test")
+
+
 def test_import_general_skill_uses_user_supplied_metadata() -> None:
     with _test_session() as db:
         _seed_minimal_tenant(db)
@@ -71,6 +75,7 @@ def test_import_general_skill_uses_user_supplied_metadata() -> None:
                 markdown=WEATHER_SKILL_MD,
             ),
             db,
+            _admin_user(),
         )
         second = import_general_skill(
             GeneralSkillImportRequest(
@@ -83,6 +88,7 @@ def test_import_general_skill_uses_user_supplied_metadata() -> None:
                 markdown=WEATHER_SKILL_MD.replace("中国城市天气查询工具", "天气 demo"),
             ),
             db,
+            _admin_user(),
         )
 
         rows = list_general_skills("tenant_demo", db)
@@ -104,6 +110,7 @@ def test_import_general_skill_uses_user_supplied_metadata() -> None:
                     markdown=WEATHER_SKILL_MD,
                 ),
                 db,
+                _admin_user(),
             )
             assert False, "expected general skill slug update to fail"
         except HTTPException as exc:
@@ -125,6 +132,7 @@ def test_import_general_skill_without_original_slug_does_not_overwrite_existing(
                 markdown=WEATHER_SKILL_MD,
             ),
             db,
+            _admin_user(),
         )
 
         try:
@@ -136,6 +144,7 @@ def test_import_general_skill_without_original_slug_does_not_overwrite_existing(
                     markdown="# 新内容",
                 ),
                 db,
+                _admin_user(),
             )
         except HTTPException as error:
             assert error.status_code == 409
@@ -163,9 +172,16 @@ def test_deleted_open_gallery_general_skill_binding_is_not_restored_by_ensure() 
                 markdown=WEATHER_SKILL_MD,
             ),
             db,
+            _admin_user(),
         )
 
-        deleted = delete_general_skill(imported.slug, "tenant_demo", db, agent_id="agent_overall")
+        deleted = delete_general_skill(
+            imported.slug,
+            "tenant_demo",
+            db,
+            agent_id="agent_overall",
+            current_user=_admin_user(),
+        )
         assert deleted == {"status": "hidden", "slug": "weather-zh"}
 
         ensure_open_gallery_binding(db, "tenant_demo", "general_skill", imported.id, "active")
@@ -198,6 +214,7 @@ def test_deleted_open_gallery_general_skill_is_hidden_from_agent_branch_binding(
                 markdown=WEATHER_SKILL_MD,
             ),
             db,
+            _admin_user(),
         )
         db.add(
             AgentResourceBinding(
@@ -211,7 +228,13 @@ def test_deleted_open_gallery_general_skill_is_hidden_from_agent_branch_binding(
         db.commit()
         assert [row.id for row in list_general_skills("tenant_demo", db, agent_id="agent_branch")] == [imported.id]
 
-        deleted = delete_general_skill(imported.slug, "tenant_demo", db, agent_id="agent_overall")
+        deleted = delete_general_skill(
+            imported.slug,
+            "tenant_demo",
+            db,
+            agent_id="agent_overall",
+            current_user=_admin_user(),
+        )
         assert deleted == {"status": "hidden", "slug": "weather-zh"}
 
         assert list_general_skills("tenant_demo", db, agent_id="agent_branch") == []
@@ -245,6 +268,7 @@ def test_import_general_skill_folder_reads_skill_md_metadata() -> None:
                 ],
             ),
             db,
+            _admin_user(),
         )
 
         assert row.name == "中国城市天气"
@@ -277,10 +301,12 @@ def test_import_clawhub_skill_reads_zip_package_without_overwriting(monkeypatch)
         first = import_clawhub_skill(
             GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="https://example.com/weather.zip"),
             db,
+            _admin_user(),
         )
         second = import_clawhub_skill(
             GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="https://example.com/weather.zip"),
             db,
+            _admin_user(),
         )
 
         assert first.slug == "weather-pack"
@@ -309,6 +335,7 @@ def test_import_general_skill_package_upload_keeps_full_zip_folder() -> None:
                 status="published",
             ),
             db,
+            _admin_user(),
         )
 
         assert row.slug == "nuwa-skill"
@@ -330,6 +357,7 @@ def test_import_general_skill_package_upload_treats_single_markdown_as_skill_md(
                 status="published",
             ),
             db,
+            _admin_user(),
         )
 
         assert row.slug == "single-file-skill"
@@ -389,6 +417,7 @@ def test_import_clawhub_skill_reads_github_directory_package(monkeypatch) -> Non
                 source="https://github.com/example/skill-pack/tree/main/weather",
             ),
             db,
+            _admin_user(),
         )
 
         assert row.slug == "weather-dir"
@@ -429,6 +458,7 @@ def test_import_clawhub_skill_follows_page_to_real_skill_package(monkeypatch) ->
         row = import_clawhub_skill(
             GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="https://clawhub.example/skills/weather"),
             db,
+            _admin_user(),
         )
 
         assert row.slug == "weather-page"
@@ -462,6 +492,7 @@ def test_import_clawhub_skill_uses_clawhub_download_api_for_page_url(monkeypatch
                 source="https://clawhub.ai/maomaoshuo/maomao-weather",
             ),
             db,
+            _admin_user(),
         )
 
         assert calls == ["https://wry-manatee-359.convex.site/api/v1/download?slug=maomao-weather"]
@@ -487,6 +518,7 @@ def test_import_clawhub_skill_accepts_cli_slug(monkeypatch) -> None:
         row = import_clawhub_skill(
             GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="maomao-weather"),
             db,
+            _admin_user(),
         )
 
         assert row.slug == "maomao-weather"
@@ -506,6 +538,7 @@ def test_import_clawhub_skill_rejects_plain_html_page(monkeypatch) -> None:
             import_clawhub_skill(
                 GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="https://clawhub.example/skills/weather"),
                 db,
+                _admin_user(),
             )
         except HTTPException as error:
             assert error.status_code == 400
@@ -533,6 +566,7 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
 
     with _test_session() as db:
         _seed_minimal_tenant(db)
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True))
         db.add(
             ModelConfig(
                 id="model_selected",
@@ -552,15 +586,17 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
                 markdown=WEATHER_SKILL_MD,
             ),
             db,
+            _admin_user(),
         )
 
-        archived = archive_general_skill(imported.slug, "tenant_demo", db)
+        archived = archive_general_skill(imported.slug, "tenant_demo", db, current_user=_admin_user())
         assert archived.status == "archived"
         try:
             run_general_skill(
                 imported.slug,
                 GeneralSkillRunRequest(tenant_id="tenant_demo", user_id="user_demo", query="北京天气"),
                 db,
+                _admin_user(),
             )
         except HTTPException as error:
             assert error.status_code == 400
@@ -568,12 +604,13 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
         else:
             raise AssertionError("archived general skill should not run")
 
-        published = publish_general_skill(imported.slug, "tenant_demo", db)
+        published = publish_general_skill(imported.slug, "tenant_demo", db, current_user=_admin_user())
         assert published.status == "published"
         result = run_general_skill(
             imported.slug,
             GeneralSkillRunRequest(tenant_id="tenant_demo", user_id="user_demo", query="北京天气"),
             db,
+            _admin_user(),
         )
         assert result["reply"] == "北京天气 ok"
 
@@ -586,12 +623,19 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
                 model_config_id="model_selected",
             ),
             db,
+            _admin_user(),
         )
         assert selected_result["reply"] == "上海天气 ok"
         assert captured_model_ids[-1] == "model_selected"
 
-        deleted = delete_general_skill(imported.slug, "tenant_demo", db)
-        assert deleted == {"status": "deleted", "slug": "weather-zh"}
+        deleted = delete_general_skill(
+            imported.slug,
+            "tenant_demo",
+            db,
+            agent_id="agent_overall",
+            current_user=_admin_user(),
+        )
+        assert deleted == {"status": "hidden", "slug": "weather-zh"}
         assert list_general_skills("tenant_demo", db) == []
         try:
             get_general_skill(imported.slug, "tenant_demo", db)
@@ -614,10 +658,17 @@ def test_non_overall_agent_delete_hides_general_skill_only_in_branch() -> None:
                 markdown=WEATHER_SKILL_MD,
             ),
             db,
+            _admin_user(),
         )
         db.commit()
 
-        deleted = delete_general_skill(imported.slug, "tenant_demo", db, agent_id="agent_branch")
+        deleted = delete_general_skill(
+            imported.slug,
+            "tenant_demo",
+            db,
+            agent_id="agent_branch",
+            current_user=_admin_user(),
+        )
 
         assert deleted == {"status": "hidden", "slug": "weather-zh"}
         assert get_general_skill(imported.slug, "tenant_demo", db).slug == "weather-zh"

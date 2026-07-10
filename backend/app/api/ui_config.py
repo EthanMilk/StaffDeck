@@ -6,10 +6,15 @@ from sqlmodel import Session
 
 from app.db import get_session
 from app.db.models import UIConfig, User, utc_now
-from app.security.auth import get_current_user
+from app.security.auth import get_current_user, require_current_tenant
+from app.security.permissions import ensure_tenant_admin
 from app.security.tenant import ensure_tenant
 
-enterprise_router = APIRouter(prefix="/api/enterprise/ui-config", tags=["enterprise:ui-config"])
+enterprise_router = APIRouter(
+    prefix="/api/enterprise/ui-config",
+    tags=["enterprise:ui-config"],
+    dependencies=[Depends(get_current_user)],
+)
 chat_router = APIRouter(prefix="/api/chat/ui-config", tags=["chat:ui-config"])
 
 
@@ -57,7 +62,7 @@ def get_or_create_ui_config(db: Session, tenant_id: str) -> UIConfig:
     return row
 
 
-@enterprise_router.get("", response_model=UIConfigRead)
+@enterprise_router.get("", response_model=UIConfigRead, dependencies=[Depends(require_current_tenant)])
 def get_enterprise_ui_config(
     tenant_id: str = Query(...), db: Session = Depends(get_session)
 ) -> UIConfigRead:
@@ -66,8 +71,11 @@ def get_enterprise_ui_config(
 
 @enterprise_router.put("", response_model=UIConfigRead)
 def update_enterprise_ui_config(
-    request: UIConfigUpdateRequest, db: Session = Depends(get_session)
+    request: UIConfigUpdateRequest,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> UIConfigRead:
+    ensure_tenant_admin(request.tenant_id, current_user)
     row = get_or_create_ui_config(db, request.tenant_id)
     row.show_thinking_trace = request.show_thinking_trace
     row.show_skill_trace = request.show_skill_trace

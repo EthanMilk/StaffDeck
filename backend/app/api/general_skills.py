@@ -46,10 +46,18 @@ from app.general_skills import (
 from app.general_skills.schema import GeneralSkillFile
 from app.general_skills.runner import GeneralSkillRunner
 from app.security.auth import get_current_user
-from app.security.permissions import ensure_agent_scope_manager, ensure_open_gallery_admin
+from app.security.permissions import (
+    ensure_agent_scope_manager,
+    ensure_open_gallery_admin,
+    require_agent_scope_viewer,
+)
 from app.security.tenant import ensure_tenant
 
-router = APIRouter(prefix="/api/enterprise/general-skills", tags=["enterprise:general-skills"])
+router = APIRouter(
+    prefix="/api/enterprise/general-skills",
+    tags=["enterprise:general-skills"],
+    dependencies=[Depends(get_current_user)],
+)
 
 MAX_CLAWHUB_PACKAGE_BYTES = 96 * 1024 * 1024
 MAX_CLAWHUB_FILE_BYTES = 2 * 1024 * 1024
@@ -362,7 +370,7 @@ def _create_imported_general_skill(
     return general_skill_read(row)
 
 
-@router.get("", response_model=list[GeneralSkillRead])
+@router.get("", response_model=list[GeneralSkillRead], dependencies=[Depends(require_agent_scope_viewer)])
 def list_general_skills(
     tenant_id: str = Query(...),
     db: Session = Depends(get_session),
@@ -413,13 +421,16 @@ def list_general_skills(
     return [general_skill_read(row) for row in rows]
 
 
-@router.get("/{slug}", response_model=GeneralSkillRead)
+@router.get("/{slug}", response_model=GeneralSkillRead, dependencies=[Depends(require_agent_scope_viewer)])
 def get_general_skill(
     slug: str,
     tenant_id: str = Query(...),
     db: Session = Depends(get_session),
+    agent_id: str | None = Query(None),
 ) -> GeneralSkillRead:
-    return general_skill_read(_get_general_skill(db, tenant_id, slug))
+    row = _get_general_skill(db, tenant_id, slug)
+    _ensure_general_skill_visible(db, tenant_id, row, agent_id)
+    return general_skill_read(row)
 
 
 @router.post("/{slug}/publish", response_model=GeneralSkillRead)
@@ -530,12 +541,15 @@ def run_general_skill(
     slug: str,
     request: GeneralSkillRunRequest,
     db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> GeneralSkillRunResponse:
     skill = _get_general_skill(db, request.tenant_id, slug)
     if skill.status != "published":
         raise HTTPException(status_code=400, detail="General skill is not published")
+    require_agent_scope_viewer(request.tenant_id, request.agent_id, current_user, db)
+    _ensure_general_skill_visible(db, request.tenant_id, skill, request.agent_id)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
-    return GeneralSkillRunner().run(skill, request.query, model_config, request.user_id, request.max_attempts)
+    return GeneralSkillRunner().run(skill, request.query, model_config, current_user.id, request.max_attempts)
 
 
 @router.post("/{slug}/run/stream")
@@ -543,10 +557,13 @@ def run_general_skill_stream(
     slug: str,
     request: GeneralSkillRunRequest,
     db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> StreamingResponse:
     skill = _get_general_skill(db, request.tenant_id, slug)
     if skill.status != "published":
         raise HTTPException(status_code=400, detail="General skill is not published")
+    require_agent_scope_viewer(request.tenant_id, request.agent_id, current_user, db)
+    _ensure_general_skill_visible(db, request.tenant_id, skill, request.agent_id)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
     skill_snapshot = _general_skill_snapshot(skill)
     model_snapshot = _model_config_snapshot(model_config)
@@ -563,7 +580,7 @@ def run_general_skill_stream(
                     skill_snapshot,
                     request.query,
                     model_snapshot,
-                    request.user_id,
+                    current_user.id,
                     request.max_attempts,
                     sink,
                 )
@@ -608,6 +625,29 @@ def _get_general_skill(db: Session, tenant_id: str, slug: str) -> GeneralSkill:
     if not row:
         raise HTTPException(status_code=404, detail="General skill not found")
     return row
+
+
+def _ensure_general_skill_visible(
+    db: Session,
+    tenant_id: str,
+    row: GeneralSkill,
+    agent_id: str | None,
+) -> None:
+    agent = get_agent(db, tenant_id, _agent_id_or_none(agent_id))
+    if not agent or agent.is_overall:
+        if is_open_gallery_resource(db, tenant_id, "general_skill", row):
+            return
+        raise HTTPException(status_code=404, detail="General skill not visible in open gallery")
+    binding = db.exec(
+        select(AgentResourceBinding).where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.agent_id == agent.id,
+            AgentResourceBinding.resource_type == "general_skill",
+            AgentResourceBinding.resource_id == row.id,
+        )
+    ).first()
+    if not binding or not is_bound_resource_visible_for_agent(db, tenant_id, "general_skill", row, binding):
+        raise HTTPException(status_code=404, detail="General skill not visible to this agent")
 
 
 def _ensure_general_skill_binding(

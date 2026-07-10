@@ -24,6 +24,7 @@ from app.db.models import (
     Skill,
     Tenant,
     Tool,
+    User,
     utc_now,
 )
 from app.knowledge.schema import KnowledgeChunkUpdateRequest, KnowledgeDocumentUpdateRequest, KnowledgeSearchRequest, KnowledgeSearchResponse
@@ -389,6 +390,8 @@ def test_knowledge_search_api_uses_selected_model_config(monkeypatch) -> None:
 
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True))
+        db.add(KnowledgeBase(id="kb_search", tenant_id="tenant_demo", name="检索知识库"))
         db.add(
             ModelConfig(
                 id="model_default",
@@ -410,6 +413,7 @@ def test_knowledge_search_api_uses_selected_model_config(monkeypatch) -> None:
                 enabled=True,
             )
         )
+        ensure_open_gallery_binding(db, "tenant_demo", "knowledge_base", "kb_search", "active")
         db.commit()
 
         search_knowledge(
@@ -419,6 +423,7 @@ def test_knowledge_search_api_uses_selected_model_config(monkeypatch) -> None:
                 model_config_id="model_selected",
             ),
             db,
+            User(id="user_admin", tenant_id="tenant_demo", username="admin", role="admin"),
         )
 
         assert captured["model_id"] == "model_selected"

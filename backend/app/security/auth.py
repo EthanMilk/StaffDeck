@@ -57,7 +57,7 @@ def get_current_user(
 
 def ensure_current_user_tenant(tenant_id: str, current_user: User) -> None:
     if not isinstance(current_user, User):
-        return
+        raise HTTPException(status_code=401, detail="Not authenticated")
     if tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
 

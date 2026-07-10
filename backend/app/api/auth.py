@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 from app.db import get_session
 from app.db.models import User, utc_now
 from app.security.auth import create_access_token, get_current_user, hash_password, verify_password
+from app.security.permissions import MEMBER_ROLE, is_admin_user
 from app.security.tenant import ensure_tenant
 
 
@@ -19,7 +20,6 @@ class LoginRequest(BaseModel):
     tenant_id: str
     username: str
     password: str
-    display_name: Optional[str] = None
 
 
 class UserCreateRequest(BaseModel):
@@ -27,12 +27,14 @@ class UserCreateRequest(BaseModel):
     username: str
     password: str
     display_name: Optional[str] = None
+    role: Literal["admin", "member"] = MEMBER_ROLE
 
 
 class UserUpdateRequest(BaseModel):
     tenant_id: str
     display_name: Optional[str] = None
     password: Optional[str] = None
+    role: Optional[Literal["admin", "member"]] = None
 
 
 class UserRead(BaseModel):
@@ -40,6 +42,7 @@ class UserRead(BaseModel):
     tenant_id: str
     username: str
     display_name: Optional[str] = None
+    role: Literal["admin", "member"]
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
 
@@ -59,25 +62,8 @@ def login(request: LoginRequest, db: Session = Depends(get_session)) -> LoginRes
     user = db.exec(
         select(User).where(User.tenant_id == request.tenant_id, User.username == username)
     ).first()
-    if user:
-        if not verify_password(request.password, user.password_hash):
-            raise HTTPException(status_code=401, detail="Invalid username or password")
-        if request.display_name and request.display_name != user.display_name:
-            user.display_name = request.display_name.strip()[:80]
-            user.updated_at = utc_now()
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-    else:
-        user = User(
-            tenant_id=request.tenant_id,
-            username=username,
-            display_name=(request.display_name or username).strip()[:80],
-            password_hash=hash_password(request.password),
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+    if not user or not verify_password(request.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid username or password")
 
     return LoginResponse(token=create_access_token(user), user=_user_read(user))
 
@@ -93,7 +79,7 @@ def create_user(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> UserRead:
-    if not _is_admin_user(current_user):
+    if not is_admin_user(current_user):
         raise HTTPException(status_code=403, detail="Only administrator can create accounts")
     if request.tenant_id != current_user.tenant_id:
         raise HTTPException(status_code=403, detail="Cannot create accounts for another tenant")
@@ -109,6 +95,7 @@ def create_user(
         tenant_id=request.tenant_id,
         username=username,
         display_name=(request.display_name or username).strip()[:80],
+        role=request.role,
         password_hash=hash_password(request.password),
     )
     db.add(user)
@@ -148,6 +135,10 @@ def update_user(
         password = request.password.strip()
         if password:
             user.password_hash = hash_password(password)
+    if request.role is not None and request.role != user.role:
+        if user.id == current_user.id:
+            raise HTTPException(status_code=400, detail="Cannot change your own account role")
+        user.role = request.role
     user.updated_at = utc_now()
     db.add(user)
     db.commit()
@@ -166,7 +157,7 @@ def delete_user(
     user = db.get(User, user_id)
     if not user or user.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Account not found")
-    if user.id == current_user.id or _is_admin_user(user):
+    if user.id == current_user.id or is_admin_user(user):
         raise HTTPException(status_code=400, detail="Administrator account cannot be deleted")
     db.delete(user)
     db.commit()
@@ -179,17 +170,14 @@ def _user_read(user: User) -> UserRead:
         tenant_id=user.tenant_id,
         username=user.username,
         display_name=user.display_name,
+        role=user.role,
         created_at=user.created_at.isoformat() if user.created_at else None,
         updated_at=user.updated_at.isoformat() if user.updated_at else None,
     )
 
 
 def _require_admin(user: User, tenant_id: str) -> None:
-    if not _is_admin_user(user):
+    if not is_admin_user(user):
         raise HTTPException(status_code=403, detail="Only administrator can manage accounts")
     if user.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="Cannot manage accounts for another tenant")
-
-
-def _is_admin_user(user: User) -> bool:
-    return user.username in {"admin", "admin_demo"}

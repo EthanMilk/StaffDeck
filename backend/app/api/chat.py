@@ -38,6 +38,7 @@ from app.feedback import enqueue_feedback_analysis
 from app.knowledge.citations import CITATION_EXCERPT_CHAR_LIMIT
 from app.llm import LLMClient, LLMError
 from app.security.auth import get_current_user
+from app.security.permissions import agent_owned_by_user, is_admin_user
 from app.security.tenant import ensure_tenant
 from app.scheduled_tasks.schema import ScheduledTaskDraftRead
 from app.scheduled_tasks.service import detect_scheduled_task_draft
@@ -58,7 +59,6 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
 CANCELLED_ASSISTANT_REPLY = "已停止生成"
 INTERRUPTED_ASSISTANT_REPLY = "本次响应中断，请重试发送。"
-CHAT_ADMIN_USERNAMES = {"admin", "admin_demo"}
 STREAM_REPLY_CHUNK_SIZE = 96
 STREAM_RELAY_POLL_SECONDS = 0.08
 STREAM_RELAY_HEARTBEAT_SECONDS = 5.0
@@ -1728,7 +1728,7 @@ def list_human_handoffs(
     stmt = select(HumanHandoffRequest).where(HumanHandoffRequest.tenant_id == tenant_id)
     if status != "all":
         stmt = stmt.where(HumanHandoffRequest.status == status)
-    if current_user.username not in CHAT_ADMIN_USERNAMES:
+    if not is_admin_user(current_user):
         if status == "pending":
             stmt = stmt.where(
                 or_(
@@ -1758,7 +1758,7 @@ def reply_human_handoff(
     row = db.get(HumanHandoffRequest, handoff_id)
     if not row or row.tenant_id != request.tenant_id:
         raise HTTPException(status_code=404, detail="Handoff request not found")
-    if current_user.username not in CHAT_ADMIN_USERNAMES and row.assignee_user_id not in {None, current_user.id}:
+    if not is_admin_user(current_user) and row.assignee_user_id not in {None, current_user.id}:
         raise HTTPException(status_code=403, detail="Handoff request not assigned to current user")
     reply = request.reply.strip()
     if not reply:
@@ -1948,7 +1948,7 @@ def _user_can_read_handoff_session(db: Session, tenant_id: str, current_user: Us
         HumanHandoffRequest.tenant_id == tenant_id,
         HumanHandoffRequest.session_id == session_id,
     )
-    if current_user.username not in CHAT_ADMIN_USERNAMES:
+    if not is_admin_user(current_user):
         statement = statement.where(
             or_(
                 HumanHandoffRequest.assignee_user_id == current_user.id,
@@ -2366,14 +2366,10 @@ def _ensure_request_tenant(tenant_id: str, current_user: User) -> None:
 
 
 def _chat_agent_visible_to_user(row: AgentProfile, user: User) -> bool:
-    if user.username in {"admin", "admin_demo"}:
+    if is_admin_user(user):
         return True
     metadata = row.metadata_json or {}
-    return (
-        metadata.get("owner_user_id") == user.id
-        or metadata.get("owner_username") == user.username
-        or metadata.get("published_to_gallery") is True
-    )
+    return agent_owned_by_user(row, user) or metadata.get("published_to_gallery") is True
 
 
 def _normalize_title(value: str | None) -> str | None:

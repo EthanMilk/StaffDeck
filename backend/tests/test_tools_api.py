@@ -8,10 +8,22 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.agents.branching import ensure_open_gallery_binding
-from app.api.tools import _normalize_probe_url, delete_tool, list_tools, probe_tool
+from app.api.tools import _normalize_probe_url, delete_tool, list_tools, probe_tool as _probe_tool
 from app.config import get_settings
-from app.db.models import AgentProfile, AgentResourceBinding, Tenant, Tool
+from app.db.models import AgentProfile, AgentResourceBinding, Tenant, Tool, User
 from app.tools.tool_schema import ToolProbeRequest
+
+
+def _admin_user() -> User:
+    return User(id="user_admin", tenant_id="tenant_demo", username="ops", role="admin", password_hash="test")
+
+
+def _member_user() -> User:
+    return User(id="user_member", tenant_id="tenant_demo", username="member", role="member", password_hash="test")
+
+
+def probe_tool(request: ToolProbeRequest, db: Session):  # noqa: ANN201
+    return _probe_tool(request, db, _member_user())
 
 
 def test_delete_tool_removes_tenant_tool() -> None:
@@ -28,7 +40,7 @@ def test_delete_tool_removes_tenant_tool() -> None:
         db.commit()
         db.refresh(tool)
 
-        result = delete_tool(tool.id, "tenant_demo", db)
+        result = delete_tool(tool.id, "tenant_demo", db, current_user=_admin_user())
 
         assert result == {"status": "deleted"}
         assert db.get(Tool, tool.id) is None
@@ -50,7 +62,7 @@ def test_delete_tool_is_tenant_scoped() -> None:
         db.refresh(tool)
 
         with pytest.raises(HTTPException) as exc_info:
-            delete_tool(tool.id, "tenant_demo", db)
+            delete_tool(tool.id, "tenant_demo", db, current_user=_admin_user())
 
         assert exc_info.value.status_code == 404
         assert db.get(Tool, tool.id) is not None
@@ -83,7 +95,13 @@ def test_open_gallery_delete_tool_hides_gallery_without_removing_agent_binding()
         ensure_open_gallery_binding(db, "tenant_demo", "tool", tool.id, "active")
         db.commit()
 
-        result = delete_tool(tool.id, "tenant_demo", db, agent_id="agent_overall")
+        result = delete_tool(
+            tool.id,
+            "tenant_demo",
+            db,
+            agent_id="agent_overall",
+            current_user=_admin_user(),
+        )
 
         assert result == {"status": "hidden"}
         assert db.get(Tool, tool.id) is not None

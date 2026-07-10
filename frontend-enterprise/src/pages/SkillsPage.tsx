@@ -522,7 +522,7 @@ export default function SkillsPage({
   async function showVersionDetail(row: SkillVersionRead) {
     try {
       const result = await api.get<SkillVersionRead>(
-        `/api/enterprise/skills/${encodeURIComponent(row.skill_id)}/versions/${encodeURIComponent(row.version)}?tenant_id=${TENANT_ID}`,
+        `/api/enterprise/skills/${encodeURIComponent(row.skill_id)}/versions/${encodeURIComponent(row.version)}?tenant_id=${TENANT_ID}${agentQuery()}`,
       );
       setDetailVersion(result);
     } catch (error) {

@@ -3,6 +3,7 @@ export type EnterpriseAuthUser = {
   tenant_id: string;
   username: string;
   display_name?: string;
+  role: 'admin' | 'member';
 };
 
 export type EnterpriseAuthSession = {
@@ -13,7 +14,6 @@ export type EnterpriseAuthSession = {
 export const ENTERPRISE_AUTH_STORAGE_KEY = 'ultrarag_auth';
 const LEGACY_ENTERPRISE_AUTH_STORAGE_KEY = 'ultrarag_enterprise_auth';
 const LEGACY_CHAT_AUTH_STORAGE_KEY = 'skill_agent_auth';
-const ADMIN_USERNAMES = new Set(['admin', 'admin_demo']);
 
 export function getEnterpriseAuthSession(): EnterpriseAuthSession | null {
   const current = readStoredSession(ENTERPRISE_AUTH_STORAGE_KEY);
@@ -54,7 +54,7 @@ function readStoredSession(key: string): EnterpriseAuthSession | null {
 }
 
 export function isEnterpriseAdmin(user?: EnterpriseAuthUser | null): boolean {
-  return Boolean(user?.username && ADMIN_USERNAMES.has(user.username));
+  return user?.role === 'admin';
 }
 
 export function isGalleryEmployee(agent?: { metadata?: Record<string, unknown> } | null): boolean {
@@ -68,9 +68,5 @@ export function isEmployeeOwnedBy(
   if (!user) return false;
   const metadata = agent.metadata || {};
   const ownerUserId = metadata.owner_user_id;
-  const ownerUsername = metadata.owner_username;
-  return (
-    ownerUserId === user.id
-    || ownerUsername === user.username
-  );
+  return ownerUserId === user.id;
 }

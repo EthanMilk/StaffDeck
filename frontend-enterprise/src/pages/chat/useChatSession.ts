@@ -422,6 +422,7 @@ export function useChatSession() {
   const routeDraftAgent = explicitDraftAgentId
     ? availableAgents.find((agent) => agent.id === explicitDraftAgentId) || null
     : null;
+  const draftAgentLoading = Boolean(explicitDraftAgentId && !agentsLoaded);
   const invalidDraftAgentId = Boolean(explicitDraftAgentId && agentsLoaded && !routeDraftAgent);
   const defaultAgent = availableAgents.find((agent) => agent.id === selectedAgentId) || availableAgents[0] || null;
   // While a freshly created draft is being promoted to a real session, `navigate`
@@ -429,7 +430,7 @@ export function useChatSession() {
   // we point the active conversation at the promoted (real) session id so we don't
   // resolve to the already-deleted draft slot and flash the empty state.
   const promotedSessionId = !sessionId ? pendingPromotedSessionIdRef.current : null;
-  const activeDraftAgentId = invalidDraftAgentId
+  const activeDraftAgentId = invalidDraftAgentId || draftAgentLoading
     ? ''
     : explicitDraftAgentId || (!sessionId && !promotedSessionId ? (defaultAgent?.id || '') : '');
   const activeConversationId = sessionId || promotedSessionId || (activeDraftAgentId ? draftConversationKey(activeDraftAgentId) : '');
@@ -440,7 +441,7 @@ export function useChatSession() {
   const sessionAgent = currentSession?.agent_id
     ? agents.find((agent) => agent.id === currentSession.agent_id) || null
     : null;
-  const displayedAgent = invalidDraftAgentId ? null : (sessionAgent || draftAgent || defaultAgent);
+  const displayedAgent = invalidDraftAgentId || draftAgentLoading ? null : (sessionAgent || draftAgent || defaultAgent);
   const displayedProfile = displayedAgent ? employeeProfile(displayedAgent) : null;
   const emptyProfileTags = displayedProfile?.workStyles.length
     ? displayedProfile.workStyles.slice(0, 3)
@@ -497,22 +498,36 @@ export function useChatSession() {
     }
   }, [tenantId]);
 
-  useEffect(() => {
+  const loadAgents = useCallback(async (preferredAgentId?: string) => {
     setAgentsLoaded(false);
-    api
-      .get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}`)
-      .then((rows) => {
-        setAgents(rows);
-        setSelectedAgentId((current) => {
-          const employeeRows = visibleChatEmployees(rows, auth?.user);
-          if (current && employeeRows.some((item) => item.id === current)) return current;
-          const next = employeeRows[0]?.id || '';
-          return next;
-        });
-      })
-      .catch(() => setAgents([]))
-      .finally(() => setAgentsLoaded(true));
+    try {
+      const rows = await api.get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}`);
+      setAgents(rows);
+      setSelectedAgentId((current) => {
+        const employeeRows = visibleChatEmployees(rows, auth?.user);
+        if (preferredAgentId && employeeRows.some((item) => item.id === preferredAgentId)) return preferredAgentId;
+        if (current && employeeRows.some((item) => item.id === current)) return current;
+        const next = employeeRows[0]?.id || '';
+        return next;
+      });
+    } catch {
+      setAgents([]);
+    } finally {
+      setAgentsLoaded(true);
+    }
   }, [auth?.user, tenantId]);
+
+  useEffect(() => {
+    void loadAgents();
+  }, [loadAgents]);
+
+  useEffect(() => {
+    const onAgentRefresh = () => {
+      void loadAgents();
+    };
+    window.addEventListener('ultrarag-enterprise-agent-scope-refresh', onAgentRefresh);
+    return () => window.removeEventListener('ultrarag-enterprise-agent-scope-refresh', onAgentRefresh);
+  }, [loadAgents]);
 
   useEffect(() => {
     if (!invalidDraftAgentId) return;
@@ -2938,6 +2953,7 @@ export function useChatSession() {
     sidebarCollapsed,
     toggleSidebar,
     openSession,
+    refreshAgents: loadAgents,
     openDraftForAgent,
     openGallery,
     openRename,

@@ -33,6 +33,7 @@ class User(SQLModel, table=True):
     tenant_id: str = Field(index=True)
     username: str = Field(index=True)
     display_name: Optional[str] = None
+    role: str = Field(default="member", index=True)
     password_hash: str
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -359,6 +360,21 @@ class AgentProfile(SQLModel, table=True):
     persona_prompt: Optional[str] = None
     is_overall: bool = Field(default=False, index=True)
     status: str = Field(default="active", index=True)
+    metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class AgentUsage(SQLModel, table=True):
+    __tablename__ = "agent_usages"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id", "agent_id", name="uq_agent_usage_user_agent"),
+    )
+
+    id: str = Field(default_factory=lambda: new_id("agentuse"), primary_key=True)
+    tenant_id: str = Field(index=True)
+    user_id: str = Field(index=True)
+    agent_id: str = Field(index=True)
     metadata_json: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

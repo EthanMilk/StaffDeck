@@ -32,6 +32,7 @@ export type EmployeeCardProps = {
   employee: AgentProfileRead;
   canManage: boolean;
   selected?: boolean;
+  busy?: boolean;
   /** Show the top-right "更多" actions menu. Hidden on the 对话端 gallery. */
   showMenu?: boolean;
   onOpen: () => void;
@@ -47,6 +48,7 @@ export default function EmployeeCard({
   employee,
   canManage,
   selected = false,
+  busy = false,
   showMenu = true,
   onOpen,
   onStatus,
@@ -78,14 +80,17 @@ export default function EmployeeCard({
     <div
       role="button"
       tabIndex={0}
-      onClick={onOpen}
+      onClick={() => {
+        if (!busy) onOpen();
+      }}
       onKeyDown={(event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
+        if (!busy && (event.key === 'Enter' || event.key === ' ')) {
           event.preventDefault();
           onOpen();
         }
       }}
       aria-pressed={selected}
+      aria-busy={busy}
       className={cn(
         'group relative flex h-full flex-col cursor-pointer overflow-visible rounded-[20px] border border-[#F6F6F6] bg-white py-[12px] px-[10px] transition-shadow',
         '',
@@ -129,7 +134,7 @@ export default function EmployeeCard({
         <button
           type="button"
           aria-label="发起对话"
-          disabled={!online}
+          disabled={!online || busy}
           onClick={(event) => {
             event.stopPropagation();
             onChat();
@@ -160,7 +165,7 @@ export default function EmployeeCard({
           >
             <DropdownMenuItem
               className={MENU_ITEM_CLASS}
-              disabled={!online}
+              disabled={!online || busy}
               onClick={(event) => event.stopPropagation()}
               onSelect={() => onChat()}
             >
@@ -170,7 +175,7 @@ export default function EmployeeCard({
             {online ? (
               <DropdownMenuItem
                 className={MENU_ITEM_CLASS}
-                disabled={!canManage}
+                disabled={!canManage || busy}
                 onClick={(event) => event.stopPropagation()}
                 onSelect={() => onStatus('archived')}
               >
@@ -180,7 +185,7 @@ export default function EmployeeCard({
             ) : (
               <DropdownMenuItem
                 className={MENU_ITEM_CLASS}
-                disabled={!canManage}
+                disabled={!canManage || busy}
                 onClick={(event) => event.stopPropagation()}
                 onSelect={() => onStatus('active')}
               >
@@ -190,7 +195,7 @@ export default function EmployeeCard({
             )}
             <DropdownMenuItem
               className={MENU_ITEM_CLASS}
-              disabled={!canManage}
+              disabled={!canManage || busy}
               onClick={(event) => event.stopPropagation()}
               onSelect={() => onGallery(!galleryPublished)}
             >
@@ -199,7 +204,7 @@ export default function EmployeeCard({
             </DropdownMenuItem>
             <DropdownMenuItem
               className={MENU_ITEM_CLASS}
-              disabled={!canManage}
+              disabled={!canManage || busy}
               onClick={(event) => event.stopPropagation()}
               onSelect={() => onEdit()}
             >
@@ -208,7 +213,7 @@ export default function EmployeeCard({
             </DropdownMenuItem>
             <DropdownMenuItem
               className={MENU_ITEM_CLASS}
-              disabled={!canManage}
+              disabled={!canManage || busy}
               onClick={(event) => event.stopPropagation()}
               onSelect={() => onAvatar()}
             >
@@ -219,7 +224,7 @@ export default function EmployeeCard({
             <DropdownMenuItem
               variant="destructive"
               className={MENU_ITEM_DANGER_CLASS}
-              disabled={!canManage}
+              disabled={!canManage || busy}
               onClick={(event) => event.stopPropagation()}
               onSelect={() => onDelete()}
             >

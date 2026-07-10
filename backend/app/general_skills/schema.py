@@ -69,6 +69,7 @@ class GeneralSkillRead(BaseModel):
 
 class GeneralSkillRunRequest(BaseModel):
     tenant_id: str
+    agent_id: Optional[str] = None
     user_id: str = ""
     query: str
     session_id: Optional[str] = None

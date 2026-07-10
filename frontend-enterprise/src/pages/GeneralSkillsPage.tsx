@@ -1764,6 +1764,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         `/api/enterprise/general-skills/${slug}/run/stream`,
         {
           tenant_id: TENANT_ID,
+          agent_id: agentId || undefined,
           user_id: 'enterprise_demo',
           query,
           model_config_id: selectedRunModelId || undefined,

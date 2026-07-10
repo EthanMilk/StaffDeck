@@ -4,13 +4,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from app.db import get_session
-from app.db.models import ModelConfig, utc_now
+from app.db.models import ModelConfig, User, utc_now
 from app.llm import LLMClient, LLMError
 from app.llm.schemas import ModelConfigCreateRequest, ModelConfigRead, ModelConfigTestResponse, ModelConfigUpdateRequest
+from app.security.auth import get_current_user, require_current_tenant
 from app.security.encryption import decrypt_secret, encrypt_secret, mask_secret
+from app.security.permissions import ensure_tenant_admin, require_tenant_admin
 from app.security.tenant import ensure_tenant
 
-router = APIRouter(prefix="/api/enterprise/model-configs", tags=["enterprise:model-configs"])
+router = APIRouter(
+    prefix="/api/enterprise/model-configs",
+    tags=["enterprise:model-configs"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 def model_config_read(row: ModelConfig) -> ModelConfigRead:
@@ -32,7 +38,7 @@ def model_config_read(row: ModelConfig) -> ModelConfigRead:
     )
 
 
-@router.get("", response_model=list[ModelConfigRead])
+@router.get("", response_model=list[ModelConfigRead], dependencies=[Depends(require_current_tenant)])
 def list_model_configs(
     tenant_id: str = Query(...), db: Session = Depends(get_session)
 ) -> list[ModelConfigRead]:
@@ -43,8 +49,11 @@ def list_model_configs(
 
 @router.post("", response_model=ModelConfigRead)
 def create_model_config(
-    request: ModelConfigCreateRequest, db: Session = Depends(get_session)
+    request: ModelConfigCreateRequest,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> ModelConfigRead:
+    ensure_tenant_admin(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
     existing_count = len(db.exec(select(ModelConfig).where(ModelConfig.tenant_id == request.tenant_id)).all())
     is_default = request.is_default or existing_count == 0
@@ -70,8 +79,12 @@ def create_model_config(
 
 @router.put("/{config_id}", response_model=ModelConfigRead)
 def update_model_config(
-    config_id: str, request: ModelConfigUpdateRequest, db: Session = Depends(get_session)
+    config_id: str,
+    request: ModelConfigUpdateRequest,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> ModelConfigRead:
+    ensure_tenant_admin(request.tenant_id, current_user)
     row = _get_model_config(db, request.tenant_id, config_id)
     if request.is_default:
         _clear_default(db, request.tenant_id)
@@ -90,7 +103,11 @@ def update_model_config(
     return model_config_read(row)
 
 
-@router.post("/{config_id}/set-default", response_model=ModelConfigRead)
+@router.post(
+    "/{config_id}/set-default",
+    response_model=ModelConfigRead,
+    dependencies=[Depends(require_tenant_admin)],
+)
 def set_default_model_config(
     config_id: str, tenant_id: str = Query(...), db: Session = Depends(get_session)
 ) -> ModelConfigRead:
@@ -104,7 +121,11 @@ def set_default_model_config(
     return model_config_read(row)
 
 
-@router.post("/{config_id}/test", response_model=ModelConfigTestResponse)
+@router.post(
+    "/{config_id}/test",
+    response_model=ModelConfigTestResponse,
+    dependencies=[Depends(require_tenant_admin)],
+)
 def test_model_config(
     config_id: str, tenant_id: str = Query(...), db: Session = Depends(get_session)
 ) -> ModelConfigTestResponse:
@@ -133,4 +154,3 @@ def _clear_default(db: Session, tenant_id: str) -> None:
         row.is_default = False
         row.updated_at = utc_now()
         db.add(row)
-

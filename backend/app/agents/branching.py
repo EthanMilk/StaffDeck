@@ -644,36 +644,46 @@ def branch_versions(db: Session, tenant_id: str, agent_id: str, skill_id: str) -
     )
 
 
-def visible_knowledge_base_ids(db: Session, tenant_id: str, agent_id: str | None = None) -> list[str]:
-    return list(visible_knowledge_base_versions(db, tenant_id, agent_id).keys())
+def visible_knowledge_base_ids(
+    db: Session,
+    tenant_id: str,
+    agent_id: str | None = None,
+    include_inactive: bool = False,
+) -> list[str]:
+    return list(visible_knowledge_base_versions(db, tenant_id, agent_id, include_inactive).keys())
 
 
 def visible_knowledge_base_versions(
     db: Session,
     tenant_id: str,
     agent_id: str | None = None,
+    include_inactive: bool = False,
 ) -> dict[str, KnowledgeBaseVersion]:
     agent = get_agent(db, tenant_id, agent_id)
     if not agent or agent.is_overall:
+        status_clause = KnowledgeBase.status != "deleted" if include_inactive else KnowledgeBase.status == "active"
         rows = db.exec(
             select(KnowledgeBase).where(
                 KnowledgeBase.tenant_id == tenant_id,
-                KnowledgeBase.status != "archived",
+                status_clause,
             )
         ).all()
         rows = [row for row in rows if is_open_gallery_resource(db, tenant_id, "knowledge_base", row)]
         return {row.id: ensure_knowledge_base_version(db, row, _current_knowledge_version(row)) for row in rows}
+    branch_status_clause = AgentKnowledgeBranch.status != "deleted" if include_inactive else AgentKnowledgeBranch.status == "active"
     branches = db.exec(
         select(AgentKnowledgeBranch).where(
             AgentKnowledgeBranch.tenant_id == tenant_id,
             AgentKnowledgeBranch.agent_id == agent.id,
-            AgentKnowledgeBranch.status == "active",
+            branch_status_clause,
         )
     ).all()
     result: dict[str, KnowledgeBaseVersion] = {}
     for branch in branches:
         kb = db.get(KnowledgeBase, branch.knowledge_base_id)
         if not kb or kb.tenant_id != tenant_id or kb.status == "deleted":
+            continue
+        if not include_inactive and kb.status != "active":
             continue
         binding = db.exec(
             select(AgentResourceBinding).where(
@@ -685,6 +695,8 @@ def visible_knowledge_base_versions(
         ).first()
         if not binding or not is_bound_resource_visible_for_agent(db, tenant_id, "knowledge_base", kb, binding):
             continue
+        if not include_inactive and binding.status != "active":
+            continue
         result[kb.id] = ensure_knowledge_base_version(db, kb, branch.head_version)
     return result
 
@@ -693,8 +705,12 @@ def visible_knowledge_base_version_ids(
     db: Session,
     tenant_id: str,
     agent_id: str | None = None,
+    include_inactive: bool = False,
 ) -> list[str]:
-    return [row.id for row in visible_knowledge_base_versions(db, tenant_id, agent_id).values()]
+    return [
+        row.id
+        for row in visible_knowledge_base_versions(db, tenant_id, agent_id, include_inactive).values()
+    ]
 
 
 def ensure_knowledge_base_version(db: Session, kb: KnowledgeBase, version: str | None = None) -> KnowledgeBaseVersion:

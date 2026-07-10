@@ -2526,11 +2526,12 @@ class AgentLoop:
         return fallback_user_id
 
     def _human_handoff_tenant_admin_user_id(self, tenant_id: str) -> str | None:
-        rows = self.db.exec(
-            select(User).where(User.tenant_id == tenant_id).where(User.username.in_(("admin", "admin_demo")))
-        ).all()
-        by_username = {user.username: user.id for user in rows if user.username in {"admin", "admin_demo"}}
-        return by_username.get("admin") or by_username.get("admin_demo")
+        row = self.db.exec(
+            select(User)
+            .where(User.tenant_id == tenant_id, User.role == "admin")
+            .order_by(User.created_at)
+        ).first()
+        return row.id if row else None
 
     def _human_handoff_context_summary(self, chat_session: ChatSession) -> str:
         rows = self.db.exec(
