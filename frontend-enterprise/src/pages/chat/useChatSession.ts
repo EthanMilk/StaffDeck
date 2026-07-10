@@ -2660,10 +2660,13 @@ export function useChatSession() {
         }
         if (item.event === 'session_created') {
           createdSessionId = String(item.data.newSessionId || item.data.sessionId || '');
+          if (startedAsDraftConversation && createdSessionId) {
+            promoteDraftConversation(createdSessionId);
+          }
           return;
         }
         const eventSessionId = startedAsDraftConversation
-          ? currentConversationId
+          ? liveConversationId
           : String(item.data.sessionId || liveConversationId);
         const eventStream = getStreamSlot(eventSessionId);
         const traceTurnId = explicitStreamTurnId(item.data, eventStream.turnId || turnId);
@@ -2683,7 +2686,7 @@ export function useChatSession() {
           markStreamTerminal();
           const result = item.data as unknown as ChatTurnResponse;
           const completedSessionId = result.session_id || createdSessionId || String(item.data.sessionId || '');
-          handleStreamEvent(item, startedAsDraftConversation ? currentConversationId : (String(item.data.sessionId || liveConversationId)), turnId);
+          handleStreamEvent(item, String(item.data.sessionId || liveConversationId), turnId);
           if (startedAsDraftConversation && completedSessionId) {
             promoteDraftConversation(completedSessionId);
           }

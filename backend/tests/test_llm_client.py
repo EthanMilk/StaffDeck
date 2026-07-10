@@ -1,6 +1,7 @@
 import pytest
 
 from app.llm.client import LLMClient, LLMError, MULTIMODAL_UNSUPPORTED_MESSAGE, model_supports_images
+from app.llm.schemas import ModelConfigCreateRequest
 
 
 class _ForbiddenResponses:
@@ -60,6 +61,16 @@ def test_llm_client_uses_600_second_timeout(monkeypatch):
 
     assert client.timeout_seconds == 600.0
     assert captured["timeout"] == 600.0
+
+
+def test_model_config_create_defaults_to_8192_output_tokens():
+    request = ModelConfigCreateRequest(
+        tenant_id="tenant_demo",
+        name="demo",
+        model="demo-model",
+    )
+
+    assert request.max_output_tokens == 8192
 
 
 def _completion_with_content(content):  # noqa: ANN001
@@ -196,6 +207,7 @@ def test_generate_text_stream_reports_empty_stream_diagnostics():
     assert "finish_reason=stop" in detail
     assert "reasoning_chars=14" in detail
     assert len(client.client.chat.completions.calls) == 3
+    assert all(call["messages"][0] == {"role": "system", "content": "system prompt"} for call in client.client.chat.completions.calls)
 
 
 def test_generate_text_projects_conversation_context_messages():

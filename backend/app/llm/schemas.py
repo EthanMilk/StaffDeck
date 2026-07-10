@@ -13,7 +13,7 @@ class ModelConfigCreateRequest(BaseModel):
     api_key: str = Field(default="", repr=False)
     model: str
     temperature: float = 0.2
-    max_output_tokens: int = 2048
+    max_output_tokens: int = 8192
     is_default: bool = False
     enabled: bool = True
 
@@ -53,4 +53,3 @@ class ModelConfigTestResponse(BaseModel):
     success: bool
     message: str
     output: Optional[str] = None
-

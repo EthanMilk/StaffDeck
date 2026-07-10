@@ -320,7 +320,7 @@ class ModelConfig(SQLModel, table=True):
     api_key_encrypted: str
     model: str
     temperature: float = 0.2
-    max_output_tokens: int = 2048
+    max_output_tokens: int = 8192
     is_default: bool = False
     enabled: bool = True
     created_at: datetime = Field(default_factory=utc_now)
