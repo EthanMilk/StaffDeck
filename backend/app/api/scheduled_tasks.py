@@ -22,6 +22,7 @@ from app.scheduled_tasks.service import (
     update_scheduled_task,
 )
 from app.security.auth import get_current_user
+from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
 
 
@@ -258,7 +259,3 @@ def _get_task(db: Session, tenant_id: str, task_id: str, current_user: User) -> 
 def _ensure_request_tenant(tenant_id: str, current_user: User) -> None:
     if current_user.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="Cannot access another tenant")
-
-
-def _is_admin_user(user: User) -> bool:
-    return user.username in {"admin", "admin_demo"}

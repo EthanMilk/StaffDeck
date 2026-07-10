@@ -12,12 +12,29 @@ from app.agents.schema import (
     AgentResourceBindingInput,
     AgentResourcesUpdateRequest,
 )
-from app.api.agents import create_agent, delete_agent, list_agents, update_agent, update_agent_resources
+from app.api.agents import (
+    create_agent,
+    delete_agent,
+    list_agents,
+    list_chat_agents,
+    update_agent,
+    update_agent_resources,
+    use_chat_agent,
+)
 from app.api.general_skills import import_general_skill
 from app.api.tools import create_tool, update_tool
-from app.db.models import AgentProfile, AgentResourceBinding, GeneralSkill, Tenant, Tool, User
+from app.db.models import (
+    AgentProfile,
+    AgentResourceBinding,
+    AgentUsage,
+    ChatSession,
+    GeneralSkill,
+    Tenant,
+    Tool,
+    User,
+)
 from app.general_skills.schema import GeneralSkillImportRequest
-from app.security.permissions import ensure_agent_scope_manager
+from app.security.permissions import ensure_agent_scope_manager, ensure_tenant_admin, require_agent_scope_viewer
 from app.tools.tool_schema import ToolCreateRequest, ToolUpdateRequest
 
 
@@ -66,7 +83,7 @@ def test_only_creator_or_admin_can_update_and_delete_agent() -> None:
 
 def test_non_admin_cannot_manage_overall_agent() -> None:
     with _test_session() as db:
-        owner, _other, admin = _seed_users(db)
+        owner, other, admin = _seed_users(db)
         overall = AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True)
         db.add(overall)
         db.commit()
@@ -147,13 +164,34 @@ def test_list_agents_filters_to_visible_agents_for_non_admin() -> None:
                 metadata_json={"owner_user_id": other.id, "owner_username": other.username},
             )
         )
+        db.add(
+            AgentProfile(
+                id="agent_created_by_owner_only",
+                tenant_id="tenant_demo",
+                name="创建字段命中但非本人",
+                is_overall=False,
+                metadata_json={
+                    "owner_user_id": other.id,
+                    "owner_username": other.username,
+                    "created_by_user_id": owner.id,
+                    "created_by_username": owner.username,
+                    "published_to_gallery": False,
+                },
+            )
+        )
         db.commit()
 
         owner_rows = list_agents("tenant_demo", db=db, current_user=owner)
         admin_rows = list_agents("tenant_demo", db=db, current_user=admin)
 
         assert {row.id for row in owner_rows} == {"agent_overall", "agent_owned", "agent_gallery"}
-        assert {row.id for row in admin_rows} == {"agent_overall", "agent_owned", "agent_gallery", "agent_private"}
+        assert {row.id for row in admin_rows} == {
+            "agent_overall",
+            "agent_owned",
+            "agent_gallery",
+            "agent_private",
+            "agent_created_by_owner_only",
+        }
 
 
 def test_gallery_agent_is_visible_but_not_manageable_by_non_owner() -> None:
@@ -199,9 +237,133 @@ def test_gallery_agent_is_visible_but_not_manageable_by_non_owner() -> None:
         assert db.exec(select(Tool).where(Tool.name == "blocked_gallery_tool")).first() is None
 
 
+def test_agent_ownership_uses_immutable_user_id_not_username_metadata() -> None:
+    with _test_session() as db:
+        owner, other, _admin = _seed_users(db)
+        agent = AgentProfile(
+            id="agent_spoofed_owner_name",
+            tenant_id="tenant_demo",
+            name="用户名不能授权",
+            metadata_json={
+                "owner_user_id": other.id,
+                "owner_username": owner.username,
+            },
+        )
+        db.add(agent)
+        db.commit()
+
+        assert list_agents("tenant_demo", db=db, current_user=owner) == []
+        with pytest.raises(HTTPException) as manage_error:
+            ensure_agent_scope_manager(db, "tenant_demo", agent.id, owner)
+        assert manage_error.value.status_code == 403
+        assert ensure_agent_scope_manager(db, "tenant_demo", agent.id, other).id == agent.id
+
+
+def test_agent_scope_viewer_allows_owned_and_gallery_but_blocks_private_agents() -> None:
+    with _test_session() as db:
+        owner, other, admin = _seed_users(db)
+        private = AgentProfile(
+            id="agent_private_scope",
+            tenant_id="tenant_demo",
+            name="私有员工",
+            metadata_json={"owner_user_id": owner.id, "owner_username": owner.username},
+        )
+        gallery = AgentProfile(
+            id="agent_gallery_scope",
+            tenant_id="tenant_demo",
+            name="广场员工",
+            metadata_json={
+                "owner_user_id": owner.id,
+                "owner_username": owner.username,
+                "published_to_gallery": True,
+            },
+        )
+        db.add(private)
+        db.add(gallery)
+        db.commit()
+
+        assert require_agent_scope_viewer("tenant_demo", private.id, owner, db) is owner
+        assert require_agent_scope_viewer("tenant_demo", gallery.id, other, db) is other
+        assert require_agent_scope_viewer("tenant_demo", private.id, admin, db) is admin
+        with pytest.raises(HTTPException) as private_error:
+            require_agent_scope_viewer("tenant_demo", private.id, other, db)
+        assert private_error.value.status_code == 403
+        with pytest.raises(HTTPException) as tenant_error:
+            require_agent_scope_viewer("another_tenant", private.id, owner, db)
+        assert tenant_error.value.status_code == 403
+
+
+def test_tenant_settings_require_an_administrator() -> None:
+    with _test_session() as db:
+        owner, _, admin = _seed_users(db)
+        assert ensure_tenant_admin("tenant_demo", admin) is admin
+        with pytest.raises(HTTPException) as role_error:
+            ensure_tenant_admin("tenant_demo", owner)
+        assert role_error.value.status_code == 403
+        with pytest.raises(HTTPException) as tenant_error:
+            ensure_tenant_admin("another_tenant", admin)
+        assert tenant_error.value.status_code == 403
+
+
+def test_chat_agents_exclude_unused_gallery_agents_until_current_user_marks_used() -> None:
+    with _test_session() as db:
+        owner, other, admin = _seed_users(db)
+        owned = AgentProfile(
+            id="agent_owned",
+            tenant_id="tenant_demo",
+            name="我的员工",
+            is_overall=False,
+            metadata_json={"owner_user_id": owner.id, "owner_username": owner.username},
+        )
+        gallery = AgentProfile(
+            id="agent_gallery",
+            tenant_id="tenant_demo",
+            name="广场员工",
+            is_overall=False,
+            metadata_json={
+                "published_to_gallery": True,
+                "owner_user_id": other.id,
+                "owner_username": other.username,
+            },
+        )
+        private = AgentProfile(
+            id="agent_private",
+            tenant_id="tenant_demo",
+            name="管理员可见私有员工",
+            is_overall=False,
+            metadata_json={"owner_user_id": other.id, "owner_username": other.username},
+        )
+        db.add(owned)
+        db.add(gallery)
+        db.add(private)
+        db.commit()
+
+        enterprise_rows = list_agents("tenant_demo", db=db, current_user=owner)
+        assert {row.id for row in enterprise_rows} == {"agent_owned", "agent_gallery"}
+        assert {row.id for row in list_chat_agents("tenant_demo", current_user=owner, db=db)} == {"agent_owned"}
+        assert {row.id for row in list_chat_agents("tenant_demo", current_user=admin, db=db)} == {"agent_owned", "agent_private"}
+
+        used = use_chat_agent(gallery.id, tenant_id="tenant_demo", current_user=owner, db=db)
+        assert used.id == gallery.id
+        assert used.metadata["used_by_current_user"] is True
+        used_again = use_chat_agent(gallery.id, tenant_id="tenant_demo", current_user=owner, db=db)
+        assert used_again.id == gallery.id
+        assert db.exec(
+            select(ChatSession).where(ChatSession.user_id == owner.id, ChatSession.agent_id == gallery.id)
+        ).first() is None
+        usage_rows = db.exec(
+            select(AgentUsage).where(AgentUsage.user_id == owner.id, AgentUsage.agent_id == gallery.id)
+        ).all()
+        assert len(usage_rows) == 1
+
+        chat_rows = list_chat_agents("tenant_demo", current_user=owner, db=db)
+        assert {row.id for row in chat_rows} == {"agent_owned", "agent_gallery"}
+        assert next(row for row in chat_rows if row.id == "agent_gallery").metadata["used_by_current_user"] is True
+
+
 def test_create_agent_records_creator_and_blocks_non_admin_overall() -> None:
     with _test_session() as db:
-        owner, _other, admin = _seed_users(db)
+        owner, other, admin = _seed_users(db)
 
         created = create_agent(
             AgentProfileCreateRequest(tenant_id="tenant_demo", name="新员工", source_mode="blank"),
@@ -212,6 +374,66 @@ def test_create_agent_records_creator_and_blocks_non_admin_overall() -> None:
         assert created.metadata["owner_username"] == owner.username
         assert created.metadata["created_by_user_id"] == owner.id
         assert created.metadata["created_by_username"] == owner.username
+
+        admin_updated = update_agent(
+            created.id,
+            AgentProfileUpdateRequest(
+                tenant_id="tenant_demo",
+                metadata={
+                    **created.metadata,
+                    "owner_user_id": other.id,
+                    "owner_username": other.username,
+                    "created_by_user_id": other.id,
+                    "created_by_username": other.username,
+                    "role_name": "管理员可修改的业务字段",
+                },
+            ),
+            db=db,
+            current_user=admin,
+        )
+        assert admin_updated.metadata["owner_user_id"] == owner.id
+        assert admin_updated.metadata["owner_username"] == owner.username
+        assert admin_updated.metadata["created_by_user_id"] == owner.id
+        assert admin_updated.metadata["created_by_username"] == owner.username
+        assert admin_updated.metadata["role_name"] == "管理员可修改的业务字段"
+
+        source = AgentProfile(
+            id="agent_source",
+            tenant_id="tenant_demo",
+            name="源员工",
+            is_overall=False,
+            persona_prompt="源提示词",
+            metadata_json={
+                "owner_user_id": owner.id,
+                "owner_username": owner.username,
+                "created_by_user_id": owner.id,
+                "created_by_username": owner.username,
+                "published_to_gallery": True,
+                "role_name": "源角色",
+            },
+        )
+        db.add(source)
+        db.commit()
+        copied = create_agent(
+            AgentProfileCreateRequest(
+                tenant_id="tenant_demo",
+                name="复制员工",
+                source_mode="copy",
+                copy_from_agent_id=source.id,
+                metadata={
+                    **source.metadata_json,
+                    "owner_user_id": other.id,
+                    "owner_username": other.username,
+                },
+            ),
+            db=db,
+            current_user=other,
+        )
+        assert copied.metadata["owner_user_id"] == other.id
+        assert copied.metadata["owner_username"] == other.username
+        assert copied.metadata["created_by_user_id"] == other.id
+        assert copied.metadata["created_by_username"] == other.username
+        assert copied.metadata["role_name"] == "源角色"
 
         with pytest.raises(HTTPException) as create_error:
             create_agent(
@@ -423,7 +645,14 @@ def _seed_users(db: Session) -> tuple[User, User, User]:
     db.add(Tenant(id="tenant_demo", name="Demo"))
     owner = User(id="user_owner", tenant_id="tenant_demo", username="owner", display_name="Owner", password_hash="x")
     other = User(id="user_other", tenant_id="tenant_demo", username="other", display_name="Other", password_hash="x")
-    admin = User(id="user_admin", tenant_id="tenant_demo", username="admin", display_name="Admin", password_hash="x")
+    admin = User(
+        id="user_admin",
+        tenant_id="tenant_demo",
+        username="admin",
+        display_name="Admin",
+        role="admin",
+        password_hash="x",
+    )
     db.add(owner)
     db.add(other)
     db.add(admin)

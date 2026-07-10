@@ -647,7 +647,7 @@ function FeedbackTraceBlock({ trace }: { trace: TurnTraceRead }) {
 function traceDetails(lines: TraceLineRead[]): TraceLineRead[] {
   const hiddenPlaceholders = new Set(['正在思考', '已完成思考', '正在执行', '执行记录']);
   return lines.filter((line) => {
-    if (line.kind === 'thinking') return false;
+    if (line.kind === 'thinking' && line.state !== 'failed') return false;
     if (hiddenPlaceholders.has(line.text) && !line.detail && !line.code && !line.output) return false;
     return true;
   });

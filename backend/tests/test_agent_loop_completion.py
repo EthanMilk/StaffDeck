@@ -4,7 +4,7 @@ import pytest
 
 from app.core.agent_loop import GRAPH_PENDING_STEPS_SLOT, AgentLoop
 from app.core.skill_runtime import SkillRuntime
-from app.db.models import ChatSession, Message, Skill, Tool
+from app.db.models import AgentEvent, ChatSession, Message, Skill, Tool
 from app.session.session_schema import AwaitingInput, PendingTask, RouterDecision, StepAgentResult
 from app.tools.tool_schema import ToolCall, ToolResult
 
@@ -44,6 +44,9 @@ class FakeExecResult:
     def all(self) -> list[object]:
         return self.rows
 
+    def first(self) -> object | None:
+        return self.rows[0] if self.rows else None
+
 
 def test_router_decision_hydrates_purchase_slots_from_memory_and_product_alias() -> None:
     loop = object.__new__(AgentLoop)
@@ -81,6 +84,20 @@ class FakeMessageDb(FakeDb):
         return FakeExecResult(self.rows)
 
 
+class FakeEventDb(FakeDb):
+    def __init__(self, tool: Tool | None, rows: list[AgentEvent]) -> None:
+        super().__init__()
+        self.tool = tool
+        self.rows = rows
+        self.exec_calls = 0
+
+    def exec(self, _statement: object) -> FakeExecResult:
+        self.exec_calls += 1
+        if self.exec_calls == 1:
+            return FakeExecResult([self.tool] if self.tool else [])
+        return FakeExecResult(self.rows)
+
+
 class FakeToolExecutor:
     def __init__(self, db: FakeDb) -> None:
         self.db = db
@@ -115,6 +132,111 @@ def test_tool_call_start_event_is_committed_before_external_execute() -> None:
     assert result.success is True
     assert executor.commits_seen_before_execute == 1
     assert db.commits == 2
+    assert [record[2] for record in loop.events.records] == [
+        "tool_call_started",
+        "tool_call_finished",
+    ]
+
+
+def test_side_effect_tool_call_reuses_previous_successful_result() -> None:
+    tool = Tool(
+        tenant_id="tenant_demo",
+        name="crm.create_ticket",
+        display_name="创建工单",
+        method="POST",
+        url="http://localhost:8000/api/mock/tickets",
+        enabled=True,
+    )
+    event = AgentEvent(
+        id="evt_existing_tool_result",
+        tenant_id="tenant_demo",
+        session_id="session_test",
+        event_type="tool_call_finished",
+        payload_json={
+            "tool_name": "crm.create_ticket",
+            "success": True,
+            "data": {"ticket_id": "TCK-1001", "status": "created"},
+            "tool_call": {
+                "name": "crm.create_ticket",
+                "arguments": {
+                    "customer_id": "C-1",
+                    "subject": "发票开具",
+                    "priority": "normal",
+                },
+            },
+        },
+    )
+    db = FakeEventDb(tool, [event])
+    executor = FakeToolExecutor(db)
+    loop = object.__new__(AgentLoop)
+    loop.db = db
+    loop.events = FakeEvents()
+    loop.tool_executor = executor
+    session = ChatSession(id="session_test", tenant_id="tenant_demo", active_skill_id="skill_leave_apply_001")
+
+    result = loop._execute_tool_call(
+        _request("重试一下，如果办理失败需要提示我"),
+        session,
+        ToolCall(
+            name="crm.create_ticket",
+            arguments={
+                "customer_id": "C-1",
+                "subject": "发票开具",
+                "priority": "normal",
+            },
+        ),
+        tool_call_id="toolcall_retry",
+    )
+
+    assert result.success is True
+    assert result.data["ticket_id"] == "TCK-1001"
+    assert result.data["idempotent_replay"] is True
+    assert executor.commits_seen_before_execute is None
+    assert db.commits == 1
+    assert [record[2] for record in loop.events.records] == [
+        "tool_call_reused",
+        "tool_call_finished",
+    ]
+    assert loop.events.records[-1][3]["idempotent_replay"] is True
+
+
+def test_post_read_only_tool_does_not_reuse_previous_result() -> None:
+    tool = Tool(
+        tenant_id="tenant_demo",
+        name="order.query",
+        display_name="查询订单",
+        method="POST",
+        url="http://localhost:8000/api/mock/order/query",
+        enabled=True,
+    )
+    event = AgentEvent(
+        id="evt_existing_query_result",
+        tenant_id="tenant_demo",
+        session_id="session_test",
+        event_type="tool_call_finished",
+        payload_json={
+            "tool_name": "order.query",
+            "success": True,
+            "data": {"order_id": "O-1", "status": "paid"},
+            "tool_call": {"name": "order.query", "arguments": {"order_id": "O-1"}},
+        },
+    )
+    db = FakeEventDb(tool, [event])
+    executor = FakeToolExecutor(db)
+    loop = object.__new__(AgentLoop)
+    loop.db = db
+    loop.events = FakeEvents()
+    loop.tool_executor = executor
+    session = ChatSession(id="session_test", tenant_id="tenant_demo", active_skill_id="refund")
+
+    result = loop._execute_tool_call(
+        _request("查订单"),
+        session,
+        ToolCall(name="order.query", arguments={"order_id": "O-1"}),
+    )
+
+    assert result.success is True
+    assert executor.commits_seen_before_execute == 1
     assert [record[2] for record in loop.events.records] == [
         "tool_call_started",
         "tool_call_finished",

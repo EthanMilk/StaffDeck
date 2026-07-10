@@ -322,16 +322,42 @@ export default function OpenPlatformPage({
     return true;
   }
 
-  function usePlatformItem(platformKind: PlatformKind, itemId?: string) {
+  async function markPlatformAgentUsed(agent: AgentProfileRead) {
+    const metadata = agent.metadata || {};
+    if (metadata.used_by_current_user !== true && metadata.chat_used_by_current_user !== true) {
+      await api.post<AgentProfileRead>(`/api/chat/agents/${agent.id}/use?tenant_id=${TENANT_ID}`, {});
+    }
+    setAgents((current) => current.map((item) => (
+      item.id === agent.id
+        ? {
+          ...item,
+          metadata: {
+            ...(item.metadata || {}),
+            used_by_current_user: true,
+            chat_used_by_current_user: true,
+          },
+        }
+        : item
+    )));
+    window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, agent.id);
+    window.dispatchEvent(new Event('ultrarag-enterprise-agent-scope-refresh'));
+    window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', { detail: { agentId: agent.id } }));
+    setAgentId(agent.id);
+  }
+
+  async function usePlatformItem(platformKind: PlatformKind, itemId?: string) {
     if (platformKind === 'agents') {
       const agent = visibleAgents.find((item) => item.id === itemId) || visibleAgents[0];
       if (!agent) {
         notify.warning('广场暂无可用数字员工');
         return;
       }
-      window.localStorage.setItem(ENTERPRISE_AGENT_STORAGE_KEY, agent.id);
-      window.dispatchEvent(new CustomEvent('ultrarag-enterprise-agent-scope-change', { detail: { agentId: agent.id } }));
-      navigate('/enterprise/dashboard');
+      try {
+        await markPlatformAgentUsed(agent);
+        navigate('/enterprise/dashboard');
+      } catch (error) {
+        notify.error(error instanceof Error ? error.message : '使用数字员工失败');
+      }
       return;
     }
     if (!ensureTargetEmployee()) return;
@@ -432,7 +458,7 @@ export default function OpenPlatformPage({
           onDelete={() => setConfirmTarget({ kind: detailItem.kind, item })}
           onUse={() => {
             setDetailItem(null);
-            usePlatformItem(detailItem.kind, item.id);
+            void usePlatformItem(detailItem.kind, item.id);
           }}
         />
       );
@@ -462,7 +488,7 @@ export default function OpenPlatformPage({
         onDelete={() => setConfirmTarget({ kind: detailItem.kind, item })}
         onUse={() => {
           setDetailItem(null);
-          usePlatformItem(detailItem.kind, item.id);
+          void usePlatformItem(detailItem.kind, item.id);
         }}
       />
     );

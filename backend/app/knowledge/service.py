@@ -4,6 +4,7 @@ import base64
 import json
 import re
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,7 @@ SEARCH_DOCUMENT_LIMIT = 40
 SEARCH_BUCKET_LIMIT = 80
 TERMINAL_INGEST_STATUSES = {"succeeded", "failed", "cancelled"}
 CANCELLING_INGEST_STATUSES = {"cancel_requested", "cancelled"}
+CANCEL_REQUEST_STALE_AFTER = timedelta(seconds=15)
 GENERIC_SEARCH_TERMS = {
     "请根据",
     "根据",
@@ -155,6 +157,9 @@ class KnowledgeService:
         if job.status == "queued":
             self._finalize_cancelled_job(job, "入库任务已取消")
             return job
+        if job.status == "cancel_requested":
+            self._finalize_cancelled_job(job, "入库任务已取消")
+            return job
 
         metadata = dict(job.metadata_json or {})
         metadata["stage_label"] = "取消中"
@@ -163,6 +168,35 @@ class KnowledgeService:
         metadata["ingest_steps"] = _ingest_steps_for(job.stage, float(job.progress or 0.0), "cancel_requested")
         job.metadata_json = metadata
         self._update_job(job, status="cancel_requested", error=None)
+        return job
+
+    def finalize_stale_cancel_requested_jobs(
+        self,
+        tenant_id: str,
+        grace_period: timedelta = CANCEL_REQUEST_STALE_AFTER,
+    ) -> list[KnowledgeIngestJob]:
+        rows = self.db.exec(
+            select(KnowledgeIngestJob)
+            .where(KnowledgeIngestJob.tenant_id == tenant_id)
+            .where(KnowledgeIngestJob.status == "cancel_requested")
+        ).all()
+        finalized: list[KnowledgeIngestJob] = []
+        for job in rows:
+            if self.finalize_stale_cancel_requested_job(job, grace_period):
+                finalized.append(job)
+        return finalized
+
+    def finalize_stale_cancel_requested_job(
+        self,
+        job: KnowledgeIngestJob,
+        grace_period: timedelta = CANCEL_REQUEST_STALE_AFTER,
+    ) -> KnowledgeIngestJob | None:
+        if job.status != "cancel_requested":
+            return None
+        last_update = job.updated_at or job.created_at
+        if utc_now() - last_update < grace_period:
+            return None
+        self._finalize_cancelled_job(job, "入库任务已取消")
         return job
 
     def run_ingest_job(self, job_id: str) -> None:

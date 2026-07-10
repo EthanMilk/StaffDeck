@@ -100,6 +100,7 @@ import {
   sessionFilterStorageKey,
   shouldKeepRealtimeMessage,
   stepResultTraceLine,
+  streamErrorTraceLine,
   streamSkillLabel,
   streamingMessageId,
   timestampAfterMessage,
@@ -122,6 +123,7 @@ import {
 
 const CHAT_BASE_PATH = '/workspace/chat';
 const STREAM_TEXT_EVENTS = new Set(['stream_replace', 'stream_delta', 'token']);
+const STREAM_RELAY_RECOVERY_POLL_INTERVAL_MS = 5 * 1000;
 // Shared with the management shell (App.tsx `ENTERPRISE_SIDEBAR_STORAGE_KEY`) so
 // the collapse state is preserved when switching between 管理端 and 对话端.
 // Stored as '1' (expanded) / '0' (collapsed); unset defaults to expanded.
@@ -240,6 +242,7 @@ export function useChatSession() {
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const [sessionReadTimes, setSessionReadTimes] = useState<Record<string, string>>(() => loadSessionReadTimes(userId));
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState(() => window.localStorage.getItem(SELECTED_AGENT_STORAGE_KEY) || '');
   const [sessionAgentFilter, setSessionAgentFilter] = useState(() => (
     window.localStorage.getItem(sessionFilterStorageKey(userId))
@@ -415,22 +418,30 @@ export function useChatSession() {
 
   const currentSession = sessionId ? sessions.find((item) => item.id === sessionId) || null : null;
   const availableAgents = visibleChatEmployees(agents, auth?.user);
+  const explicitDraftAgentId = draftAgentId || '';
+  const routeDraftAgent = explicitDraftAgentId
+    ? availableAgents.find((agent) => agent.id === explicitDraftAgentId) || null
+    : null;
+  const draftAgentLoading = Boolean(explicitDraftAgentId && !agentsLoaded);
+  const invalidDraftAgentId = Boolean(explicitDraftAgentId && agentsLoaded && !routeDraftAgent);
   const defaultAgent = availableAgents.find((agent) => agent.id === selectedAgentId) || availableAgents[0] || null;
   // While a freshly created draft is being promoted to a real session, `navigate`
   // has not yet updated the `sessionId` route param. During that transition frame
   // we point the active conversation at the promoted (real) session id so we don't
   // resolve to the already-deleted draft slot and flash the empty state.
   const promotedSessionId = !sessionId ? pendingPromotedSessionIdRef.current : null;
-  const activeDraftAgentId = draftAgentId || (!sessionId && !promotedSessionId ? (defaultAgent?.id || '') : '');
+  const activeDraftAgentId = invalidDraftAgentId || draftAgentLoading
+    ? ''
+    : explicitDraftAgentId || (!sessionId && !promotedSessionId ? (defaultAgent?.id || '') : '');
   const activeConversationId = sessionId || promotedSessionId || (activeDraftAgentId ? draftConversationKey(activeDraftAgentId) : '');
   const isDraftConversation = Boolean(activeDraftAgentId && !sessionId && !promotedSessionId);
   const draftAgent = activeDraftAgentId
-    ? agents.find((agent) => agent.id === activeDraftAgentId) || null
+    ? availableAgents.find((agent) => agent.id === activeDraftAgentId) || null
     : null;
   const sessionAgent = currentSession?.agent_id
     ? agents.find((agent) => agent.id === currentSession.agent_id) || null
     : null;
-  const displayedAgent = sessionAgent || draftAgent || defaultAgent;
+  const displayedAgent = invalidDraftAgentId || draftAgentLoading ? null : (sessionAgent || draftAgent || defaultAgent);
   const displayedProfile = displayedAgent ? employeeProfile(displayedAgent) : null;
   const emptyProfileTags = displayedProfile?.workStyles.length
     ? displayedProfile.workStyles.slice(0, 3)
@@ -487,20 +498,45 @@ export function useChatSession() {
     }
   }, [tenantId]);
 
-  useEffect(() => {
-    api
-      .get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}`)
-      .then((rows) => {
-        setAgents(rows);
-        setSelectedAgentId((current) => {
-          const employeeRows = visibleChatEmployees(rows, auth?.user);
-          if (current && employeeRows.some((item) => item.id === current)) return current;
-          const next = employeeRows[0]?.id || '';
-          return next;
-        });
-      })
-      .catch(() => setAgents([]));
+  const loadAgents = useCallback(async (preferredAgentId?: string) => {
+    setAgentsLoaded(false);
+    try {
+      const rows = await api.get<AgentProfileRead[]>(`/api/chat/agents?tenant_id=${tenantId}`);
+      setAgents(rows);
+      setSelectedAgentId((current) => {
+        const employeeRows = visibleChatEmployees(rows, auth?.user);
+        if (preferredAgentId && employeeRows.some((item) => item.id === preferredAgentId)) return preferredAgentId;
+        if (current && employeeRows.some((item) => item.id === current)) return current;
+        const next = employeeRows[0]?.id || '';
+        return next;
+      });
+    } catch {
+      setAgents([]);
+    } finally {
+      setAgentsLoaded(true);
+    }
   }, [auth?.user, tenantId]);
+
+  useEffect(() => {
+    void loadAgents();
+  }, [loadAgents]);
+
+  useEffect(() => {
+    const onAgentRefresh = () => {
+      void loadAgents();
+    };
+    window.addEventListener('ultrarag-enterprise-agent-scope-refresh', onAgentRefresh);
+    return () => window.removeEventListener('ultrarag-enterprise-agent-scope-refresh', onAgentRefresh);
+  }, [loadAgents]);
+
+  useEffect(() => {
+    if (!invalidDraftAgentId) return;
+    notify.error('Cannot access this agent', {
+      id: `chat-invalid-draft-agent-${explicitDraftAgentId}`,
+      duration: 3000,
+    });
+    navigate('/workspace/gallery', { replace: true });
+  }, [explicitDraftAgentId, invalidDraftAgentId, navigate]);
 
   useEffect(() => {
     if (!activeDraftAgentId) return;
@@ -804,7 +840,7 @@ export function useChatSession() {
   const currentSessionRunning = Boolean(
     currentStream.loading
     || (activeConversationId && runningTurn?.sessionId === activeConversationId)
-    || (currentStream.loading && hasRunningDisplayedTrace),
+    || hasRunningDisplayedTrace,
   );
   const readyComposerAttachments = useMemo(
     () => composerAttachments.filter((item) => item.uploadStatus === 'ready'),
@@ -888,6 +924,15 @@ export function useChatSession() {
       });
   }, [getSlot, input, navigate, notifyRequestError, tenantId, userId]);
 
+  const handleMissingSession = useCallback((id: string) => {
+    forgetMissingSession(id);
+    loadSessions();
+    if (sessionId === id) {
+      pendingPromotedSessionIdRef.current = null;
+      navigate('/workspace/gallery', { replace: true });
+    }
+  }, [forgetMissingSession, loadSessions, navigate, sessionId]);
+
   const loadMessages = useCallback((id: string) => {
     return api
       .get<ChatMessage[]>(`/api/chat/sessions/${id}/messages?tenant_id=${tenantId}`)
@@ -907,14 +952,13 @@ export function useChatSession() {
       })
       .catch((error) => {
         if (isMissingChatSessionError(error)) {
-          forgetMissingSession(id);
-          loadSessions();
+          handleMissingSession(id);
           return [];
         }
         notifyRequestError('messages', error, '消息加载失败');
         return [];
       });
-  }, [clearStreamSlot, forgetMissingSession, getSlot, getStreamSlot, loadSessions, notifyRequestError, notifyStore, pruneRealtime, tenantId]);
+  }, [clearStreamSlot, getSlot, getStreamSlot, handleMissingSession, notifyRequestError, notifyStore, pruneRealtime, tenantId]);
 
   const loadTraces = useCallback((id: string) => {
     return api
@@ -989,13 +1033,12 @@ export function useChatSession() {
       })
       .catch((error) => {
         if (isMissingChatSessionError(error)) {
-          forgetMissingSession(id);
-          loadSessions();
+          handleMissingSession(id);
           return;
         }
         notifyRequestError('trace', error, '轨迹加载失败');
       });
-  }, [forgetMissingSession, getSlot, getStreamSlot, loadSessions, notifyRequestError, notifyStore, notifyStream, notifyTrace, tenantId]);
+  }, [getSlot, getStreamSlot, handleMissingSession, notifyRequestError, notifyStore, notifyStream, notifyTrace, tenantId]);
 
   const stopTerminalTurnSync = useCallback((sessionIdToStop: string, turnIdToStop: string) => {
     const key = `${sessionIdToStop}:${turnIdToStop}`;
@@ -1581,6 +1624,7 @@ export function useChatSession() {
       && (eventStream.turnId === traceTurnId || eventStream.turnId === turnId);
     const shouldTouchStream = !options?.preserveExistingStreamTurn || ownsStreamTurn;
     if (item.event === 'session_created') return;
+    if (item.event === 'heartbeat') return;
     if (item.event === 'session_title_summarized') {
       applySessionTitleSummary(eventSessionId, item.data.title);
       return;
@@ -1752,6 +1796,9 @@ export function useChatSession() {
       const scheduledTaskLine = scheduledTaskStatusTraceLine(phase, item.data);
       if (scheduledTaskLine) {
         upsertTraceLine(traceTurnId, scheduledTaskLine);
+      } else if (phase === 'error') {
+        upsertTraceLine(traceTurnId, streamErrorTraceLine(item.data, 'error_occurred'));
+        finishTrace(traceTurnId, true);
       } else if (phase === 'tool' && typeof item.data.tool_name === 'string') {
         const toolCallId = typeof item.data.tool_call_id === 'string' ? item.data.tool_call_id : item.data.tool_name;
         upsertTraceLine(traceTurnId, { id: `tool_${toolCallId}`, kind: 'tool', text: `正在调用 ${item.data.tool_name}`, state: 'running' });
@@ -1902,17 +1949,7 @@ export function useChatSession() {
       clearStreamSlot(eventSessionId, true);
       eventStream.relayRecoveryStartedAt = null;
       eventStream.relayRecoveryTurnId = null;
-      upsertTraceLine(traceTurnId, {
-        id: 'generation_interrupted',
-        kind: 'thinking',
-        text: '响应生成中断',
-        detail: typeof item.data.reason === 'string'
-          ? item.data.reason
-          : typeof item.data.message === 'string'
-            ? item.data.message
-            : undefined,
-        state: 'failed',
-      });
+      upsertTraceLine(traceTurnId, streamErrorTraceLine(item.data, item.event));
       window.setTimeout(() => {
         loadMessages(eventSessionId);
         loadTraces(eventSessionId);
@@ -1982,10 +2019,12 @@ export function useChatSession() {
       setRunningTurn((current) => (
         current?.sessionId === eventSessionId && current.turnId === (eventStream.turnId || traceTurnId) ? null : current
       ));
-      finishTrace(eventStream.turnId || traceTurnId, true);
+      const errorTurnId = eventStream.turnId || traceTurnId;
+      upsertTraceLine(errorTurnId, streamErrorTraceLine(item.data, item.event));
+      finishTrace(errorTurnId, true);
       appendRealtime(eventSessionId, {
         id: `scheduled_error_${Date.now()}`,
-        turnId: eventStream.turnId || traceTurnId,
+        turnId: errorTurnId,
         role: 'assistant',
         content: typeof item.data.message === 'string' ? item.data.message : '定时任务执行失败。',
         created_at: new Date().toISOString(),
@@ -2360,6 +2399,16 @@ export function useChatSession() {
   }, [uploadComposerFiles]);
 
   useEffect(() => {
+    if (!auth || !sessionId || isDraftConversationKey(sessionId)) return;
+    const pollCurrentSessionEvents = () => {
+      void pollScheduledSessionEvents(sessionId);
+    };
+    pollCurrentSessionEvents();
+    const timer = window.setInterval(pollCurrentSessionEvents, STREAM_RELAY_RECOVERY_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [auth, pollScheduledSessionEvents, sessionId]);
+
+  useEffect(() => {
     if (!auth) return;
     const pollBackgroundSessions = () => {
       const ids = new Set<string>();
@@ -2381,7 +2430,7 @@ export function useChatSession() {
       });
     };
     pollBackgroundSessions();
-    const timer = window.setInterval(pollBackgroundSessions, 1800);
+    const timer = window.setInterval(pollBackgroundSessions, STREAM_RELAY_RECOVERY_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [auth, pollScheduledSessionEvents, sessionId, sessions, streamTick]);
 
@@ -2904,6 +2953,7 @@ export function useChatSession() {
     sidebarCollapsed,
     toggleSidebar,
     openSession,
+    refreshAgents: loadAgents,
     openDraftForAgent,
     openGallery,
     openRename,

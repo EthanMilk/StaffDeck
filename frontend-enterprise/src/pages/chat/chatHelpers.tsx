@@ -41,7 +41,7 @@ export const SESSION_READ_STORAGE_PREFIX = 'skill_agent_session_read_at';
 export const SIDEBAR_COLLAPSED_STORAGE_KEY = 'skill_agent_sidebar_collapsed';
 export const RUNNING_EVENT_RECOVERY_WINDOW_MS = 600 * 1000;
 export const CHAT_STREAM_IDLE_TIMEOUT_MS = 600 * 1000;
-export const CHAT_STREAM_IDLE_CHECK_INTERVAL_MS = 30 * 1000;
+export const CHAT_STREAM_IDLE_CHECK_INTERVAL_MS = 5 * 1000;
 export const CHAT_TRACE_RECOVERY_WINDOW_MS = 10 * 60 * 1000;
 export const STREAM_TERMINAL_EVENTS = new Set(['complete', 'done', 'stream_end', 'stream_cancelled', 'stream_interrupted', 'error', 'error_occurred']);
 export const HIDDEN_GENERAL_SKILL_TRACE_PHASES = new Set(['replying']);
@@ -122,7 +122,7 @@ export function normalizeMessageText(value?: string): string {
 
 export function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const pattern = /(`[^`]*`|\*\*[^*]+?\*\*|!?\[[^\]\n]+\]\([A-Za-z][A-Za-z0-9+.-]*:\/\/[^)\s]+\))/g;
+  const pattern = /(`[^`]*`|\*\*[^*]+?\*\*|!?\[[^\]\n]*\]\([^\)\n]+\))/g;
   let cursor = 0;
   let index = 0;
   let match: RegExpExecArray | null;
@@ -138,23 +138,29 @@ export function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode
     } else if (token.startsWith('**') && token.endsWith('**')) {
       nodes.push(<strong key={key}>{renderInlineMarkdown(token.slice(2, -2), key)}</strong>);
     } else {
-      const image = token.match(/^!\[([^\]]+)\]\(([A-Za-z][A-Za-z0-9+.-]*:\/\/[^)\s]+)\)$/);
+      const image = token.match(/^!\[([^\]]*)\]\(([^\)\n]+)\)$/);
       if (image) {
         nodes.push(<span key={key}>{image[1] || '图片'}</span>);
         cursor = match.index + token.length;
         index += 1;
         continue;
       }
-      const link = token.match(/^\[([^\]]+)\]\(([A-Za-z][A-Za-z0-9+.-]*:\/\/[^)\s]+)\)$/);
+      const link = token.match(/^\[([^\]]*)\]\(([^\)\n]+)\)$/);
       if (link) {
-        if (/^https?:\/\//i.test(link[2])) {
+        const href = link[2].trim();
+        const label = link[1] || href;
+        if (/^https?:\/\//i.test(href)) {
           nodes.push(
-            <a key={key} href={link[2]} target="_blank" rel="noreferrer">
-              {link[1]}
+            <a key={key} href={href} target="_blank" rel="noreferrer">
+              {label}
             </a>,
           );
         } else {
-          nodes.push(<span key={key}>{link[1]}</span>);
+          nodes.push(
+            <span key={key} className="md-link-label" title={href}>
+              {label}
+            </span>,
+          );
         }
       } else {
         nodes.push(token);
@@ -284,7 +290,9 @@ function isBlockBoundary(line: string): boolean {
   const trimmed = line.trim();
   return (
     trimmed.startsWith('```') ||
+    /^(-{3,}|\*{3,}|_{3,})$/.test(trimmed) ||
     /^#{1,6}\s+/.test(trimmed) ||
+    /^>\s?/.test(trimmed) ||
     /^[-*]\s+/.test(trimmed) ||
     /^\d+[.)]\s+/.test(trimmed)
   );
@@ -321,12 +329,30 @@ export function renderMarkdownBlocks(content: string): ReactNode[] {
       continue;
     }
 
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      blocks.push(<hr key={key} />);
+      index += 1;
+      blockIndex += 1;
+      continue;
+    }
+
     const heading = trimmed.match(/^(#{1,6})\s+(.+)$/);
     if (heading) {
       const level = Math.min(heading[1].length, 4) as 1 | 2 | 3 | 4;
       const Tag = `h${level}` as keyof JSX.IntrinsicElements;
       blocks.push(<Tag key={key}>{renderInlineMarkdown(heading[2], key)}</Tag>);
       index += 1;
+      blockIndex += 1;
+      continue;
+    }
+
+    if (/^>\s?/.test(trimmed)) {
+      const quoteLines: string[] = [];
+      while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
+        quoteLines.push(lines[index].trim().replace(/^>\s?/, ''));
+        index += 1;
+      }
+      blocks.push(<blockquote key={key}>{renderMarkdownBlocks(quoteLines.join('\n'))}</blockquote>);
       blockIndex += 1;
       continue;
     }
@@ -879,45 +905,22 @@ type RecoverableTraceProgress = {
   state?: string;
 };
 
-function isBareInitialRoutingLine(line: RecoverableTraceProgress): boolean {
-  const id = String(line.id || '');
-  const text = String(line.text || '').trim();
-  return (
-    (id === 'decision_router' || /router|routing/i.test(id))
-    && /^(判断意图|正在判断用户意图|意图识别|识别意图)$/.test(text)
-    && !line.detail
-    && !line.code
-    && !line.output
-    && (!line.state || line.state === 'running')
-  );
-}
-
 function hasRecoverableTraceProgress(lines: RecoverableTraceProgress[]): boolean {
   return lines.some((line) => {
     if (!line) return false;
     if (line.state && line.state !== 'running') return false;
-    if (isBareInitialRoutingLine(line)) return false;
     if (line.detail || line.code || line.output) return true;
     if (line.kind && line.kind !== 'decision') return true;
     const text = String(line.text || '').trim();
-    if (!text) return false;
-    return !/^(判断意图|正在判断用户意图|意图识别|识别意图|执行记录|正在思考|已收到消息)$/.test(text);
+    return Boolean(text);
   });
 }
 
 export function hasRecoverableEventProgress(events: ChatSessionEventRead[]): boolean {
   return events.some((event) => {
-    const data = isPlainRecord(event.data) ? event.data : {};
-    if (event.event === 'user_message_received' || event.event === 'memory_recalled') return false;
-    if (event.event === 'stream_status') {
-      const phase = typeof data.phase === 'string' ? data.phase : '';
-      return phase !== 'received' && phase !== 'routing';
-    }
-    if (event.event === 'status') {
-      const phase = typeof data.phase === 'string' ? data.phase : '';
-      return phase !== 'received' && phase !== 'routing';
-    }
+    if (event.event === 'memory_recalled') return false;
     if (event.event === 'router_decision_created') {
+      const data = isPlainRecord(event.data) ? event.data : {};
       const intent = typeof data.user_intent === 'string' ? data.user_intent.trim() : '';
       const reason = typeof data.reason === 'string' ? data.reason.trim() : '';
       const decision = typeof data.decision === 'string' ? data.decision.trim() : '';
@@ -1063,6 +1066,40 @@ export function reflectionTraceDetail(data: Record<string, unknown>): string | u
     typeof data.target_step_id === 'string' ? `步骤 ${data.target_step_id}` : '',
   ].filter(Boolean);
   return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+function streamErrorText(data: Record<string, unknown>, eventName: string): string {
+  const code = typeof data.code === 'string' ? data.code.trim() : '';
+  if (code === 'LLM_ERROR') return '模型调用失败';
+  if (eventName === 'stream_interrupted') return '响应生成中断';
+  if (code) return `执行失败 ${code}`;
+  const errorType = typeof data.error_type === 'string' ? data.error_type.trim() : '';
+  return errorType ? `执行失败 ${errorType}` : '执行失败';
+}
+
+function streamErrorDetail(data: Record<string, unknown>): string | undefined {
+  const parts = [
+    typeof data.code === 'string' ? data.code.trim() : '',
+    typeof data.error_type === 'string' ? data.error_type.trim() : '',
+    typeof data.message === 'string' ? data.message.trim() : '',
+    typeof data.reason === 'string' ? data.reason.trim() : '',
+    typeof data.text === 'string' ? data.text.trim() : '',
+  ].filter(Boolean);
+  const deduped = parts.filter((part, index) => parts.indexOf(part) === index);
+  return deduped.length > 0 ? deduped.join(' · ').slice(0, 2000) : undefined;
+}
+
+export function streamErrorTraceLine(data: Record<string, unknown>, eventName: string): TraceLine {
+  const code = typeof data.code === 'string' ? data.code.trim() : '';
+  const errorType = typeof data.error_type === 'string' ? data.error_type.trim() : '';
+  const key = code || errorType || eventName || 'error';
+  return {
+    id: eventName === 'stream_interrupted' ? 'generation_interrupted' : `error_${key}`,
+    kind: 'decision',
+    text: streamErrorText(data, eventName),
+    detail: streamErrorDetail(data),
+    state: 'failed',
+  };
 }
 
 export function routerDecisionTraceLine(data: Record<string, unknown>): TraceLine {
@@ -1227,6 +1264,7 @@ export function generalSkillTraceOutput(data: Record<string, unknown>, phase: st
 }
 
 export function traceLineAllowed(line: TraceLine, config: UIConfigRead): boolean {
+  if (line.state === 'failed') return true;
   if (line.kind === 'thinking' || line.kind === 'decision') return config.show_thinking_trace;
   if (line.kind === 'code') return config.show_thinking_trace;
   if (line.kind === 'skill') return config.show_skill_trace;
@@ -1261,7 +1299,7 @@ export function traceDetails(lines: TraceLine[]): TraceLine[] {
     '正在根据运行结果生成回复',
   ]);
   const details = lines.filter((line) => {
-    if (line.kind === 'thinking') return false;
+    if (line.kind === 'thinking' && line.state !== 'failed') return false;
     if (/生成回复|组织回复|根据运行结果生成回复/.test(line.text) && !line.code && !line.output) return false;
     if (hiddenPlaceholders.has(line.text) && !line.detail && !line.code && !line.output) return false;
     return true;

@@ -3,7 +3,7 @@ from __future__ import annotations
 from time import sleep
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlmodel import Session, select
 
 from app.agents.schema import (
@@ -42,6 +42,8 @@ from app.db.models import (
     AgentResourceBinding,
     AgentSkillBranch,
     AgentSkillBranchVersion,
+    AgentUsage,
+    ChatSession,
     GeneralSkill,
     KnowledgeBase,
     KnowledgeBucket,
@@ -53,9 +55,10 @@ from app.db.models import (
     User,
 )
 from app.security.auth import get_current_user
+from app.security.permissions import agent_owned_by_user as _agent_owned_by_user
+from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
 
-ADMIN_USERNAMES = {"admin", "admin_demo"}
 IMPORT_LOCK_RETRY_ATTEMPTS = 2
 IMPORT_LOCK_RETRY_DELAY_SECONDS = 0.5
 
@@ -82,19 +85,19 @@ def list_agents(
     current_user: User = Depends(get_current_user),
 ) -> list[AgentProfileRead]:
     ensure_tenant(db, tenant_id)
-    user = _dependency_user(current_user)
-    if user:
-        _ensure_request_tenant(tenant_id, user)
+    user = current_user
+    _ensure_request_tenant(tenant_id, user)
     rows = db.exec(
         select(AgentProfile).where(AgentProfile.tenant_id == tenant_id).order_by(AgentProfile.is_overall.desc(), AgentProfile.updated_at.desc())
     ).all()
-    if user and not _is_admin_user(user):
+    if not _is_admin_user(user):
         # Non-admin users still need the overall agent as a read-only open-gallery
         # source for copy/use flows. Mutations remain guarded by manage/update
         # endpoints, so this only exposes the source scope.
         rows = [row for row in rows if row.is_overall or _agent_visible_to_user(row, user)]
     bindings = _bindings_by_agent(db, tenant_id)
-    return [agent_read(row, bindings.get(row.id, [])) for row in rows]
+    used_agent_ids = _used_agent_ids_for_user(db, tenant_id, user)
+    return [agent_read(row, bindings.get(row.id, []), row.id in used_agent_ids) for row in rows]
 
 
 @enterprise_router.post("", response_model=AgentProfileRead)
@@ -104,11 +107,10 @@ def create_agent(
     current_user: User = Depends(get_current_user),
 ) -> AgentProfileRead:
     ensure_tenant(db, request.tenant_id)
-    user = _dependency_user(current_user)
-    if user:
-        _ensure_request_tenant(request.tenant_id, user)
-        if request.is_overall and not _is_admin_user(user):
-            raise HTTPException(status_code=403, detail="Only administrator can create overall agent")
+    user = current_user
+    _ensure_request_tenant(request.tenant_id, user)
+    if request.is_overall and not _is_admin_user(user):
+        raise HTTPException(status_code=403, detail="Only administrator can create overall agent")
     name = str(request.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Agent name cannot be empty")
@@ -158,7 +160,7 @@ def get_agent(
     current_user: User = Depends(get_current_user),
 ) -> AgentProfileRead:
     row = _get_agent(db, tenant_id, agent_id)
-    _ensure_can_access_agent(row, _dependency_user(current_user))
+    _ensure_can_access_agent(row, current_user)
     return agent_read(row, _bindings_by_agent(db, tenant_id).get(row.id, []))
 
 
@@ -170,7 +172,7 @@ def update_agent(
     current_user: User = Depends(get_current_user),
 ) -> AgentProfileRead:
     row = _get_agent(db, request.tenant_id, agent_id)
-    user = _dependency_user(current_user)
+    user = current_user
     _ensure_can_manage_agent(row, user)
     if request.name is not None:
         name = request.name.strip()
@@ -209,7 +211,7 @@ def delete_agent(
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
     row = _get_agent(db, tenant_id, agent_id)
-    _ensure_can_manage_agent(row, _dependency_user(current_user))
+    _ensure_can_manage_agent(row, current_user)
     if row.is_overall:
         raise HTTPException(status_code=400, detail="Overall agent cannot be deleted")
     bindings = db.exec(select(AgentResourceBinding).where(AgentResourceBinding.agent_id == row.id)).all()
@@ -227,7 +229,7 @@ def get_agent_resources(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> list[AgentResourceBindingRead]:
-    _ensure_can_access_agent(_get_agent(db, tenant_id, agent_id), _dependency_user(current_user))
+    _ensure_can_access_agent(_get_agent(db, tenant_id, agent_id), current_user)
     rows = db.exec(
         select(AgentResourceBinding)
         .where(AgentResourceBinding.tenant_id == tenant_id, AgentResourceBinding.agent_id == agent_id)
@@ -244,7 +246,7 @@ def update_agent_resources(
     current_user: User = Depends(get_current_user),
 ) -> list[AgentResourceBindingRead]:
     agent = _get_agent(db, request.tenant_id, agent_id)
-    _ensure_can_manage_agent(agent, _dependency_user(current_user))
+    _ensure_can_manage_agent(agent, current_user)
     if agent.is_overall:
         raise HTTPException(status_code=400, detail="Overall agent uses the global resource pool")
     existing = db.exec(
@@ -278,7 +280,7 @@ def update_agent_resources(
         if key not in desired_keys:
             db.delete(row)
     db.commit()
-    return get_agent_resources(agent_id, request.tenant_id, db)
+    return get_agent_resources(agent_id, request.tenant_id, db, current_user)
 
 
 @enterprise_router.post("/{agent_id}/resources/import")
@@ -307,7 +309,7 @@ def _import_agent_resources_once(
 ) -> dict[str, object]:
     target_agent = _get_agent(db, request.tenant_id, agent_id)
     source_agent = _get_agent(db, request.tenant_id, request.source_agent_id)
-    user = _dependency_user(current_user)
+    user = current_user
     _ensure_can_import_to_agent(target_agent, user)
     _ensure_can_copy_from_agent(source_agent, user)
     if source_agent.id == target_agent.id:
@@ -374,7 +376,7 @@ def get_agent_skills(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> list[dict[str, object]]:
-    _ensure_can_access_agent(_get_agent(db, tenant_id, agent_id), _dependency_user(current_user))
+    _ensure_can_access_agent(_get_agent(db, tenant_id, agent_id), current_user)
     return [_skill_branch_read(skill) for skill in visible_skill_rows(db, tenant_id, agent_id, include_inactive=True)]
 
 
@@ -387,7 +389,7 @@ def sync_agent_skill_from_overall(
     current_user: User = Depends(get_current_user),
 ) -> dict[str, object]:
     agent = _get_agent(db, tenant_id, agent_id)
-    _ensure_can_manage_agent(agent, _dependency_user(current_user))
+    _ensure_can_manage_agent(agent, current_user)
     if agent.is_overall:
         raise HTTPException(status_code=400, detail="Overall agent is already the trunk")
     skill = _get_global_skill(db, tenant_id, skill_id)
@@ -406,7 +408,7 @@ def promote_agent_skill_to_overall(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, object]:
-    _ensure_admin_user(tenant_id, _dependency_user(current_user))
+    _ensure_admin_user(tenant_id, current_user)
     agent = _get_agent(db, tenant_id, agent_id)
     if agent.is_overall:
         raise HTTPException(status_code=400, detail="Overall agent does not have a branch to promote")
@@ -433,7 +435,7 @@ def rollback_agent_skill(
     current_user: User = Depends(get_current_user),
 ) -> dict[str, object]:
     agent = _get_agent(db, request.tenant_id, agent_id)
-    _ensure_can_manage_agent(agent, _dependency_user(current_user))
+    _ensure_can_manage_agent(agent, current_user)
     if agent.is_overall:
         raise HTTPException(status_code=400, detail="Use the global skill rollback endpoint for overall agent")
     branch = rollback_branch(db, request.tenant_id, agent_id, skill_id, request.version)
@@ -449,7 +451,7 @@ def list_agent_skill_versions(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> list[dict[str, object]]:
-    _ensure_can_access_agent(_get_agent(db, tenant_id, agent_id), _dependency_user(current_user))
+    _ensure_can_access_agent(_get_agent(db, tenant_id, agent_id), current_user)
     return [
         {
             "id": row.id,
@@ -476,7 +478,7 @@ def update_agent_models(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> dict[str, object]:
-    _ensure_can_manage_agent(_get_agent(db, request.tenant_id, agent_id), _dependency_user(current_user))
+    _ensure_can_manage_agent(_get_agent(db, request.tenant_id, agent_id), current_user)
     for item in request.bindings:
         existing = db.exec(
             select(AgentModelBinding).where(
@@ -518,12 +520,39 @@ def list_chat_agents(
             AgentProfile.is_overall == False,  # noqa: E712
         ).order_by(AgentProfile.updated_at.desc())
     ).all()
-    rows = [row for row in rows if _chat_agent_visible_to_user(row, current_user)]
+    used_agent_ids = _used_agent_ids_for_user(db, tenant_id, current_user)
+    rows = [row for row in rows if _chat_agent_selectable_to_user(row, current_user, used_agent_ids)]
     bindings = _bindings_by_agent(db, tenant_id)
-    return [agent_read(row, bindings.get(row.id, [])) for row in rows]
+    return [agent_read(row, bindings.get(row.id, []), row.id in used_agent_ids) for row in rows]
 
 
-def agent_read(row: AgentProfile, bindings: list[AgentResourceBinding]) -> AgentProfileRead:
+@chat_router.post("/{agent_id}/use", response_model=AgentProfileRead)
+def use_chat_agent(
+    agent_id: str,
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> AgentProfileRead:
+    if tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant mismatch")
+    ensure_tenant(db, tenant_id)
+    row = _get_agent(db, tenant_id, agent_id)
+    if row.is_overall or row.status != "active" or not _chat_agent_visible_to_user(row, current_user):
+        raise HTTPException(status_code=403, detail="Cannot access this agent")
+    _mark_agent_used(db, tenant_id, current_user, row.id)
+    bindings = _bindings_by_agent(db, tenant_id)
+    return agent_read(row, bindings.get(row.id, []), True)
+
+
+def agent_read(
+    row: AgentProfile,
+    bindings: list[AgentResourceBinding],
+    used_by_current_user: bool | None = None,
+) -> AgentProfileRead:
+    metadata = system_creator_metadata(row.metadata_json or {})
+    if used_by_current_user is not None:
+        metadata["used_by_current_user"] = used_by_current_user
+        metadata["chat_used_by_current_user"] = used_by_current_user
     return AgentProfileRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -532,44 +561,20 @@ def agent_read(row: AgentProfile, bindings: list[AgentResourceBinding]) -> Agent
         persona_prompt=row.persona_prompt,
         is_overall=row.is_overall,
         status=row.status,
-        metadata=system_creator_metadata(row.metadata_json or {}),
+        metadata=metadata,
         resources=[binding_read(binding) for binding in bindings],
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
 
 
-def _dependency_user(current_user: object) -> User | None:
-    return current_user if isinstance(current_user, User) else None
-
-
 def _is_database_locked_error(exc: OperationalError) -> bool:
     return "database is locked" in str(exc).lower()
-
-
-def _is_admin_user(user: User) -> bool:
-    return user.username in ADMIN_USERNAMES
 
 
 def _ensure_request_tenant(tenant_id: str, user: User) -> None:
     if user.tenant_id != tenant_id:
         raise HTTPException(status_code=403, detail="Tenant mismatch")
-
-
-def _metadata_user_values(metadata: dict[str, object], *keys: str) -> set[str]:
-    values: set[str] = set()
-    for key in keys:
-        value = metadata.get(key)
-        if isinstance(value, str) and value.strip():
-            values.add(value.strip())
-    return values
-
-
-def _agent_owned_by_user(row: AgentProfile, user: User) -> bool:
-    metadata = row.metadata_json or {}
-    owner_ids = _metadata_user_values(metadata, "owner_user_id", "created_by_user_id")
-    owner_names = _metadata_user_values(metadata, "owner_username", "created_by_username")
-    return user.id in owner_ids or user.username in owner_names
 
 
 def _agent_visible_to_user(row: AgentProfile, user: User) -> bool:
@@ -581,26 +586,82 @@ def _agent_visible_to_user(row: AgentProfile, user: User) -> bool:
     return _agent_owned_by_user(row, user) or metadata.get("published_to_gallery") is True
 
 
-def _ensure_can_access_agent(row: AgentProfile, user: User | None) -> None:
-    if user is None:
-        return
+def _agent_published_to_gallery(row: AgentProfile) -> bool:
+    return (row.metadata_json or {}).get("published_to_gallery") is True
+
+
+def _used_agent_ids_for_user(db: Session, tenant_id: str, user: User) -> set[str]:
+    usage_rows = db.exec(
+        select(AgentUsage.agent_id).where(
+            AgentUsage.tenant_id == tenant_id,
+            AgentUsage.user_id == user.id,
+            AgentUsage.agent_id != None,  # noqa: E711
+        )
+    ).all()
+    session_rows = db.exec(
+        select(ChatSession.agent_id).where(
+            ChatSession.tenant_id == tenant_id,
+            ChatSession.user_id == user.id,
+            ChatSession.agent_id != None,  # noqa: E711
+        )
+    ).all()
+    return {str(agent_id) for agent_id in [*usage_rows, *session_rows] if agent_id}
+
+
+def _mark_agent_used(db: Session, tenant_id: str, user: User, agent_id: str) -> AgentUsage:
+    row = db.exec(
+        select(AgentUsage).where(
+            AgentUsage.tenant_id == tenant_id,
+            AgentUsage.user_id == user.id,
+            AgentUsage.agent_id == agent_id,
+        )
+    ).first()
+    if row:
+        row.updated_at = utc_now()
+    else:
+        row = AgentUsage(tenant_id=tenant_id, user_id=user.id, agent_id=agent_id)
+    db.add(row)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        row = db.exec(
+            select(AgentUsage).where(
+                AgentUsage.tenant_id == tenant_id,
+                AgentUsage.user_id == user.id,
+                AgentUsage.agent_id == agent_id,
+            )
+        ).first()
+        if not row:
+            raise
+    db.refresh(row)
+    return row
+
+
+def _chat_agent_selectable_to_user(row: AgentProfile, user: User, used_agent_ids: set[str]) -> bool:
+    if row.is_overall:
+        return False
+    if _agent_owned_by_user(row, user):
+        return True
+    if _agent_published_to_gallery(row):
+        return row.id in used_agent_ids
+    return _is_admin_user(user)
+
+
+def _ensure_can_access_agent(row: AgentProfile, user: User) -> None:
     _ensure_request_tenant(row.tenant_id, user)
     if not _agent_visible_to_user(row, user):
         raise HTTPException(status_code=403, detail="Cannot access this agent")
 
 
-def _ensure_can_copy_from_agent(row: AgentProfile, user: User | None) -> None:
-    if user is None:
-        return
+def _ensure_can_copy_from_agent(row: AgentProfile, user: User) -> None:
     _ensure_request_tenant(row.tenant_id, user)
     if row.is_overall or _agent_visible_to_user(row, user):
         return
     raise HTTPException(status_code=403, detail="Cannot copy resources from this agent")
 
 
-def _ensure_can_manage_agent(row: AgentProfile, user: User | None) -> None:
-    if user is None:
-        return
+def _ensure_can_manage_agent(row: AgentProfile, user: User) -> None:
     _ensure_request_tenant(row.tenant_id, user)
     if _is_admin_user(user):
         return
@@ -611,41 +672,37 @@ def _ensure_can_manage_agent(row: AgentProfile, user: User | None) -> None:
     raise HTTPException(status_code=403, detail="Only the creator or administrator can manage this staff")
 
 
-def _ensure_can_import_to_agent(row: AgentProfile, user: User | None) -> None:
+def _ensure_can_import_to_agent(row: AgentProfile, user: User) -> None:
     if row.is_overall:
         _ensure_admin_user(row.tenant_id, user)
         return
     _ensure_can_manage_agent(row, user)
 
 
-def _ensure_admin_user(tenant_id: str, user: User | None) -> None:
-    if user is None:
-        return
+def _ensure_admin_user(tenant_id: str, user: User) -> None:
     _ensure_request_tenant(tenant_id, user)
     if not _is_admin_user(user):
         raise HTTPException(status_code=403, detail="Only administrator can update the open gallery")
 
 
-def _metadata_with_creator(metadata: dict[str, object], user: User | None) -> dict[str, object]:
+def _metadata_with_creator(metadata: dict[str, object], user: User) -> dict[str, object]:
     normalized = dict(metadata or {})
-    if user is None:
-        return system_creator_metadata(normalized)
     display_name = user.display_name or user.username
-    normalized.setdefault("owner_user_id", user.id)
-    normalized.setdefault("owner_username", user.username)
-    normalized.setdefault("owner_display_name", display_name)
-    normalized.setdefault("created_by_user_id", user.id)
-    normalized.setdefault("created_by_username", user.username)
-    normalized.setdefault("created_by", user.username)
-    normalized.setdefault("created_by_display_name", display_name)
-    normalized.setdefault("creator_name", user.username)
+    normalized["owner_user_id"] = user.id
+    normalized["owner_username"] = user.username
+    normalized["owner_display_name"] = display_name
+    normalized["created_by_user_id"] = user.id
+    normalized["created_by_username"] = user.username
+    normalized["created_by"] = user.username
+    normalized["created_by_display_name"] = display_name
+    normalized["creator_name"] = user.username
     return normalized
 
 
 def _metadata_preserving_creator(
     existing_metadata: dict[str, object],
     next_metadata: dict[str, object],
-    user: User | None,
+    user: User,
 ) -> dict[str, object]:
     normalized = dict(next_metadata or {})
     for key in (
@@ -660,11 +717,7 @@ def _metadata_preserving_creator(
     ):
         existing_value = existing_metadata.get(key)
         if isinstance(existing_value, str) and existing_value.strip():
-            normalized.setdefault(key, existing_value)
-    if user and not _is_admin_user(user):
-        for key in ("owner_user_id", "owner_username", "created_by_user_id", "created_by_username"):
-            if key in existing_metadata:
-                normalized[key] = existing_metadata[key]
+            normalized[key] = existing_value
     return system_creator_metadata(normalized)
 
 

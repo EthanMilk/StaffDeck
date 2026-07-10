@@ -16,12 +16,18 @@ from app.agents.branching import (
     require_overall_agent,
     resource_binding_metadata,
     system_creator_metadata,
+    user_creator_metadata,
 )
 from app.config import get_settings
 from app.db import get_session
 from app.db.models import AgentProfile, AgentResourceBinding, MCPServer, Tool, User, utc_now
-from app.security.auth import get_current_user
-from app.security.permissions import ensure_agent_scope_manager, ensure_open_gallery_admin
+from app.security.auth import ensure_current_user_tenant, get_current_user
+from app.security.permissions import (
+    ensure_agent_scope_manager,
+    ensure_open_gallery_admin,
+    require_agent_scope_viewer,
+    require_tenant_admin,
+)
 from app.security.tenant import ensure_tenant
 from app.tools import ToolExecutor
 from app.tools.http_request import prepare_get_request
@@ -77,7 +83,7 @@ def tool_read(row: Tool, metadata: dict[str, Any] | None = None) -> ToolRead:
     )
 
 
-@router.get("", response_model=list[ToolRead])
+@router.get("", response_model=list[ToolRead], dependencies=[Depends(require_agent_scope_viewer)])
 def list_tools(
     tenant_id: str = Query(...),
     bucket: str | None = Query(default=None),
@@ -90,7 +96,7 @@ def list_tools(
     return [tool_read(row, metadata_by_id.get(row.id)) for row in rows]
 
 
-@router.get("/buckets", response_model=list[ToolBucketRead])
+@router.get("/buckets", response_model=list[ToolBucketRead], dependencies=[Depends(require_agent_scope_viewer)])
 def list_tool_buckets(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(default=None),
@@ -144,6 +150,7 @@ def create_tool(
     )
     db.add(row)
     db.flush()
+    creator_metadata = user_creator_metadata(current_user)
     if agent and not agent.is_overall:
         ensure_private_resource_binding(
             db,
@@ -152,10 +159,18 @@ def create_tool(
             "tool",
             row.id,
             "active" if request.enabled else "inactive",
+            metadata_json=creator_metadata,
         )
     else:
         ensure_open_gallery_admin(request.tenant_id, current_user)
-        ensure_open_gallery_binding(db, request.tenant_id, "tool", row.id, "active" if request.enabled else "inactive")
+        ensure_open_gallery_binding(
+            db,
+            request.tenant_id,
+            "tool",
+            row.id,
+            "active" if request.enabled else "inactive",
+            metadata_json=creator_metadata,
+        )
     db.commit()
     db.refresh(row)
     metadata_by_id = resource_binding_metadata(db, request.tenant_id, agent_id, "tool")
@@ -163,7 +178,12 @@ def create_tool(
 
 
 @router.post("/probe", response_model=ToolProbeResponse)
-def probe_tool(request: ToolProbeRequest, db: Session = Depends(get_session)) -> ToolProbeResponse:
+def probe_tool(
+    request: ToolProbeRequest,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> ToolProbeResponse:
+    ensure_current_user_tenant(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
     if request.tool_type == "mcp":
         try:
@@ -224,7 +244,7 @@ def probe_tool(request: ToolProbeRequest, db: Session = Depends(get_session)) ->
     )
 
 
-@router.get("/{tool_id}", response_model=ToolRead)
+@router.get("/{tool_id}", response_model=ToolRead, dependencies=[Depends(require_agent_scope_viewer)])
 def get_tool(
     tool_id: str,
     tenant_id: str = Query(...),
@@ -275,6 +295,7 @@ def update_tool(
     row.updated_at = utc_now()
     db.add(row)
     db.flush()
+    creator_metadata = user_creator_metadata(current_user)
     if agent and not agent.is_overall:
         if source_tool_id != row.id:
             source_binding = _tool_binding(db, request.tenant_id, agent.id, source_tool_id)
@@ -289,9 +310,17 @@ def update_tool(
             "tool",
             row.id,
             "active" if request.enabled else "inactive",
+            metadata_json=creator_metadata if source_tool_id != row.id else None,
         )
     else:
-        ensure_open_gallery_binding(db, request.tenant_id, "tool", row.id, "active" if request.enabled else "inactive")
+        ensure_open_gallery_binding(
+            db,
+            request.tenant_id,
+            "tool",
+            row.id,
+            "active" if request.enabled else "inactive",
+            metadata_json=creator_metadata,
+        )
     db.commit()
     db.refresh(row)
     metadata_by_id = resource_binding_metadata(db, request.tenant_id, agent_id, "tool")
@@ -337,7 +366,9 @@ def test_tool(
     request: ToolTestRequest,
     agent_id: str | None = Query(default=None),
     db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> ToolResult:
+    ensure_current_user_tenant(request.tenant_id, current_user)
     row = _get_tool(db, request.tenant_id, tool_id)
     _ensure_tool_visible(db, request.tenant_id, row, agent_id)
     return ToolExecutor(db).execute(request.tenant_id, ToolCall(name=row.name, arguments=request.arguments))
@@ -561,7 +592,7 @@ def mcp_server_read(row: MCPServer, db: Session) -> MCPServerRead:
     )
 
 
-@mcp_router.get("", response_model=list[MCPServerRead])
+@mcp_router.get("", response_model=list[MCPServerRead], dependencies=[Depends(require_tenant_admin)])
 def list_mcp_servers(tenant_id: str = Query(...), db: Session = Depends(get_session)) -> list[MCPServerRead]:
     ensure_tenant(db, tenant_id)
     rows = db.exec(
@@ -605,7 +636,7 @@ def create_mcp_server(
     return mcp_server_read(row, db)
 
 
-@mcp_router.get("/{server_id}", response_model=MCPServerRead)
+@mcp_router.get("/{server_id}", response_model=MCPServerRead, dependencies=[Depends(require_tenant_admin)])
 def get_mcp_server(server_id: str, tenant_id: str = Query(...), db: Session = Depends(get_session)) -> MCPServerRead:
     row = _get_mcp_server(db, tenant_id, server_id)
     return mcp_server_read(row, db)
@@ -662,8 +693,13 @@ def delete_mcp_server(
 
 
 @mcp_router.post("/discover", response_model=MCPDiscoverResponse)
-def discover_mcp_tools_adhoc(request: MCPDiscoverRequest, db: Session = Depends(get_session)) -> MCPDiscoverResponse:
+def discover_mcp_tools_adhoc(
+    request: MCPDiscoverRequest,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> MCPDiscoverResponse:
     """未保存 Server 时，用连接配置直接探测 tools/list。"""
+    ensure_current_user_tenant(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
     if request.connection is None:
         return MCPDiscoverResponse(
@@ -767,11 +803,27 @@ def sync_mcp_tools(
     # 否则落到工具广场（open gallery），所有人可见。已存在的工具也一并补绑定，
     # 避免「先在广场导入，再切到员工同步」时员工侧仍然看不到。
     agent = get_agent(db, row.tenant_id, agent_id)
+    creator_metadata = user_creator_metadata(current_user)
     for tool_id in touched_tool_ids:
         if agent and not agent.is_overall:
-            ensure_private_resource_binding(db, row.tenant_id, agent.id, "tool", tool_id, "active")
+            ensure_private_resource_binding(
+                db,
+                row.tenant_id,
+                agent.id,
+                "tool",
+                tool_id,
+                "active",
+                metadata_json=creator_metadata,
+            )
         else:
-            ensure_open_gallery_binding(db, row.tenant_id, "tool", tool_id, "active")
+            ensure_open_gallery_binding(
+                db,
+                row.tenant_id,
+                "tool",
+                tool_id,
+                "active",
+                metadata_json=creator_metadata,
+            )
 
     db.add(row)
     db.commit()

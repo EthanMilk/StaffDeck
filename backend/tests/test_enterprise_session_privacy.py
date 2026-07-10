@@ -45,7 +45,7 @@ def test_enterprise_feedback_is_limited_to_current_user_even_for_admin() -> None
 
 def _seed_session_privacy_rows(db: Session) -> tuple[User, User]:
     db.add(Tenant(id="tenant_demo", name="Demo"))
-    admin = User(id="admin_user", tenant_id="tenant_demo", username="admin", password_hash="x")
+    admin = User(id="admin_user", tenant_id="tenant_demo", username="admin", role="admin", password_hash="x")
     other = User(id="other_user", tenant_id="tenant_demo", username="other", password_hash="x")
     db.add(admin)
     db.add(other)

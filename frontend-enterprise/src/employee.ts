@@ -217,6 +217,37 @@ export function canAccessEmployeeAgent(
   );
 }
 
+export function isEmployeeUsedByCurrentUser(agent: AgentProfileRead): boolean {
+  const metadata = agent.metadata || {};
+  return metadata.used_by_current_user === true || metadata.chat_used_by_current_user === true;
+}
+
+export function canSelectCurrentEmployeeAgent(
+  agent: AgentProfileRead,
+  user?: EnterpriseAuthUser | null,
+  options: EmployeeVisibilityOptions = {},
+): boolean {
+  if (options.excludeAgentId && agent.id === options.excludeAgentId) return false;
+  if (options.activeOnly && agent.status !== 'active') return false;
+
+  const includeOverall = options.includeOverall ?? false;
+  if (isEnterpriseAdmin(user)) {
+    if (agent.is_overall) return includeOverall;
+    if (isGalleryEmployee(agent) && !isEmployeeOwnedBy(agent, user)) {
+      return isEmployeeUsedByCurrentUser(agent);
+    }
+    return true;
+  }
+  if (agent.is_overall) return false;
+
+  const includeDefault = options.includeDefault ?? false;
+  return (
+    (includeDefault && isDefaultEmployeeAgent(agent))
+    || isEmployeeOwnedBy(agent, user)
+    || (isGalleryEmployee(agent) && isEmployeeUsedByCurrentUser(agent))
+  );
+}
+
 export function canManageEmployeeAgent(
   agent: AgentProfileRead,
   user?: EnterpriseAuthUser | null,
@@ -238,6 +269,14 @@ export function visibleEmployeeAgents(
   options: EmployeeVisibilityOptions = {},
 ): AgentProfileRead[] {
   return rows.filter((agent) => canAccessEmployeeAgent(agent, user, options));
+}
+
+export function currentEmployeeAgents(
+  rows: AgentProfileRead[],
+  user?: EnterpriseAuthUser | null,
+  options: EmployeeVisibilityOptions = {},
+): AgentProfileRead[] {
+  return rows.filter((agent) => canSelectCurrentEmployeeAgent(agent, user, options));
 }
 
 export function openGalleryAgent(rows: AgentProfileRead[]): AgentProfileRead | undefined {
@@ -376,7 +415,7 @@ export function visibleChatEmployees(
   rows: AgentProfileRead[],
   user?: EnterpriseAuthUser | null,
 ): AgentProfileRead[] {
-  return visibleEmployeeAgents(rows, user, { activeOnly: true });
+  return currentEmployeeAgents(rows, user, { activeOnly: true });
 }
 
 export function agentResourceCount(agent: AgentProfileRead, resourceType: AgentResourceType): number {

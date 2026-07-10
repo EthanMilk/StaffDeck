@@ -31,10 +31,12 @@ type GalleryScope = 'all' | 'mine' | 'gallery';
 export default function EmployeeGalleryPage({
   currentUser,
   isAdmin = false,
+  onStartChat,
   onLogout,
 }: {
   currentUser?: EnterpriseAuthUser;
   isAdmin?: boolean;
+  onStartChat?: (agent: AgentProfileRead) => void | Promise<void>;
   onLogout?: () => void;
 }) {
   const [agents, setAgents] = useState<AgentProfileRead[]>([]);
@@ -43,6 +45,7 @@ export default function EmployeeGalleryPage({
   const [profileAgent, setProfileAgent] = useState<AgentProfileRead | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AgentProfileRead | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [startingAgentId, setStartingAgentId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [scope, setScope] = useState<GalleryScope>('all');
   const navigate = useNavigate();
@@ -101,8 +104,20 @@ export default function EmployeeGalleryPage({
     ].some((value) => value.toLowerCase().includes(keyword));
   });
 
-  function startEmployeeChat(row: AgentProfileRead) {
-    navigate(`/workspace/chat/draft/${row.id}`);
+  async function startEmployeeChat(row: AgentProfileRead) {
+    if (startingAgentId) return;
+    setStartingAgentId(row.id);
+    try {
+      if (onStartChat) {
+        await onStartChat(row);
+        return;
+      }
+      navigate(`/workspace/chat/draft/${row.id}`);
+    } catch (error) {
+      notify.error(error instanceof Error ? error.message : '发起对话失败');
+    } finally {
+      setStartingAgentId(null);
+    }
   }
 
   async function updateStatus(row: AgentProfileRead, status: 'active' | 'archived') {
@@ -209,15 +224,16 @@ export default function EmployeeGalleryPage({
           <EmployeeCard
             key={employee.id}
             employee={employee}
+            busy={startingAgentId === employee.id}
             canManage={canManageEmployeeAgent(employee, currentUser)}
             showMenu={false}
-            onOpen={() => startEmployeeChat(employee)}
+            onOpen={() => void startEmployeeChat(employee)}
             onStatus={(status) => void updateStatus(employee, status)}
             onGallery={(published) => void updateGalleryState(employee, published)}
             onDelete={() => setDeleteTarget(employee)}
             onAvatar={() => setAvatarAgent(employee)}
             onEdit={() => setProfileAgent(employee)}
-            onChat={() => startEmployeeChat(employee)}
+            onChat={() => void startEmployeeChat(employee)}
           />
         ))}
         {!filteredEmployees.length && (

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import time
+import traceback
 from datetime import timedelta
 from collections.abc import Iterator
 
@@ -36,6 +38,7 @@ from app.feedback import enqueue_feedback_analysis
 from app.knowledge.citations import CITATION_EXCERPT_CHAR_LIMIT
 from app.llm import LLMClient, LLMError
 from app.security.auth import get_current_user
+from app.security.permissions import agent_owned_by_user, is_admin_user
 from app.security.tenant import ensure_tenant
 from app.scheduled_tasks.schema import ScheduledTaskDraftRead
 from app.scheduled_tasks.service import detect_scheduled_task_draft
@@ -53,12 +56,14 @@ from app.session.session_schema import (
 )
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+logger = logging.getLogger(__name__)
 CANCELLED_ASSISTANT_REPLY = "已停止生成"
 INTERRUPTED_ASSISTANT_REPLY = "本次响应中断，请重试发送。"
-CHAT_ADMIN_USERNAMES = {"admin", "admin_demo"}
 STREAM_REPLY_CHUNK_SIZE = 96
 STREAM_RELAY_POLL_SECONDS = 0.08
+STREAM_RELAY_HEARTBEAT_SECONDS = 5.0
 STREAM_RELAY_IDLE_TIMEOUT_SECONDS = 660.0
+STREAM_INTERRUPTED_TRACEBACK_CHAR_LIMIT = 6000
 MAX_CHAT_ATTACHMENT_BYTES = 12 * 1024 * 1024
 MAX_CHAT_ATTACHMENTS = 8
 SESSION_TITLE_SUMMARY_EVENT = "session_title_summarized"
@@ -977,7 +982,7 @@ def chat_stream(
                     elif event_name == "complete" and item_session_id:
                         _persist_relay_only_event(worker_db, request.tenant_id, item_session_id, event_name, data)
                         worker_terminal["seen"] = True
-                    elif event_name in {"stream_cancelled", "stream_interrupted", "error"}:
+                    elif event_name in {"stream_cancelled", "stream_interrupted", "error", "error_occurred"}:
                         worker_terminal["seen"] = True
                     if item["event"] == "user_message_received":
                         event_source_session_id = str(item["data"].get("sessionId") or request.session_id or "")
@@ -1028,6 +1033,7 @@ def chat_stream(
                                 draft.model_dump(mode="json"),
                             )
         except Exception as exc:
+            logger.exception("chat stream worker failed")
             session_id = source_session_id["value"] or request.session_id or ""
             if session_id:
                 with Session(engine) as error_db:
@@ -1039,11 +1045,16 @@ def chat_stream(
                             chat_session,
                             request.client_turn_id or "",
                             str(exc) or "stream worker failed",
+                            error_details={
+                                "error_type": exc.__class__.__name__,
+                                "error_traceback": traceback.format_exc()[-STREAM_INTERRUPTED_TRACEBACK_CHAR_LIMIT:],
+                            },
                         )
                         error_db.commit()
                         worker_terminal["seen"] = True
                         set_source_session(session_id)
         except BaseException as exc:
+            logger.exception("chat stream worker stopped with base exception")
             session_id = source_session_id["value"] or request.session_id or ""
             if session_id:
                 with Session(engine) as error_db:
@@ -1055,6 +1066,10 @@ def chat_stream(
                             chat_session,
                             request.client_turn_id or "",
                             exc.__class__.__name__,
+                            error_details={
+                                "error_type": exc.__class__.__name__,
+                                "error_traceback": traceback.format_exc()[-STREAM_INTERRUPTED_TRACEBACK_CHAR_LIMIT:],
+                            },
                         )
                         error_db.commit()
                         worker_terminal["seen"] = True
@@ -1085,6 +1100,7 @@ def chat_stream(
         nonlocal initial_cursor
         relay_ready.wait(15)
         deadline = time.monotonic() + STREAM_RELAY_IDLE_TIMEOUT_SECONDS
+        last_heartbeat_at = time.monotonic()
         terminal_sent = False
         while True:
             session_id = source_session_id["value"]
@@ -1101,6 +1117,7 @@ def chat_stream(
                         terminal_sent = True
                 if emitted:
                     deadline = time.monotonic() + STREAM_RELAY_IDLE_TIMEOUT_SECONDS
+                    last_heartbeat_at = time.monotonic()
             if terminal_sent and worker_done.is_set() and not emitted:
                 return
             if worker_done.is_set() and not emitted:
@@ -1120,6 +1137,16 @@ def chat_stream(
                             timeout_db.commit()
                     continue
                 return
+            now = time.monotonic()
+            if now - last_heartbeat_at >= STREAM_RELAY_HEARTBEAT_SECONDS:
+                last_heartbeat_at = now
+                yield _sse(
+                    "heartbeat",
+                    {
+                        "phase": "relay",
+                        "sessionId": session_id or request.session_id or "",
+                    },
+                )
             time.sleep(STREAM_RELAY_POLL_SECONDS)
 
     return StreamingResponse(stream_events(), media_type="text/event-stream")
@@ -1306,6 +1333,7 @@ def _persist_chat_turn_interrupted(
     chat_session: ChatSession,
     requested_turn_id: str,
     reason: str,
+    error_details: dict[str, object] | None = None,
 ) -> bool:
     message_id, client_turn_id = _resolve_turn_ids_from_events(db, tenant_id, chat_session.id, requested_turn_id)
     if not message_id:
@@ -1323,8 +1351,10 @@ def _persist_chat_turn_interrupted(
         "client_turn_id": client_turn_id or None,
         "phase": "interrupted",
         "text": "响应生成中断",
-        "reason": reason[:300],
+        "reason": reason[:2000],
     }
+    if error_details:
+        payload.update(error_details)
     db.add(
         AgentEvent(
             tenant_id=tenant_id,
@@ -1698,7 +1728,7 @@ def list_human_handoffs(
     stmt = select(HumanHandoffRequest).where(HumanHandoffRequest.tenant_id == tenant_id)
     if status != "all":
         stmt = stmt.where(HumanHandoffRequest.status == status)
-    if current_user.username not in CHAT_ADMIN_USERNAMES:
+    if not is_admin_user(current_user):
         if status == "pending":
             stmt = stmt.where(
                 or_(
@@ -1728,7 +1758,7 @@ def reply_human_handoff(
     row = db.get(HumanHandoffRequest, handoff_id)
     if not row or row.tenant_id != request.tenant_id:
         raise HTTPException(status_code=404, detail="Handoff request not found")
-    if current_user.username not in CHAT_ADMIN_USERNAMES and row.assignee_user_id not in {None, current_user.id}:
+    if not is_admin_user(current_user) and row.assignee_user_id not in {None, current_user.id}:
         raise HTTPException(status_code=403, detail="Handoff request not assigned to current user")
     reply = request.reply.strip()
     if not reply:
@@ -1918,7 +1948,7 @@ def _user_can_read_handoff_session(db: Session, tenant_id: str, current_user: Us
         HumanHandoffRequest.tenant_id == tenant_id,
         HumanHandoffRequest.session_id == session_id,
     )
-    if current_user.username not in CHAT_ADMIN_USERNAMES:
+    if not is_admin_user(current_user):
         statement = statement.where(
             or_(
                 HumanHandoffRequest.assignee_user_id == current_user.id,
@@ -2246,7 +2276,38 @@ def _general_skill_trace_detail(payload: dict, phase: str) -> str | None:
         text = " · ".join(part for part in parts if part)
         return text or None
     detail = str(payload.get("rationale") or payload.get("text") or "").strip()
+    if _general_skill_trace_failed(phase):
+        error = str(payload.get("error") or payload.get("stderr_preview") or "").strip()
+        if error and error not in detail:
+            detail = f"{detail} · {error}" if detail else error
     return detail or None
+
+
+def _general_skill_trace_failed(phase: str) -> bool:
+    return "failed" in phase or phase == "code_timeout" or phase.endswith("_error")
+
+
+def _error_trace_text(payload: dict, *, interrupted: bool = False) -> str:
+    code = str(payload.get("code") or "").strip()
+    if code == "LLM_ERROR":
+        return "模型调用失败"
+    if interrupted:
+        return "响应生成中断"
+    if code:
+        return f"执行失败 {code}"
+    error_type = str(payload.get("error_type") or "").strip()
+    if error_type:
+        return f"执行失败 {error_type}"
+    return "执行失败"
+
+
+def _error_trace_detail(payload: dict) -> str | None:
+    code = str(payload.get("code") or "").strip()
+    error_type = str(payload.get("error_type") or "").strip()
+    message = str(payload.get("message") or payload.get("reason") or payload.get("text") or "").strip()
+    parts = [code, error_type, message]
+    detail = " · ".join(part for part in parts if part)
+    return detail[:2000] if detail else None
 
 
 def _general_skill_trace_output(payload: dict, phase: str) -> dict[str, str]:
@@ -2305,16 +2366,10 @@ def _ensure_request_tenant(tenant_id: str, current_user: User) -> None:
 
 
 def _chat_agent_visible_to_user(row: AgentProfile, user: User) -> bool:
-    if user.username in {"admin", "admin_demo"}:
+    if is_admin_user(user):
         return True
     metadata = row.metadata_json or {}
-    return (
-        metadata.get("owner_user_id") == user.id
-        or metadata.get("owner_username") == user.username
-        or metadata.get("created_by_user_id") == user.id
-        or metadata.get("created_by_username") == user.username
-        or metadata.get("published_to_gallery") is True
-    )
+    return agent_owned_by_user(row, user) or metadata.get("published_to_gallery") is True
 
 
 def _normalize_title(value: str | None) -> str | None:
@@ -2408,7 +2463,7 @@ def _build_turn_traces(
             _complete_trace_lines(current["lines"])
             if active_turn_id == target_turn_id:
                 active_turn_id = None
-        elif event.event_type in {"stream_cancelled", "stream_interrupted"}:
+        elif event.event_type in {"stream_cancelled", "stream_interrupted", "error_occurred"}:
             if not current.get("completed_at"):
                 current["completed_at"] = event.created_at.isoformat()
             _finish_trace_if_needed(current, event.created_at)
@@ -2611,6 +2666,15 @@ def _event_trace_line(
                 "detail": None,
                 "state": "running",
             }
+        if phase == "error":
+            code = str(payload.get("code") or payload.get("error_type") or "status").strip()
+            return {
+                "id": f"error_{code}",
+                "kind": "decision",
+                "text": _error_trace_text(payload),
+                "detail": _error_trace_detail(payload),
+                "state": "failed",
+            }
         if phase == "responding":
             return None
         if phase and phase != "received":
@@ -2634,8 +2698,8 @@ def _event_trace_line(
         return {
             "id": "generation_interrupted",
             "kind": "thinking",
-            "text": "响应生成中断",
-            "detail": str(payload.get("reason") or payload.get("text") or "") or None,
+            "text": _error_trace_text(payload, interrupted=True),
+            "detail": _error_trace_detail(payload),
             "state": "failed",
         }
     if event.event_type == "general_skill_selected":
@@ -2683,7 +2747,7 @@ def _event_trace_line(
             "detail": detail or None,
             "code": code or None,
             "language": "bash" if code and runtime == "bash" else "python" if code else None,
-            "state": "completed",
+            "state": "failed" if _general_skill_trace_failed(phase) else "completed",
             "collapsible": bool(code or output.get("output")),
             **output,
         }
@@ -2964,11 +3028,12 @@ def _event_trace_line(
             "state": "completed",
         }
     if event.event_type == "error_occurred":
+        code = str(payload.get("code") or payload.get("error_type") or event.id).strip()
         return {
-            "id": f"error_{event.id}",
-            "kind": "thinking",
-            "text": "思考遇到问题",
-            "detail": str(payload.get("message") or "") or None,
+            "id": f"error_{code}",
+            "kind": "decision",
+            "text": _error_trace_text(payload),
+            "detail": _error_trace_detail(payload),
             "state": "failed",
         }
     return None
@@ -2978,6 +3043,7 @@ def _tool_trace_detail(payload: dict) -> str | None:
     data = payload.get("data")
     data_dict = data if isinstance(data, dict) else {}
     parts = [
+        "已复用此前成功结果" if payload.get("idempotent_replay") or data_dict.get("idempotent_replay") else "",
         str(data_dict.get("source") or "").strip(),
         "未命中" if data_dict.get("found") is False else "已命中" if data_dict.get("found") is True else "",
         str(data_dict.get("miss_reason") or "").strip(),

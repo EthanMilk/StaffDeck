@@ -7,13 +7,15 @@ import {
   useLocation,
   useNavigate,
 } from "react-router-dom";
-import { api, TENANT_ID } from "./api/client";
+import { api, isAuthError, TENANT_ID } from "./api/client";
 import {
   clearEnterpriseAuthSession,
   getEnterpriseAuthSession,
   isEnterpriseAdmin,
   isGalleryEmployee,
+  setEnterpriseAuthSession,
   type EnterpriseAuthSession,
+  type EnterpriseAuthUser,
 } from "./auth";
 import AppSidebar from "./components/AppSidebar";
 import StaffdeckIcon from "./components/StaffdeckIcon";
@@ -23,6 +25,7 @@ import {
   employeeBlankMetadata,
   canAccessEmployeeAgent,
   canManageEmployeeAgent,
+  canSelectCurrentEmployeeAgent,
   employeeDisplayName,
   employeeDisplayNameWithCreator,
   employeeProfile,
@@ -256,7 +259,7 @@ function Shell({
   }
 
   function canUseAgentScope(agent: AgentProfileRead): boolean {
-    return canAccessEmployeeAgent(agent, auth.user, { activeOnly: true, includeOverall: isAdmin });
+    return canSelectCurrentEmployeeAgent(agent, auth.user, { activeOnly: true, includeOverall: isAdmin });
   }
 
   function changeAgentScope(agentId: string) {
@@ -273,9 +276,9 @@ function Shell({
     );
   }
 
-  const selectedAgent = agents.find((item) => item.id === selectedAgentId);
-  const sidebarAgent = selectedAgent;
   const scopeAgents = agents.filter(canUseAgentScope);
+  const selectedAgent = scopeAgents.find((item) => item.id === selectedAgentId);
+  const sidebarAgent = selectedAgent;
   // Routes that operate on a specific employee; show the empty guide when none exist.
   const EMPLOYEE_SCOPED_PREFIXES = [
     "/enterprise/dashboard",
@@ -287,15 +290,18 @@ function Shell({
     "/enterprise/skills",
     "/enterprise/tools",
   ];
-  const hasEmployees = agents.some((item) => !item.is_overall);
+  const hasEmployees = scopeAgents.some((item) => !item.is_overall);
   const isEmployeeScopedRoute = EMPLOYEE_SCOPED_PREFIXES.some((prefix) =>
     location.pathname.startsWith(prefix),
   );
   const showEmployeeEmptyState =
     agentsLoaded && !hasEmployees && isEmployeeScopedRoute;
-  const sourceAgents = isAdmin
-    ? scopeAgents
-    : scopeAgents.filter((item) => !item.is_overall);
+  const sourceAgents = agents.filter((item) =>
+    canAccessEmployeeAgent(item, auth.user, {
+      activeOnly: true,
+      includeOverall: isAdmin,
+    }),
+  );
   const selectedAgentName = selectedAgent
     ? employeeDisplayName(selectedAgent)
     : "未选择";
@@ -345,6 +351,11 @@ function Shell({
       owner_user_id: auth.user.id,
       owner_username: auth.user.username,
       owner_display_name: auth.user.display_name || auth.user.username,
+      created_by_user_id: auth.user.id,
+      created_by_username: auth.user.username,
+      created_by: auth.user.username,
+      created_by_display_name: auth.user.display_name || auth.user.username,
+      creator_name: auth.user.username,
       role_key: "",
       role_name: roleName,
       onboarded_at: new Date().toISOString().slice(0, 10),
@@ -849,16 +860,46 @@ export default function App() {
   const [auth, setAuth] = useState<EnterpriseAuthSession | null>(() =>
     getEnterpriseAuthSession(),
   );
+  const [authChecked, setAuthChecked] = useState(() => !auth?.token);
+
+  useEffect(() => {
+    if (!auth?.token) {
+      setAuthChecked(true);
+      return undefined;
+    }
+    let cancelled = false;
+    setAuthChecked(false);
+    void api.get<EnterpriseAuthUser>("/api/auth/me")
+      .then((user) => {
+        if (cancelled) return;
+        const refreshed = { token: auth.token, user };
+        setEnterpriseAuthSession(refreshed);
+        setAuth(refreshed);
+        setAuthChecked(true);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        if (isAuthError(error)) {
+          clearEnterpriseAuthSession();
+          setAuth(null);
+        }
+        setAuthChecked(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [auth?.token]);
 
   function logout() {
     clearEnterpriseAuthSession();
     setAuth(null);
+    setAuthChecked(true);
   }
 
   return (
     <TooltipProvider>
       <BrowserRouter>
-        {auth ? (
+        {auth && !authChecked ? null : auth ? (
           <AuthedApp auth={auth} onLogout={logout} />
         ) : (
           <LoginPage onLogin={setAuth} />

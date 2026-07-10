@@ -24,10 +24,10 @@ from app.agents.branching import (
     mark_resource_open_gallery,
     project_skill_with_branch,
     require_overall_agent,
-    resource_binding_metadata,
     rollback_branch,
     system_creator_metadata,
     update_branch_skill,
+    user_creator_metadata,
     visible_skill_rows,
 )
 from app.async_jobs import enqueue_async_job
@@ -45,8 +45,12 @@ from app.db.models import (
     utc_now,
 )
 from app.llm import LLMError
-from app.security.auth import get_current_user
-from app.security.permissions import ensure_agent_scope_manager, ensure_open_gallery_admin
+from app.security.auth import ensure_current_user_tenant, get_current_user
+from app.security.permissions import (
+    ensure_agent_scope_manager,
+    ensure_open_gallery_admin,
+    require_agent_scope_viewer,
+)
 from app.security.tenant import ensure_tenant
 from app.skills import SkillDistiller, SkillEditor
 from app.skills.skill_schema import (
@@ -62,10 +66,14 @@ from app.skills.skill_schema import (
     SkillVersionRead,
     SkillUpdateRequest,
 )
-from app.skills.stream_jobs import SkillStreamEvent, stream_jobs
+from app.skills.stream_jobs import SkillStreamEvent, SkillStreamJob, stream_jobs
 from app.skills.step_ids import skill_card_with_unique_step_ids
 
-router = APIRouter(prefix="/api/enterprise/skills", tags=["enterprise:skills"])
+router = APIRouter(
+    prefix="/api/enterprise/skills",
+    tags=["enterprise:skills"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 def skill_read(
@@ -166,7 +174,7 @@ def _branch_version_read(row: AgentSkillBranchVersion) -> SkillVersionRead:
     )
 
 
-@router.get("", response_model=list[SkillRead])
+@router.get("", response_model=list[SkillRead], dependencies=[Depends(require_agent_scope_viewer)])
 def list_skills(
     tenant_id: str = Query(...),
     db: Session = Depends(get_session),
@@ -211,6 +219,7 @@ def create_skill(
     db.flush()
     branch = None
     binding_status = "active" if request.status == "published" else "inactive"
+    creator_metadata = user_creator_metadata(current_user)
     if agent and not agent.is_overall:
         ensure_private_resource_binding(
             db,
@@ -219,17 +228,25 @@ def create_skill(
             "skill",
             row.id,
             binding_status,
+            metadata_json=creator_metadata,
         )
-        branch = ensure_agent_skill_branch(db, request.tenant_id, agent.id, row)
+        branch = ensure_agent_skill_branch(
+            db,
+            request.tenant_id,
+            agent.id,
+            row,
+            metadata_json=creator_metadata,
+        )
     else:
         ensure_open_gallery_admin(request.tenant_id, current_user)
-        mark_resource_open_gallery(row)
+        mark_resource_open_gallery(row, creator_metadata)
         ensure_open_gallery_binding(
             db,
             request.tenant_id,
             "skill",
             row.id,
             binding_status,
+            metadata_json=creator_metadata,
         )
     db.commit()
     db.refresh(row)
@@ -240,34 +257,14 @@ def create_skill(
     return skill_read(row, stats, _recent_skill_stats(db, request.tenant_id, stats))
 
 
-@router.get("/{skill_id}", response_model=SkillRead)
+@router.get("/{skill_id}", response_model=SkillRead, dependencies=[Depends(require_agent_scope_viewer)])
 def get_skill(
     skill_id: str,
     tenant_id: str = Query(...),
     agent_id: str | None = None,
     db: Session = Depends(get_session),
 ) -> SkillRead:
-    row = _get_skill(db, tenant_id, skill_id)
-    agent = get_agent(db, tenant_id, agent_id)
-    if agent and not agent.is_overall:
-        binding = db.exec(
-            select(AgentResourceBinding).where(
-                AgentResourceBinding.tenant_id == tenant_id,
-                AgentResourceBinding.agent_id == agent.id,
-                AgentResourceBinding.resource_type == "skill",
-                AgentResourceBinding.resource_id == row.id,
-                AgentResourceBinding.status != "deleted",
-            )
-        ).first()
-        if not binding:
-            raise HTTPException(status_code=404, detail="Skill not visible to this agent")
-        branch = ensure_agent_skill_branch(db, tenant_id, agent.id, row)
-        row = project_skill_with_branch(row, branch, binding.status)
-    else:
-        metadata_by_id = resource_binding_metadata(db, tenant_id, agent_id, "skill")
-        branch_meta = dict(getattr(row, "agent_branch_meta", {}) or {})
-        branch_meta["metadata"] = metadata_by_id.get(row.id, {})
-        object.__setattr__(row, "agent_branch_meta", branch_meta)
+    row = _get_visible_skill_for_scope(db, tenant_id, skill_id, agent_id)
     stats = _skill_stats(db, tenant_id)
     return skill_read(row, stats, _recent_skill_stats(db, tenant_id, stats))
 
@@ -481,18 +478,22 @@ def delete_skill(
     return {"status": "deleted"}
 
 
-@router.get("/{skill_id}/versions", response_model=list[SkillVersionRead])
+@router.get(
+    "/{skill_id}/versions",
+    response_model=list[SkillVersionRead],
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
 def list_skill_versions(
     skill_id: str,
     tenant_id: str = Query(...),
     db: Session = Depends(get_session),
     agent_id: str | None = None,
 ) -> list[SkillVersionRead]:
+    row = _get_visible_skill_for_scope(db, tenant_id, skill_id, agent_id)
     agent = get_agent(db, tenant_id, agent_id)
     if agent and not agent.is_overall:
         rows = branch_versions(db, tenant_id, agent.id, skill_id)
         return [_branch_version_read(row) for row in rows]
-    row = _get_skill(db, tenant_id, skill_id)
     current_snapshot = db.exec(
         select(SkillVersion).where(
             SkillVersion.tenant_id == tenant_id,
@@ -511,13 +512,28 @@ def list_skill_versions(
     return [skill_version_read(version_row, stats) for version_row in rows]
 
 
-@router.get("/{skill_id}/versions/{version}", response_model=SkillVersionRead)
+@router.get(
+    "/{skill_id}/versions/{version}",
+    response_model=SkillVersionRead,
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
 def get_skill_version(
     skill_id: str,
     version: str,
     tenant_id: str = Query(...),
+    agent_id: str | None = None,
     db: Session = Depends(get_session),
 ) -> SkillVersionRead:
+    _get_visible_skill_for_scope(db, tenant_id, skill_id, agent_id)
+    agent = get_agent(db, tenant_id, agent_id)
+    if agent and not agent.is_overall:
+        row = next(
+            (item for item in branch_versions(db, tenant_id, agent.id, skill_id) if item.version == version),
+            None,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Skill version not found")
+        return _branch_version_read(row)
     row = _get_skill_version(db, tenant_id, skill_id, version)
     return skill_version_read(row, _skill_stats(db, tenant_id))
 
@@ -599,7 +615,12 @@ def extract_skill_file(request: SkillFileExtractRequest) -> SkillFileExtractResp
 
 
 @router.post("/distill", response_model=SkillDistillResponse)
-def distill_skill(request: SkillDistillRequest, db: Session = Depends(get_session)) -> SkillDistillResponse:
+def distill_skill(
+    request: SkillDistillRequest,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> SkillDistillResponse:
+    ensure_current_user_tenant(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
     request = _with_available_tools(db, request)
@@ -610,36 +631,55 @@ def distill_skill(request: SkillDistillRequest, db: Session = Depends(get_sessio
 
 
 @router.post("/distill/stream")
-def distill_skill_stream(request: SkillDistillRequest) -> StreamingResponse:
-    job_id = _start_distill_stream_job(request)
+def distill_skill_stream(
+    request: SkillDistillRequest,
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    ensure_current_user_tenant(request.tenant_id, current_user)
+    job_id = _start_distill_stream_job(request, current_user)
     return StreamingResponse(_stream_skill_job(job_id), media_type="text/event-stream")
 
 
 @router.post("/{skill_id}/rewrite/stream")
-def rewrite_skill_stream(skill_id: str, request: SkillRewriteRequest) -> StreamingResponse:
+def rewrite_skill_stream(
+    skill_id: str,
+    request: SkillRewriteRequest,
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
     if request.current_skill.skill_id != skill_id:
         raise HTTPException(status_code=400, detail="Path skill_id must match current_skill.skill_id")
-    job_id = _start_rewrite_stream_job(skill_id, request)
+    ensure_current_user_tenant(request.tenant_id, current_user)
+    job_id = _start_rewrite_stream_job(skill_id, request, current_user)
     return StreamingResponse(_stream_skill_job(job_id), media_type="text/event-stream")
 
 
 @router.post("/distill/jobs")
-def create_distill_job(request: SkillDistillRequest) -> dict[str, str]:
-    return {"job_id": _start_distill_stream_job(request)}
+def create_distill_job(
+    request: SkillDistillRequest,
+    current_user: User = Depends(get_current_user),
+) -> dict[str, str]:
+    ensure_current_user_tenant(request.tenant_id, current_user)
+    return {"job_id": _start_distill_stream_job(request, current_user)}
 
 
 @router.post("/{skill_id}/rewrite/jobs")
-def create_rewrite_job(skill_id: str, request: SkillRewriteRequest) -> dict[str, str]:
+def create_rewrite_job(
+    skill_id: str,
+    request: SkillRewriteRequest,
+    current_user: User = Depends(get_current_user),
+) -> dict[str, str]:
     if request.current_skill.skill_id != skill_id:
         raise HTTPException(status_code=400, detail="Path skill_id must match current_skill.skill_id")
-    return {"job_id": _start_rewrite_stream_job(skill_id, request)}
+    ensure_current_user_tenant(request.tenant_id, current_user)
+    return {"job_id": _start_rewrite_stream_job(skill_id, request, current_user)}
 
 
 @router.get("/jobs/{job_id}")
-def get_skill_stream_job(job_id: str) -> dict[str, object]:
-    job = stream_jobs.get(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+def get_skill_stream_job(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+) -> dict[str, object]:
+    job = _owned_stream_job(job_id, current_user)
     return {
         "job_id": job.id,
         "name": job.name,
@@ -652,16 +692,21 @@ def get_skill_stream_job(job_id: str) -> dict[str, object]:
 
 
 @router.get("/jobs/{job_id}/stream")
-def stream_existing_skill_job(job_id: str, after_seq: int = Query(0)) -> StreamingResponse:
-    if not stream_jobs.get(job_id):
-        raise HTTPException(status_code=404, detail="Job not found")
+def stream_existing_skill_job(
+    job_id: str,
+    after_seq: int = Query(0),
+    current_user: User = Depends(get_current_user),
+) -> StreamingResponse:
+    _owned_stream_job(job_id, current_user)
     return StreamingResponse(_stream_skill_job(job_id, after_seq), media_type="text/event-stream")
 
 
 @router.post("/jobs/{job_id}/cancel")
-def cancel_skill_stream_job(job_id: str) -> dict[str, str]:
-    if not stream_jobs.get(job_id):
-        raise HTTPException(status_code=404, detail="Job not found")
+def cancel_skill_stream_job(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+) -> dict[str, str]:
+    _owned_stream_job(job_id, current_user)
     stream_jobs.cancel(job_id)
     stream_jobs.append(job_id, "status", {"text": "已请求停止生成"})
     return {"status": "cancel_requested", "job_id": job_id}
@@ -672,9 +717,11 @@ def rewrite_skill(
     skill_id: str,
     request: SkillRewriteRequest,
     db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> SkillRewriteResponse:
     if request.current_skill.skill_id != skill_id:
         raise HTTPException(status_code=400, detail="Path skill_id must match current_skill.skill_id")
+    ensure_current_user_tenant(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
     request = _with_available_tools_for_rewrite(db, request)
@@ -684,8 +731,15 @@ def rewrite_skill(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-def _start_distill_stream_job(request: SkillDistillRequest) -> str:
-    job = stream_jobs.create("skill.distill")
+def _owned_stream_job(job_id: str, current_user: User) -> SkillStreamJob:
+    job = stream_jobs.get(job_id)
+    if not job or job.tenant_id != current_user.tenant_id or job.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+def _start_distill_stream_job(request: SkillDistillRequest, current_user: User) -> str:
+    job = stream_jobs.create("skill.distill", request.tenant_id, current_user.id)
     stream_jobs.append(job.id, "job_started", {"job_id": job.id, "name": job.name})
     enqueue_async_job(
         "skill.distill_stream",
@@ -697,8 +751,8 @@ def _start_distill_stream_job(request: SkillDistillRequest) -> str:
     return job.id
 
 
-def _start_rewrite_stream_job(skill_id: str, request: SkillRewriteRequest) -> str:
-    job = stream_jobs.create("skill.rewrite")
+def _start_rewrite_stream_job(skill_id: str, request: SkillRewriteRequest, current_user: User) -> str:
+    job = stream_jobs.create("skill.rewrite", request.tenant_id, current_user.id)
     stream_jobs.append(job.id, "job_started", {"job_id": job.id, "name": job.name, "skill_id": skill_id})
     enqueue_async_job(
         "skill.rewrite_stream",
@@ -1085,6 +1139,25 @@ def _get_skill(db: Session, tenant_id: str, skill_id: str) -> Skill:
     row = db.exec(
         select(Skill).where(Skill.tenant_id == tenant_id, Skill.skill_id == skill_id)
     ).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Skill not found")
+    return row
+
+
+def _get_visible_skill_for_scope(
+    db: Session,
+    tenant_id: str,
+    skill_id: str,
+    agent_id: str | None,
+) -> Skill:
+    row = next(
+        (
+            item
+            for item in visible_skill_rows(db, tenant_id, agent_id, include_inactive=True)
+            if item.skill_id == skill_id
+        ),
+        None,
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Skill not found")
     return row

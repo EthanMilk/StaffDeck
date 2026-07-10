@@ -36,6 +36,8 @@ from app.scheduled_tasks.schema import (
     ScheduledTaskUpdateRequest,
 )
 from app.session.session_schema import ChatTurnRequest, ChatTurnResponse
+from app.security.permissions import agent_owned_by_user as _agent_owned_by_user
+from app.security.permissions import is_admin_user as _is_admin_user
 from app.security.tenant import ensure_tenant
 
 
@@ -885,7 +887,7 @@ def _ensure_agent_access(db: Session, tenant_id: str, agent_id: str, current_use
     if _is_admin_user(current_user):
         return agent
     metadata = agent.metadata_json or {}
-    owns_agent = metadata.get("owner_user_id") == current_user.id or metadata.get("owner_username") == current_user.username
+    owns_agent = _agent_owned_by_user(agent, current_user)
     in_gallery = metadata.get("published_to_gallery") is True
     if not (owns_agent or in_gallery):
         raise HTTPException(status_code=403, detail="无权为该员工设置自动任务")
@@ -897,7 +899,3 @@ def _ensure_task_access(row: ScheduledTask, current_user: User) -> None:
         return
     if row.created_by_user_id != current_user.id:
         raise HTTPException(status_code=403, detail="无权访问该自动任务")
-
-
-def _is_admin_user(user: User) -> bool:
-    return user.username in {"admin", "admin_demo"}

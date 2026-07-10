@@ -4,6 +4,7 @@ import json
 import queue
 import re
 import threading
+import traceback
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from time import sleep
@@ -80,6 +81,36 @@ TOOL_RESULTS_SLOT = "_tool_results"
 GRAPH_PENDING_STEPS_SLOT = "_graph_pending_steps"
 GENERAL_SKILL_TOOL_PREFIX = "general_skill."
 CANCELLED_ASSISTANT_REPLY = "已停止生成"
+IDEMPOTENT_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+READ_ONLY_TOOL_HINTS = {
+    "check",
+    "compare",
+    "fetch",
+    "find",
+    "forecast",
+    "get",
+    "inspect",
+    "list",
+    "lookup",
+    "price",
+    "query",
+    "read",
+    "retrieve",
+    "search",
+    "summarize",
+    "validate",
+    "weather",
+    "查看",
+    "查询",
+    "搜索",
+    "读取",
+    "获取",
+    "列表",
+    "比价",
+    "价格",
+    "天气",
+}
+ERROR_TRACEBACK_CHAR_LIMIT = 6000
 PROFILE_NAME_PREFIX = "用户姓名/称呼："
 TASK_CONFIRMATION_MARKERS = ("确认下单", "确认购买", "请确认", "是否确认")
 TASK_HANDOFF_MARKERS = ("接下来", "然后", "下一步", "随后", "之后")
@@ -1258,6 +1289,61 @@ class AgentLoop:
             )
             turn_finalized = True
 
+        def recover_chat_session_after_exception() -> ChatSession:
+            nonlocal chat_session
+            session_id = str((chat_session.id if chat_session else request.session_id) or "").strip()
+            self.db.rollback()
+            recovered = self.db.get(ChatSession, session_id) if session_id else None
+            if recovered is None:
+                recovered = self._get_or_create_session(request)
+            chat_session = recovered
+            return recovered
+
+        def exception_payload(code: str, message: str) -> dict[str, object]:
+            payload: dict[str, object] = {
+                "code": code,
+                "message": message,
+                "client_turn_id": request.client_turn_id or None,
+                "error_traceback": traceback.format_exc()[-ERROR_TRACEBACK_CHAR_LIMIT:],
+            }
+            return self._turn_payload(payload, user_message_id)
+
+        def stream_failure_response(
+            title: str,
+            error: object,
+            code: str,
+            suggestion: str,
+            message: str | None = None,
+        ) -> Iterator[dict[str, object]]:
+            nonlocal reply
+            target_session = recover_chat_session_after_exception()
+            if mark_current_turn_cancelled():
+                return
+            error_message = message if message is not None else str(error)
+            reply = format_runtime_failure_reply(title, error_message, code, suggestion)
+            payload = exception_payload(code, error_message)
+            self.events.record(request.tenant_id, target_session.id, "error_occurred", payload)
+            self.db.commit()
+            yield self._stream_status(
+                target_session,
+                "error",
+                reply,
+                {"code": code, "message": error_message},
+                user_message_id=user_message_id,
+            )
+            yield self._stream_event("error_occurred", target_session, payload)
+            for chunk in self.response_generator.chunk_text(reply):
+                yield self._stream_event(
+                    "stream_delta",
+                    target_session,
+                    self._turn_payload({"content": chunk}, user_message_id),
+                )
+                self._pace_stream()
+            yield self._stream_event("stream_end", target_session, self._turn_payload({}, user_message_id))
+            finalize_turn_once(target_session, reply, step_result, request.message)
+            self.db.commit()
+            self.db.refresh(target_session)
+
         try:
             chat_session = self._get_or_create_session(request)
             yield self._stream_event(
@@ -1825,125 +1911,70 @@ class AgentLoop:
                     self.db.rollback()
             raise
         except AgentLoopPreconditionError as exc:
-            chat_session = chat_session or self._get_or_create_session(request)
-            if mark_current_turn_cancelled():
-                return
-            reply = format_runtime_failure_reply(
+            yield from stream_failure_response(
                 "系统配置错误",
                 exc.message,
                 exc.code,
                 "请在管理端补齐配置后重试。",
+                message=exc.message,
             )
-            self.events.record(
-                request.tenant_id,
-                chat_session.id,
-                "error_occurred",
-                {"code": exc.code, "message": exc.message},
-            )
-            yield self._stream_status(
-                chat_session,
-                "error",
-                reply,
-                {"code": exc.code, "message": exc.message},
-                user_message_id=user_message_id,
-            )
-            for chunk in self.response_generator.chunk_text(reply):
-                yield self._stream_event(
-                    "stream_delta",
-                    chat_session,
-                    self._turn_payload({"content": chunk}, user_message_id),
-                )
-                self._pace_stream()
-            yield self._stream_event("stream_end", chat_session, self._turn_payload({}, user_message_id))
+            return
         except LLMError as exc:
-            chat_session = chat_session or self._get_or_create_session(request)
-            if mark_current_turn_cancelled():
-                return
-            reply = format_runtime_failure_reply("模型调用失败", exc, "LLM_ERROR", MODEL_FAILURE_SUGGESTION)
-            self.events.record(
-                request.tenant_id,
-                chat_session.id,
-                "error_occurred",
-                {"code": "LLM_ERROR", "message": str(exc)},
-            )
-            yield self._stream_status(
-                chat_session,
-                "error",
-                reply,
-                {"code": "LLM_ERROR", "message": str(exc)},
-                user_message_id=user_message_id,
-            )
-            for chunk in self.response_generator.chunk_text(reply):
-                yield self._stream_event(
-                    "stream_delta",
-                    chat_session,
-                    self._turn_payload({"content": chunk}, user_message_id),
-                )
-                self._pace_stream()
-            yield self._stream_event("stream_end", chat_session, self._turn_payload({}, user_message_id))
+            yield from stream_failure_response("模型调用失败", exc, "LLM_ERROR", MODEL_FAILURE_SUGGESTION)
+            return
         except Exception as exc:
-            chat_session = chat_session or self._get_or_create_session(request)
-            if mark_current_turn_cancelled():
-                return
-            reply = format_runtime_failure_reply(
+            turn_finalized = False
+            yield from stream_failure_response(
                 "Agent Loop 出错",
                 exc,
                 "AGENT_LOOP_ERROR",
                 "请查看执行记录或服务日志定位具体原因。",
             )
-            self.events.record(
-                request.tenant_id,
-                chat_session.id,
-                "error_occurred",
-                {"code": "AGENT_LOOP_ERROR", "message": str(exc)},
-            )
-            yield self._stream_status(
-                chat_session,
-                "error",
-                reply,
-                {"code": "AGENT_LOOP_ERROR", "message": str(exc)},
-                user_message_id=user_message_id,
-            )
-            for chunk in self.response_generator.chunk_text(reply):
-                yield self._stream_event(
-                    "stream_delta",
-                    chat_session,
-                    self._turn_payload({"content": chunk}, user_message_id),
-                )
-                self._pace_stream()
-            yield self._stream_event("stream_end", chat_session, self._turn_payload({}, user_message_id))
-
-        if not chat_session:
-            chat_session = self._get_or_create_session(request)
-        if mark_current_turn_cancelled():
             return
-        memory_recent_messages = self._recent_messages(chat_session) if memory_model_config else []
-        finalize_turn_once(chat_session, reply, step_result, request.message)
-        self.db.commit()
-        self.db.refresh(chat_session)
-        if memory_model_config:
-            self._enqueue_memory_capture(
-                request,
-                chat_session,
-                reply,
-                step_result,
-                tool_result,
-                memory_model_config,
-                memory_recent_messages,
+
+        turn_commit_completed = False
+        try:
+            if not chat_session:
+                chat_session = self._get_or_create_session(request)
+            if mark_current_turn_cancelled():
+                return
+            memory_recent_messages = self._recent_messages(chat_session) if memory_model_config else []
+            finalize_turn_once(chat_session, reply, step_result, request.message)
+            self.db.commit()
+            turn_commit_completed = True
+            self.db.refresh(chat_session)
+            if memory_model_config:
+                self._enqueue_memory_capture(
+                    request,
+                    chat_session,
+                    reply,
+                    step_result,
+                    tool_result,
+                    memory_model_config,
+                    memory_recent_messages,
+                )
+            result = ChatTurnResponse(
+                reply=reply,
+                session_id=chat_session.id,
+                router_decision=router_decision,
+                step_result=step_result,
+                tool_result=tool_result,
+                session_state=public_session(chat_session),
             )
-        result = ChatTurnResponse(
-            reply=reply,
-            session_id=chat_session.id,
-            router_decision=router_decision,
-            step_result=step_result,
-            tool_result=tool_result,
-            session_state=public_session(chat_session),
-        )
-        yield self._stream_event(
-            "complete",
-            chat_session,
-            self._turn_payload(result.model_dump(mode="json"), user_message_id),
-        )
+            yield self._stream_event(
+                "complete",
+                chat_session,
+                self._turn_payload(result.model_dump(mode="json"), user_message_id),
+            )
+        except Exception as exc:
+            if not turn_commit_completed:
+                turn_finalized = False
+            yield from stream_failure_response(
+                "Agent Loop 出错",
+                exc,
+                "AGENT_LOOP_ERROR",
+                "请查看执行记录或服务日志定位具体原因。",
+            )
 
     def _stream_status(
         self,
@@ -2495,11 +2526,12 @@ class AgentLoop:
         return fallback_user_id
 
     def _human_handoff_tenant_admin_user_id(self, tenant_id: str) -> str | None:
-        rows = self.db.exec(
-            select(User).where(User.tenant_id == tenant_id).where(User.username.in_(("admin", "admin_demo")))
-        ).all()
-        by_username = {user.username: user.id for user in rows if user.username in {"admin", "admin_demo"}}
-        return by_username.get("admin") or by_username.get("admin_demo")
+        row = self.db.exec(
+            select(User)
+            .where(User.tenant_id == tenant_id, User.role == "admin")
+            .order_by(User.created_at)
+        ).first()
+        return row.id if row else None
 
     def _human_handoff_context_summary(self, chat_session: ChatSession) -> str:
         rows = self.db.exec(
@@ -4566,6 +4598,132 @@ class AgentLoop:
             default=str,
         )
 
+    def _tool_idempotency_config(self, tool: Tool) -> tuple[bool | None, list[str] | None]:
+        raw_config = tool.config_json if isinstance(tool.config_json, dict) else {}
+        raw_schema = tool.input_schema if isinstance(tool.input_schema, dict) else {}
+        config = raw_config.get("idempotency", raw_config.get("idempotency_policy"))
+        if config is None:
+            config = raw_schema.get("x-idempotency", raw_schema.get("x_idempotency"))
+        enabled: bool | None = None
+        key_fields: list[str] | None = None
+        if isinstance(config, dict):
+            enabled = self._idempotency_enabled_value(
+                config.get("enabled", config.get("mode", config.get("scope")))
+            )
+            fields = config.get("key_fields") or config.get("fields") or config.get("argument_fields")
+            if isinstance(fields, list):
+                key_fields = [str(item).strip() for item in fields if str(item).strip()]
+        else:
+            enabled = self._idempotency_enabled_value(config)
+
+        requires_confirmation = raw_config.get("requires_confirmation", raw_schema.get("requires_confirmation"))
+        confirmation_enabled = self._idempotency_enabled_value(requires_confirmation)
+        if enabled is None and confirmation_enabled is True:
+            enabled = True
+        return enabled, key_fields
+
+    def _idempotency_enabled_value(self, value: object) -> bool | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled", "enable", "replay", "session", "session_arguments"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled", "disable", "none", "read_only", "readonly"}:
+            return False
+        return None
+
+    def _tool_requires_idempotent_replay(self, tenant_id: str, tool_call: ToolCall) -> tuple[bool, list[str] | None]:
+        if tool_call.name.startswith(GENERAL_SKILL_TOOL_PREFIX):
+            return False, None
+        if not hasattr(self.db, "exec"):
+            return False, None
+        statement = select(Tool).where(Tool.tenant_id == tenant_id, Tool.name == tool_call.name)
+        no_autoflush = getattr(self.db, "no_autoflush", None)
+        if no_autoflush is None:
+            tool = self.db.exec(statement).first()
+        else:
+            with no_autoflush:
+                tool = self.db.exec(statement).first()
+        if not tool:
+            return False, None
+        configured, key_fields = self._tool_idempotency_config(tool)
+        if configured is not None:
+            return configured, key_fields
+        method = str(tool.method or "").upper()
+        if method not in IDEMPOTENT_WRITE_METHODS:
+            return False, None
+        if self._tool_looks_read_only(tool):
+            return False, None
+        return True, key_fields
+
+    def _tool_looks_read_only(self, tool: Tool) -> bool:
+        values = [tool.name, tool.display_name, tool.description, tool.url]
+        text = " ".join(str(value or "").lower() for value in values)
+        words = set(re.split(r"[^a-z0-9\u4e00-\u9fff]+", text))
+        if READ_ONLY_TOOL_HINTS.intersection(words):
+            return True
+        return any(hint in text for hint in READ_ONLY_TOOL_HINTS if re.search(r"[\u4e00-\u9fff]", hint))
+
+    def _idempotency_arguments(self, arguments: dict[str, Any], key_fields: list[str] | None) -> dict[str, Any]:
+        if not key_fields:
+            return arguments
+        return {field: arguments.get(field) for field in key_fields if field in arguments}
+
+    def _previous_successful_side_effect_tool_result(
+        self,
+        tenant_id: str,
+        session_id: str,
+        tool_call: ToolCall,
+    ) -> tuple[ToolResult, str] | None:
+        replay_enabled, key_fields = self._tool_requires_idempotent_replay(tenant_id, tool_call)
+        if not replay_enabled:
+            return None
+        target_signature = self._tool_signature(
+            tool_call.name,
+            self._idempotency_arguments(tool_call.arguments, key_fields),
+        )
+        rows = self.db.exec(
+            select(AgentEvent)
+            .where(
+                AgentEvent.tenant_id == tenant_id,
+                AgentEvent.session_id == session_id,
+                AgentEvent.event_type == "tool_call_finished",
+            )
+            .order_by(AgentEvent.created_at.desc())
+            .limit(200)
+        ).all()
+        for event in rows:
+            payload = event.payload_json or {}
+            if payload.get("success") is not True:
+                continue
+            payload_tool_name = str(payload.get("tool_name") or "").strip()
+            if payload_tool_name != tool_call.name:
+                continue
+            payload_tool_call = payload.get("tool_call") if isinstance(payload.get("tool_call"), dict) else {}
+            payload_arguments = payload_tool_call.get("arguments")
+            if not isinstance(payload_arguments, dict):
+                payload_arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+            replay_arguments = self._idempotency_arguments(payload_arguments, key_fields)
+            if self._tool_signature(payload_tool_name, replay_arguments) != target_signature:
+                continue
+            replay_data = payload.get("data")
+            if isinstance(replay_data, dict):
+                replay_data = {
+                    **replay_data,
+                    "idempotent_replay": True,
+                    "replayed_from_event_id": event.id,
+                }
+            else:
+                replay_data = {
+                    "result": replay_data,
+                    "idempotent_replay": True,
+                    "replayed_from_event_id": event.id,
+                }
+            return ToolResult(tool_name=tool_call.name, success=True, data=replay_data), event.id
+        return None
+
     def _execute_tool_call(
         self,
         request: ChatTurnRequest,
@@ -4574,6 +4732,37 @@ class AgentLoop:
         tool_call_id: str | None = None,
         stream_events: list[tuple[str, dict[str, object]]] | None = None,
     ) -> ToolResult:
+        replayed = self._previous_successful_side_effect_tool_result(
+            request.tenant_id,
+            chat_session.id,
+            tool_call,
+        )
+        if replayed:
+            tool_result, replayed_event_id = replayed
+            replay_payload = {
+                "tool_name": tool_call.name,
+                "tool_call": tool_call.model_dump(mode="json"),
+                "replayed_from_event_id": replayed_event_id,
+            }
+            if tool_call_id:
+                replay_payload["tool_call_id"] = tool_call_id
+            self.events.record(request.tenant_id, chat_session.id, "tool_call_reused", replay_payload)
+            finished_payload = tool_result.model_dump(mode="json")
+            if tool_call_id:
+                finished_payload["tool_call_id"] = tool_call_id
+            finished_payload["tool_call"] = tool_call.model_dump(mode="json")
+            finished_payload["idempotent_replay"] = True
+            finished_payload["replayed_from_event_id"] = replayed_event_id
+            self.events.record(
+                request.tenant_id,
+                chat_session.id,
+                "tool_call_finished",
+                finished_payload,
+            )
+            self.db.commit()
+            self.db.refresh(chat_session)
+            return tool_result
+
         started_payload = tool_call.model_dump(mode="json")
         if tool_call_id:
             started_payload["tool_call_id"] = tool_call_id

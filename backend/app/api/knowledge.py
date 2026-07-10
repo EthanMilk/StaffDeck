@@ -14,11 +14,11 @@ from sqlmodel import Session, select
 from app.agents.branching import (
     ensure_agent_private_knowledge_branch,
     ensure_open_gallery_binding,
-    get_agent,
     is_open_gallery_resource,
     knowledge_version_for_upload,
     mark_resource_open_gallery,
     mark_resource_private_for_agent,
+    user_creator_metadata,
     visible_knowledge_base_versions,
     visible_knowledge_base_version_ids,
 )
@@ -32,8 +32,6 @@ from app.db.models import (
     KnowledgeDocument,
     KnowledgeIngestJob,
     KnowledgeBase,
-    KnowledgeBaseVersion,
-    AgentKnowledgeBranch,
     ModelConfig,
     User,
     utc_now,
@@ -54,11 +52,19 @@ from app.knowledge.schema import (
 )
 from app.knowledge.okf import build_okf_for_document, create_concept_evidence_rows, parse_okf_bundle, upsert_concepts
 from app.knowledge.service import IngestPayload, KnowledgeService, bucket_read, chunk_read
-from app.security.auth import get_current_user
-from app.security.permissions import ensure_agent_scope_manager, ensure_open_gallery_admin
+from app.security.auth import ensure_current_user_tenant, get_current_user
+from app.security.permissions import (
+    ensure_agent_scope_manager,
+    ensure_open_gallery_admin,
+    require_agent_scope_viewer,
+)
 from app.security.tenant import ensure_tenant
 
-router = APIRouter(prefix="/api/enterprise/knowledge", tags=["enterprise:knowledge"])
+router = APIRouter(
+    prefix="/api/enterprise/knowledge",
+    tags=["enterprise:knowledge"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 @router.post("/documents", response_model=KnowledgeIngestJobRead)
@@ -69,8 +75,21 @@ def upload_document(
     current_user: User = Depends(get_current_user),
 ) -> KnowledgeIngestJobRead:
     ensure_tenant(db, request.tenant_id)
-    knowledge_base = _resolve_upload_knowledge_base(db, request, agent_id, current_user)
-    version = knowledge_version_for_upload(db, request.tenant_id, knowledge_base.id, agent_id)
+    creator_metadata = user_creator_metadata(current_user, request.metadata or {})
+    knowledge_base = _resolve_upload_knowledge_base(
+        db,
+        request,
+        agent_id,
+        current_user,
+        creator_metadata=creator_metadata,
+    )
+    version = knowledge_version_for_upload(
+        db,
+        request.tenant_id,
+        knowledge_base.id,
+        agent_id,
+        metadata_json=creator_metadata,
+    )
     db.commit()
     service = KnowledgeService(db)
     job = service.create_ingest_job(
@@ -81,7 +100,7 @@ def upload_document(
             filename=request.filename,
             content_base64=request.content_base64,
             title=request.title,
-            metadata=request.metadata,
+            metadata=creator_metadata,
         )
     )
     enqueue_async_job(
@@ -116,8 +135,21 @@ def import_okf_bundle(
         content_base64="",
         metadata={"okf_import": True, "source_filename": request.filename},
     )
-    knowledge_base = _resolve_upload_knowledge_base(db, upload_request, request.agent_id, current_user)
-    version = knowledge_version_for_upload(db, request.tenant_id, knowledge_base.id, request.agent_id)
+    creator_metadata = user_creator_metadata(current_user, upload_request.metadata or {})
+    knowledge_base = _resolve_upload_knowledge_base(
+        db,
+        upload_request,
+        request.agent_id,
+        current_user,
+        creator_metadata=creator_metadata,
+    )
+    version = knowledge_version_for_upload(
+        db,
+        request.tenant_id,
+        knowledge_base.id,
+        request.agent_id,
+        metadata_json=creator_metadata,
+    )
     document = KnowledgeDocument(
         tenant_id=request.tenant_id,
         knowledge_base_id=knowledge_base.id,
@@ -127,6 +159,7 @@ def import_okf_bundle(
         title=Path(request.filename).stem or request.filename,
         status="processing",
         metadata_json={
+            **creator_metadata,
             "okf_import": True,
             "document_card": {
                 "title": Path(request.filename).stem or request.filename,
@@ -183,6 +216,7 @@ def _resolve_upload_knowledge_base(
     request: KnowledgeDocumentUploadRequest,
     agent_id: str | None,
     current_user: object | None = None,
+    creator_metadata: dict[str, Any] | None = None,
 ) -> KnowledgeBase:
     agent = ensure_agent_scope_manager(db, request.tenant_id, agent_id, current_user)
     if request.knowledge_base_id:
@@ -207,7 +241,7 @@ def _resolve_upload_knowledge_base(
         description=f"由文档 {request.filename} 创建",
         status="active",
         metadata_json={
-            **(request.metadata or {}),
+            **(creator_metadata or user_creator_metadata(current_user, request.metadata or {})),
             "created_from_document_upload": True,
             "source_filename": request.filename,
         },
@@ -216,11 +250,24 @@ def _resolve_upload_knowledge_base(
     db.flush()
 
     if agent and not agent.is_overall:
-        mark_resource_private_for_agent(knowledge_base, agent.id)
-        ensure_agent_private_knowledge_branch(db, request.tenant_id, agent.id, knowledge_base)
+        mark_resource_private_for_agent(knowledge_base, agent.id, creator_metadata)
+        ensure_agent_private_knowledge_branch(
+            db,
+            request.tenant_id,
+            agent.id,
+            knowledge_base,
+            metadata_json=creator_metadata,
+        )
     else:
-        mark_resource_open_gallery(knowledge_base)
-        ensure_open_gallery_binding(db, request.tenant_id, "knowledge_base", knowledge_base.id, "active")
+        mark_resource_open_gallery(knowledge_base, creator_metadata)
+        ensure_open_gallery_binding(
+            db,
+            request.tenant_id,
+            "knowledge_base",
+            knowledge_base.id,
+            "active",
+            metadata_json=creator_metadata,
+        )
     return knowledge_base
 
 
@@ -245,7 +292,7 @@ def _unique_knowledge_base_name(db: Session, tenant_id: str, base_name: str) -> 
         index += 1
 
 
-@router.get("/jobs", response_model=list[KnowledgeIngestJobRead])
+@router.get("/jobs", response_model=list[KnowledgeIngestJobRead], dependencies=[Depends(require_agent_scope_viewer)])
 def list_jobs(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
@@ -254,12 +301,14 @@ def list_jobs(
     db: Session = Depends(get_session),
 ) -> list[KnowledgeIngestJobRead]:
     ensure_tenant(db, tenant_id)
-    statement = select(KnowledgeIngestJob).where(KnowledgeIngestJob.tenant_id == tenant_id)
-    if agent_id:
-        visible_version_ids = visible_knowledge_base_version_ids(db, tenant_id, agent_id)
-        if not visible_version_ids:
-            return []
-        statement = statement.where(KnowledgeIngestJob.knowledge_base_version_id.in_(visible_version_ids))
+    KnowledgeService(db).finalize_stale_cancel_requested_jobs(tenant_id)
+    visible_version_ids = visible_knowledge_base_version_ids(db, tenant_id, agent_id, include_inactive=True)
+    if not visible_version_ids:
+        return []
+    statement = select(KnowledgeIngestJob).where(
+        KnowledgeIngestJob.tenant_id == tenant_id,
+        KnowledgeIngestJob.knowledge_base_version_id.in_(visible_version_ids),
+    )
     if status:
         statuses = [item.strip() for item in status.split(",") if item.strip()]
         if statuses:
@@ -270,12 +319,19 @@ def list_jobs(
     return [job_read(row) for row in rows]
 
 
-@router.get("/jobs/{job_id}", response_model=KnowledgeIngestJobRead)
-def get_job(job_id: str, tenant_id: str = Query(...), db: Session = Depends(get_session)) -> KnowledgeIngestJobRead:
+@router.get("/jobs/{job_id}", response_model=KnowledgeIngestJobRead, dependencies=[Depends(require_agent_scope_viewer)])
+def get_job(
+    job_id: str,
+    tenant_id: str = Query(...),
+    agent_id: str | None = Query(None),
+    db: Session = Depends(get_session),
+) -> KnowledgeIngestJobRead:
     ensure_tenant(db, tenant_id)
     job = db.get(KnowledgeIngestJob, job_id)
     if not job or job.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Knowledge ingest job not found")
+    _ensure_knowledge_version_visible(db, tenant_id, job.knowledge_base_version_id, agent_id)
+    KnowledgeService(db).finalize_stale_cancel_requested_job(job)
     return job_read(job)
 
 
@@ -286,6 +342,7 @@ def cancel_job(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> KnowledgeIngestJobRead:
+    ensure_current_user_tenant(tenant_id, current_user)
     ensure_tenant(db, tenant_id)
     existing = db.get(KnowledgeIngestJob, job_id)
     if existing and existing.tenant_id == tenant_id:
@@ -296,7 +353,7 @@ def cancel_job(
     return job_read(job)
 
 
-@router.get("/documents", response_model=list[KnowledgeDocumentRead])
+@router.get("/documents", response_model=list[KnowledgeDocumentRead], dependencies=[Depends(require_agent_scope_viewer)])
 def list_documents(
     tenant_id: str = Query(...),
     knowledge_base_id: str | None = Query(None),
@@ -305,82 +362,35 @@ def list_documents(
     db: Session = Depends(get_session),
 ) -> list[KnowledgeDocumentRead]:
     ensure_tenant(db, tenant_id)
-    visible_version_ids = visible_knowledge_base_version_ids(db, tenant_id, agent_id)
+    visible_versions = visible_knowledge_base_versions(db, tenant_id, agent_id, include_inactive=True)
+    if not visible_versions:
+        return []
+    if knowledge_base_id and knowledge_base_id not in visible_versions:
+        return []
     stmt = select(KnowledgeDocument).where(KnowledgeDocument.tenant_id == tenant_id)
     if include_all_versions:
-        if knowledge_base_id:
-            stmt = stmt.where(KnowledgeDocument.knowledge_base_id == knowledge_base_id)
-        elif agent_id:
-            agent = get_agent(db, tenant_id, agent_id)
-            if agent and not agent.is_overall:
-                branches = db.exec(
-                    select(AgentKnowledgeBranch).where(
-                        AgentKnowledgeBranch.tenant_id == tenant_id,
-                        AgentKnowledgeBranch.agent_id == agent.id,
-                        AgentKnowledgeBranch.status != "deleted",
-                    )
-                ).all()
-                knowledge_base_ids = [branch.knowledge_base_id for branch in branches]
-                stmt = stmt.where(
-                    KnowledgeDocument.knowledge_base_id.in_(knowledge_base_ids)
-                    if knowledge_base_ids
-                    else KnowledgeDocument.knowledge_base_id == "__none__"
-                )
-            else:
-                visible_knowledge_base_ids = list(visible_knowledge_base_versions(db, tenant_id, agent_id).keys())
-                stmt = stmt.where(
-                    KnowledgeDocument.knowledge_base_id.in_(visible_knowledge_base_ids)
-                    if visible_knowledge_base_ids
-                    else KnowledgeDocument.knowledge_base_id == "__none__"
-                )
-        else:
-            visible_knowledge_base_ids = list(visible_knowledge_base_versions(db, tenant_id, agent_id).keys())
-            stmt = stmt.where(
-                KnowledgeDocument.knowledge_base_id.in_(visible_knowledge_base_ids)
-                if visible_knowledge_base_ids
-                else KnowledgeDocument.knowledge_base_id == "__none__"
-            )
-    elif knowledge_base_id:
-        stmt = stmt.where(KnowledgeDocument.knowledge_base_id == knowledge_base_id)
-    elif agent_id:
-        agent = get_agent(db, tenant_id, agent_id)
-        if agent and not agent.is_overall:
-            branches = db.exec(
-                select(AgentKnowledgeBranch).where(
-                    AgentKnowledgeBranch.tenant_id == tenant_id,
-                    AgentKnowledgeBranch.agent_id == agent.id,
-                )
-            ).all()
-            version_ids = [
-                row.id
-                for row in db.exec(
-                    select(KnowledgeBaseVersion).where(
-                        KnowledgeBaseVersion.tenant_id == tenant_id,
-                        KnowledgeBaseVersion.knowledge_base_id.in_([branch.knowledge_base_id for branch in branches])
-                        if branches
-                        else KnowledgeBaseVersion.knowledge_base_id == "__none__",
-                    )
-                ).all()
-                if any(branch.knowledge_base_id == row.knowledge_base_id and branch.head_version == row.version for branch in branches)
-            ]
-        else:
-            version_ids = visible_version_ids
-        stmt = stmt.where(
-            KnowledgeDocument.knowledge_base_version_id.in_(version_ids)
-            if version_ids
-            else KnowledgeDocument.knowledge_base_version_id == "__none__"
-        )
+        visible_knowledge_base_ids = [knowledge_base_id] if knowledge_base_id else list(visible_versions)
+        stmt = stmt.where(KnowledgeDocument.knowledge_base_id.in_(visible_knowledge_base_ids))
+    else:
+        visible_version_ids = [
+            version.id
+            for base_id, version in visible_versions.items()
+            if not knowledge_base_id or base_id == knowledge_base_id
+        ]
+        stmt = stmt.where(KnowledgeDocument.knowledge_base_version_id.in_(visible_version_ids))
     rows = db.exec(stmt.order_by(KnowledgeDocument.created_at.desc())).all()
     return [document_read(row) for row in rows]
 
 
-@router.get("/documents/{document_id}", response_model=KnowledgeDocumentRead)
+@router.get("/documents/{document_id}", response_model=KnowledgeDocumentRead, dependencies=[Depends(require_agent_scope_viewer)])
 def get_document(
     document_id: str,
     tenant_id: str = Query(...),
+    agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
 ) -> KnowledgeDocumentRead:
     row = _get_document(db, tenant_id, document_id)
+    _ensure_knowledge_version_visible(db, tenant_id, row.knowledge_base_version_id, agent_id)
     return document_read(row)
 
 
@@ -412,13 +422,19 @@ def update_document(
     return document_read(row)
 
 
-@router.get("/documents/{document_id}/buckets", response_model=list[KnowledgeBucketRead])
+@router.get(
+    "/documents/{document_id}/buckets",
+    response_model=list[KnowledgeBucketRead],
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
 def get_document_buckets(
     document_id: str,
     tenant_id: str = Query(...),
+    agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
 ) -> list[KnowledgeBucketRead]:
-    _get_document(db, tenant_id, document_id)
+    document = _get_document(db, tenant_id, document_id)
+    _ensure_knowledge_version_visible(db, tenant_id, document.knowledge_base_version_id, agent_id)
     rows = _safe_document_bucket_rows(db, tenant_id, document_id)
     chunk_counts = dict(
         db.exec(
@@ -464,16 +480,22 @@ def update_bucket(
     return bucket_read_with_stats(row, int(chunk_count or 0))
 
 
-@router.get("/buckets/{bucket_id}/chunks", response_model=list[KnowledgeChunkRead])
+@router.get(
+    "/buckets/{bucket_id}/chunks",
+    response_model=list[KnowledgeChunkRead],
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
 def get_bucket_chunks(
     bucket_id: str,
     tenant_id: str = Query(...),
+    agent_id: str | None = Query(None),
     db: Session = Depends(get_session),
 ) -> list[KnowledgeChunkRead]:
     ensure_tenant(db, tenant_id)
     bucket = db.get(KnowledgeBucket, bucket_id)
     if not bucket or bucket.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Knowledge bucket not found")
+    _ensure_knowledge_version_visible(db, tenant_id, bucket.knowledge_base_version_id, agent_id)
     rows = _safe_bucket_chunk_rows(db, tenant_id, bucket_id)
     return [_chunk_read_mapping(row) for row in rows]
 
@@ -513,15 +535,26 @@ def update_chunk(
 def search_knowledge(
     request: KnowledgeSearchRequest,
     db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> KnowledgeSearchResponse:
+    require_agent_scope_viewer(request.tenant_id, request.agent_id, current_user, db)
     ensure_tenant(db, request.tenant_id)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
-    if request.agent_id:
-        request.knowledge_base_version_ids = visible_knowledge_base_version_ids(
-            db,
-            request.tenant_id,
-            request.agent_id,
-        )
+    visible_version_ids = visible_knowledge_base_version_ids(
+        db,
+        request.tenant_id,
+        request.agent_id,
+    )
+    if not visible_version_ids:
+        trace = [{"phase": "no_visible_knowledge", "message": "当前范围没有可见知识"}]
+        return KnowledgeSearchResponse(trace=trace, route_trace=trace)
+    if request.knowledge_base_version_ids:
+        allowed_ids = set(visible_version_ids)
+        request.knowledge_base_version_ids = [
+            version_id for version_id in request.knowledge_base_version_ids if version_id in allowed_ids
+        ]
+    else:
+        request.knowledge_base_version_ids = visible_version_ids
     return KnowledgeService(db).search(request, model_config)
 
 
@@ -544,7 +577,11 @@ def _get_request_model(db: Session, tenant_id: str, model_config_id: str | None 
     return model_config
 
 
-@router.get("/discoveries", response_model=list[KnowledgeDiscoveryRead])
+@router.get(
+    "/discoveries",
+    response_model=list[KnowledgeDiscoveryRead],
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
 def list_discoveries(
     tenant_id: str = Query(...),
     knowledge_base_id: str | None = Query(None),
@@ -553,16 +590,20 @@ def list_discoveries(
     db: Session = Depends(get_session),
 ) -> list[KnowledgeDiscoveryRead]:
     ensure_tenant(db, tenant_id)
-    visible_version_ids = visible_knowledge_base_version_ids(db, tenant_id, agent_id)
-    stmt = select(KnowledgeDiscoverySuggestion).where(KnowledgeDiscoverySuggestion.tenant_id == tenant_id)
-    if knowledge_base_id:
-        stmt = stmt.where(KnowledgeDiscoverySuggestion.knowledge_base_id == knowledge_base_id)
-    elif agent_id:
-        stmt = stmt.where(
-            KnowledgeDiscoverySuggestion.knowledge_base_version_id.in_(visible_version_ids)
-            if visible_version_ids
-            else KnowledgeDiscoverySuggestion.knowledge_base_version_id == "__none__"
-        )
+    visible_versions = visible_knowledge_base_versions(db, tenant_id, agent_id, include_inactive=True)
+    if knowledge_base_id and knowledge_base_id not in visible_versions:
+        return []
+    visible_version_ids = [
+        version.id
+        for base_id, version in visible_versions.items()
+        if not knowledge_base_id or base_id == knowledge_base_id
+    ]
+    if not visible_version_ids:
+        return []
+    stmt = select(KnowledgeDiscoverySuggestion).where(
+        KnowledgeDiscoverySuggestion.tenant_id == tenant_id,
+        KnowledgeDiscoverySuggestion.knowledge_base_version_id.in_(visible_version_ids),
+    )
     if status:
         stmt = stmt.where(KnowledgeDiscoverySuggestion.status == status)
     rows = db.exec(stmt.order_by(KnowledgeDiscoverySuggestion.created_at.desc())).all()
@@ -867,6 +908,18 @@ def _get_document(db: Session, tenant_id: str, document_id: str) -> KnowledgeDoc
     if not row or row.tenant_id != tenant_id:
         raise HTTPException(status_code=404, detail="Knowledge document not found")
     return row
+
+
+def _ensure_knowledge_version_visible(
+    db: Session,
+    tenant_id: str,
+    knowledge_base_version_id: str | None,
+    agent_id: str | None,
+) -> None:
+    if not knowledge_base_version_id or knowledge_base_version_id not in set(
+        visible_knowledge_base_version_ids(db, tenant_id, agent_id, include_inactive=True)
+    ):
+        raise HTTPException(status_code=404, detail="Knowledge resource not found")
 
 
 def _get_discovery(db: Session, tenant_id: str, suggestion_id: str) -> KnowledgeDiscoverySuggestion:

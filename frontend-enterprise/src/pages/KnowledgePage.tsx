@@ -416,7 +416,9 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
     setSearchResult(null);
     try {
       const [rows] = await Promise.all([
-        api.get<KnowledgeBucketRead[]>(`/api/enterprise/knowledge/documents/${document.id}/buckets?tenant_id=${TENANT_ID}`),
+        api.get<KnowledgeBucketRead[]>(
+          `/api/enterprise/knowledge/documents/${document.id}/buckets?tenant_id=${TENANT_ID}${effectiveAgentId ? `&agent_id=${encodeURIComponent(effectiveAgentId)}` : ''}`,
+        ),
         loadOkfConcepts(document.knowledge_base_id, false),
       ]);
       setBuckets(rows);
@@ -850,7 +852,9 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
     setEditingBucket(row);
     setBucketDraft({ title: row.title, summary: row.summary });
     try {
-      const chunks = await api.get<KnowledgeChunkRead[]>(`/api/enterprise/knowledge/buckets/${row.id}/chunks?tenant_id=${TENANT_ID}`);
+      const chunks = await api.get<KnowledgeChunkRead[]>(
+        `/api/enterprise/knowledge/buckets/${row.id}/chunks?tenant_id=${TENANT_ID}${effectiveAgentId ? `&agent_id=${encodeURIComponent(effectiveAgentId)}` : ''}`,
+      );
       setBucketChunks(chunks);
       setChunkDrafts(
         Object.fromEntries(chunks.map((chunk) => [chunk.id, { content: chunk.content, summary: chunk.summary || '' }])),
@@ -1161,6 +1165,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
               buckets={buckets}
               okfConcepts={okfConcepts}
               onEditDocument={openEditDocument}
+              onEditBucket={openBucketEditor}
               onViewConcept={openConceptViewer}
               onEditConcept={openConceptEditor}
             />
@@ -1655,7 +1660,9 @@ export function KnowledgeAddPage({ currentUser }: KnowledgePageProps = {}) {
     const timer = window.setInterval(() => {
       activeJobs.forEach((job) => {
         void api
-          .get<KnowledgeIngestJobRead>(`/api/enterprise/knowledge/jobs/${job.id}?tenant_id=${TENANT_ID}`)
+          .get<KnowledgeIngestJobRead>(
+            `/api/enterprise/knowledge/jobs/${job.id}?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`,
+          )
           .then((next) => {
             setJobs((prev) => ({ ...prev, [next.id]: next }));
             if (TERMINAL_KNOWLEDGE_JOB_STATUSES.has(next.status)) {
@@ -1893,7 +1900,7 @@ function KnowledgeJobCard({
   const metadata = job.metadata || {};
   const stageLabel = stringFromMetadata(metadata.stage_label) || stageLabelFallback(job.stage);
   const stageDetail = stringFromMetadata(metadata.stage_detail);
-  const cancellable = ['queued', 'running', 'cancel_requested'].includes(job.status);
+  const cancellable = ['queued', 'running'].includes(job.status);
   return (
     <div className="knowledge-job">
       <div className="knowledge-job-head">
@@ -1909,11 +1916,11 @@ function KnowledgeJobCard({
               variant="outline"
               size="sm"
               className={OUTLINE_ACTION_BUTTON_SM_CLASS}
-              disabled={cancelling || job.status === 'cancel_requested'}
+              disabled={cancelling}
               onClick={() => onCancel(job)}
             >
               <CloseOutlined />
-              {cancelling || job.status === 'cancel_requested' ? '取消中' : '取消'}
+              {cancelling ? '取消中' : '取消'}
             </UIButton>
           )}
         </div>
@@ -2047,8 +2054,8 @@ function documentSourceMarkdown(document: KnowledgeDocumentRead, fallback: strin
   return sourceBlocks.length ? sourceBlocks.join('\n\n') : fallback;
 }
 
-type KnowledgeDetailView = 'document' | 'sections' | 'wiki';
-type KnowledgeContentView = 'sections' | 'wiki';
+type KnowledgeDetailView = 'document' | 'sections' | 'wiki' | 'evidence';
+type KnowledgeContentView = 'sections' | 'wiki' | 'evidence';
 const STRUCTURE_PREVIEW_LIMIT = 8;
 const OKF_PREVIEW_LIMIT = 8;
 
@@ -2059,11 +2066,22 @@ type WikiIndexGroup = {
   concepts: KnowledgeConceptRead[];
 };
 
+type KnowledgeOverviewItem = {
+  key: string;
+  title: string;
+  summary: string;
+  concept?: KnowledgeConceptRead;
+  indexGroup?: WikiIndexGroup;
+  bucket?: KnowledgeBucketRead;
+};
+
 function 目录索引Overview({
   document,
   knowledgeBase,
+  buckets,
   okfConcepts,
   onEditDocument,
+  onEditBucket,
   onViewConcept,
   onEditConcept,
 }: {
@@ -2072,12 +2090,13 @@ function 目录索引Overview({
   buckets: KnowledgeBucketRead[];
   okfConcepts: KnowledgeConceptRead[];
   onEditDocument: (document: KnowledgeDocumentRead) => void;
+  onEditBucket: (bucket: KnowledgeBucketRead) => void;
   onViewConcept: (concept: KnowledgeConceptRead) => void;
   onEditConcept: (concept: KnowledgeConceptRead) => void;
 }) {
   const [detailView, setDetailView] = useState<KnowledgeDetailView | null>(null);
   const [detailFocusKey, setDetailFocusKey] = useState<string | null>(null);
-  const [activeContentView, setActiveContentView] = useState<KnowledgeContentView>('sections');
+  const [activeContentView, setActiveContentView] = useState<KnowledgeContentView>('evidence');
   const metadata = document.metadata || {};
   const documentCard = isRecord(metadata.document_card) ? metadata.document_card : {};
   const wikiStructureConcepts = useMemo(() => sortWikiConcepts(okfConcepts), [okfConcepts]);
@@ -2087,6 +2106,15 @@ function 目录索引Overview({
   const documentTitle = String(documentCard.title || document.title || knowledgeBase?.name || document.filename);
   const documentSummary = String(documentCard.summary || '暂无文档摘要');
   const sourceMarkdown = useMemo(() => documentSourceMarkdown(document, documentSummary), [document, documentSummary]);
+  const totalChunkCount = buckets.reduce((sum, bucket) => sum + (bucket.chunk_count || 0), 0) || document.chunk_count || 0;
+  const evidenceBuckets = useMemo(
+    () => buckets.filter((bucket) => bucket.chunk_count > 0 || bucketContentMarkdown(bucket).trim()),
+    [buckets],
+  );
+  const previewEvidence = useMemo(
+    () => previewEvidenceItems(buckets, totalChunkCount, OKF_PREVIEW_LIMIT),
+    [buckets, totalChunkCount],
+  );
   const openDetail = (view: KnowledgeDetailView, focusKey?: string) => {
     setDetailFocusKey(focusKey || null);
     setDetailView(view);
@@ -2119,7 +2147,7 @@ function 目录索引Overview({
       description: string;
       count: number;
       emptyText: string;
-      items: Array<{ key: string; title: string; summary: string; concept?: KnowledgeConceptRead; indexGroup?: WikiIndexGroup }>;
+      items: KnowledgeOverviewItem[];
     }
   > = {
     sections: {
@@ -2145,6 +2173,13 @@ function 目录索引Overview({
         summary: `${conceptTypeLabel(concept.concept_type)} · ${concept.description || concept.concept_id}`,
         concept,
       })),
+    },
+    evidence: {
+      title: '引用来源',
+      description: '保留切片内容、原文片段和来源路径，用于回答溯源。',
+      count: totalChunkCount,
+      emptyText: '暂无引用来源',
+      items: previewEvidence,
     },
   };
   const activeContent = overviewContent[activeContentView];
@@ -2187,6 +2222,15 @@ function 目录索引Overview({
           >
             <span>知识图谱</span>
             <strong>{okfConcepts.length}</strong>
+          </button>
+          <button
+            type="button"
+            className={`knowledge-stat-pill ${activeContentView === 'evidence' ? 'is-active' : ''}`}
+            aria-pressed={activeContentView === 'evidence'}
+            onClick={() => setActiveContentView('evidence')}
+          >
+            <span>引用来源</span>
+            <strong>{totalChunkCount}</strong>
           </button>
         </div>
       </div>
@@ -2238,6 +2282,10 @@ function 目录索引Overview({
                     onViewConcept(entry.concept);
                     return;
                   }
+                  if (activeContentView === 'evidence' && entry.bucket) {
+                    openContentDetail('evidence', entry.bucket.id);
+                    return;
+                  }
                   openContentDetail(activeContentView, entry.key);
                 }}
                 title={
@@ -2245,6 +2293,8 @@ function 目录索引Overview({
                     ? '查看目录下的知识图谱'
                     : (activeContentView === 'sections' || activeContentView === 'wiki') && entry.concept
                       ? '查看知识图谱'
+                      : activeContentView === 'evidence'
+                        ? '查看引用来源'
                       : '查看详情'
                 }
               >
@@ -2306,6 +2356,10 @@ function 目录索引Overview({
                 <span>知识图谱</span>
                 <strong>{okfConcepts.length}</strong>
               </button>
+              <button type="button" className="knowledge-stat-pill" onClick={() => openDetail('evidence')}>
+                <span>引用来源</span>
+                <strong>{totalChunkCount}</strong>
+              </button>
             </div>
           </div>
         )}
@@ -2339,6 +2393,53 @@ function 目录索引Overview({
                   </div>
                 </section>
               ))
+            )}
+          </div>
+        )}
+
+        {detailView === 'evidence' && (
+          <div className="knowledge-concept-list">
+            {evidenceBuckets.length === 0 ? (
+              <EmptyState description="暂无引用来源" />
+            ) : (
+              evidenceBuckets.map((bucket) => {
+                const contentMarkdown = bucketContentMarkdown(bucket);
+                return (
+                  <section
+                    className="knowledge-concept-card knowledge-detail-target"
+                    key={bucket.id}
+                    data-detail-key={bucket.id}
+                  >
+                    <div className="knowledge-concept-card-head">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-[8px]">
+                          <KTag color="green">引用来源</KTag>
+                          {bucketStatusTag(bucket)}
+                          <KTag>{bucket.chunk_count} 个切片</KTag>
+                        </div>
+                        <h5 className="mt-[6px] mb-0 text-[15px] font-semibold text-foreground">
+                          {bucket.title || bucket.bucket_key || '引用来源'}
+                        </h5>
+                      </div>
+                      <UIButton
+                        variant="outline"
+                        size="sm"
+                        onClick={() => onEditBucket(bucket)}
+                      >
+                        <EditOutlined />
+                        编辑
+                      </UIButton>
+                    </div>
+                    {bucket.summary ? (
+                      <p className="my-[6px] text-[13px] leading-[1.65] text-[#858b9c]">{bucket.summary}</p>
+                    ) : null}
+                    <KnowledgeBucketLinks bucket={bucket} evidenceOnly />
+                    <section className="mt-[12px] rounded-[14px] border border-[#eceef1] bg-white p-[14px]">
+                      <MarkdownPreview markdown={contentMarkdown || '暂无可展示的切片正文，可点击编辑加载完整引用来源。'} />
+                    </section>
+                  </section>
+                );
+              })
             )}
           </div>
         )}
@@ -2555,6 +2656,7 @@ function knowledgeDetailTitle(view: KnowledgeDetailView | null) {
   if (view === 'document') return '文档详情';
   if (view === 'sections') return '目录索引 目录';
   if (view === 'wiki') return '知识图谱';
+  if (view === 'evidence') return '引用来源';
   return '知识详情';
 }
 
@@ -2575,6 +2677,15 @@ function bucketRepresentativeChunks(bucket: KnowledgeBucketRead) {
     .slice(0, 12);
 }
 
+function bucketContentMarkdown(bucket: KnowledgeBucketRead): string {
+  const metadata = bucket.metadata || {};
+  const content = stringFromMetadata(metadata.content).trim();
+  if (content) return content;
+  const excerpt = stringFromMetadata(metadata.excerpt).trim();
+  if (excerpt) return excerpt;
+  return bucket.summary || '';
+}
+
 function previewRepresentativeChunkIds(buckets: KnowledgeBucketRead[]) {
   const ids: string[] = [];
   buckets.forEach((bucket) => {
@@ -2592,12 +2703,14 @@ function previewEvidenceItems(buckets: KnowledgeBucketRead[], chunkCount: number
         .map((section) => String(section))
         .filter(Boolean)
         .slice(0, 2);
+      const contentPreview = bucketContentMarkdown(bucket).replace(/\s+/g, ' ').trim().slice(0, 180);
       return {
         key: bucket.id,
         title: bucket.title || bucket.bucket_key || '引用来源',
-        summary: sourceSections.length
+        summary: contentPreview || (sourceSections.length
           ? `${bucket.chunk_count} 个引用来源，覆盖 ${sourceSections.join(' / ')}`
-          : `${bucket.chunk_count} 个引用来源，已完成桶级映射。`,
+          : `${bucket.chunk_count} 个引用来源，已完成桶级映射。`),
+        bucket,
       };
     });
   if (bucketItems.length > 0) return bucketItems;

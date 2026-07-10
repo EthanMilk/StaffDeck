@@ -1,8 +1,8 @@
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.api.memories import clear_my_memories
-from app.db.models import ChatSession, MemoryRecord, ModelConfig, Tenant, User
+from app.api.memories import clear_my_memories, list_memories
+from app.db.models import AgentProfile, ChatSession, MemoryRecord, ModelConfig, Tenant, User
 from app.llm.client import LLMClient
 from app.memory.service import MemoryService, memory_rows_for_read
 from app.session.session_schema import ChatTurnRequest, StepAgentResult
@@ -250,6 +250,157 @@ def test_clear_my_memories_scopes_to_current_user_and_agent() -> None:
         "其他用户同员工记忆",
         "原始对话记录不清理",
         "当前用户其他员工记忆",
+    ]
+
+
+def test_list_memories_for_gallery_agent_only_returns_current_user_for_non_creator() -> None:
+    with _test_session() as db:
+        owner = User(id="owner_user", tenant_id="tenant_demo", username="owner", password_hash="hash")
+        viewer = User(id="viewer_user", tenant_id="tenant_demo", username="viewer", password_hash="hash")
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(owner)
+        db.add(viewer)
+        db.add(
+            AgentProfile(
+                id="agent_gallery",
+                tenant_id="tenant_demo",
+                name="广场员工",
+                status="active",
+                metadata_json={
+                    "owner_user_id": owner.id,
+                    "owner_username": owner.username,
+                    "published_to_gallery": True,
+                },
+            )
+        )
+        db.add_all(
+            [
+                MemoryRecord(
+                    tenant_id="tenant_demo",
+                    user_id=viewer.id,
+                    username=viewer.username,
+                    kind="profile",
+                    content="当前访问者自己的记忆",
+                    metadata_json={"agent_id": "agent_gallery"},
+                ),
+                MemoryRecord(
+                    tenant_id="tenant_demo",
+                    user_id="other_user",
+                    username="other",
+                    kind="profile",
+                    content="其他用户隐私记忆",
+                    metadata_json={"agent_id": "agent_gallery"},
+                ),
+            ]
+        )
+        db.commit()
+
+        result = list_memories(
+            tenant_id="tenant_demo",
+            agent_id="agent_gallery",
+            user_id=None,
+            username=None,
+            q=None,
+            limit=100,
+            current_user=viewer,
+            db=db,
+        )
+
+    assert [row["content"] for row in result] == ["当前访问者自己的记忆"]
+
+
+def test_list_memories_non_creator_cannot_filter_into_other_user_memories() -> None:
+    with _test_session() as db:
+        owner = User(id="owner_user", tenant_id="tenant_demo", username="owner", password_hash="hash")
+        viewer = User(id="viewer_user", tenant_id="tenant_demo", username="viewer", password_hash="hash")
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(owner)
+        db.add(viewer)
+        db.add(
+            AgentProfile(
+                id="agent_gallery",
+                tenant_id="tenant_demo",
+                name="广场员工",
+                status="active",
+                metadata_json={"owner_user_id": owner.id, "owner_username": owner.username},
+            )
+        )
+        db.add(
+            MemoryRecord(
+                tenant_id="tenant_demo",
+                user_id="other_user",
+                username="other",
+                kind="profile",
+                content="其他用户隐私记忆",
+                metadata_json={"agent_id": "agent_gallery"},
+            )
+        )
+        db.commit()
+
+        result = list_memories(
+            tenant_id="tenant_demo",
+            agent_id="agent_gallery",
+            user_id="other_user",
+            username=None,
+            q=None,
+            limit=100,
+            current_user=viewer,
+            db=db,
+        )
+
+    assert result == []
+
+
+def test_list_memories_agent_creator_can_view_all_users_for_owned_agent() -> None:
+    with _test_session() as db:
+        owner = User(id="owner_user", tenant_id="tenant_demo", username="owner", password_hash="hash")
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(owner)
+        db.add(
+            AgentProfile(
+                id="agent_owned",
+                tenant_id="tenant_demo",
+                name="创建者员工",
+                status="active",
+                metadata_json={"owner_user_id": owner.id, "owner_username": owner.username},
+            )
+        )
+        db.add_all(
+            [
+                MemoryRecord(
+                    tenant_id="tenant_demo",
+                    user_id=owner.id,
+                    username=owner.username,
+                    kind="profile",
+                    content="创建者自己的记忆",
+                    metadata_json={"agent_id": "agent_owned"},
+                ),
+                MemoryRecord(
+                    tenant_id="tenant_demo",
+                    user_id="other_user",
+                    username="other",
+                    kind="profile",
+                    content="其他用户对该员工的记忆",
+                    metadata_json={"agent_id": "agent_owned"},
+                ),
+            ]
+        )
+        db.commit()
+
+        result = list_memories(
+            tenant_id="tenant_demo",
+            agent_id="agent_owned",
+            user_id=None,
+            username=None,
+            q=None,
+            limit=100,
+            current_user=owner,
+            db=db,
+        )
+
+    assert sorted(row["content"] for row in result) == [
+        "其他用户对该员工的记忆",
+        "创建者自己的记忆",
     ]
 
 

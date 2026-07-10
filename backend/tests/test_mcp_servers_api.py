@@ -12,7 +12,7 @@ from app.api.tools import (
     list_tools,
     sync_mcp_tools,
 )
-from app.db.models import MCPServer, Tenant, Tool
+from app.db.models import MCPServer, Tenant, Tool, User
 from app.db.models import AgentProfile, AgentResourceBinding
 from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import (
@@ -22,6 +22,14 @@ from app.tools.tool_schema import (
     MCPSyncRequest,
     ToolCall,
 )
+
+
+def _admin_user() -> User:
+    return User(id="user_admin", tenant_id="tenant_demo", username="ops", role="admin", password_hash="test")
+
+
+def _member_user() -> User:
+    return User(id="user_member", tenant_id="tenant_demo", username="member", role="member", password_hash="test")
 
 
 def test_discover_builtin_mcp_server_lists_tools() -> None:
@@ -35,6 +43,7 @@ def test_discover_builtin_mcp_server_lists_tools() -> None:
                 connection=MCPServerConnection(transport="builtin"),
             ),
             db,
+            _member_user(),
         )
 
         assert response.success is True
@@ -59,6 +68,7 @@ def test_discover_stdio_mcp_server_lists_tools() -> None:
                 ),
             ),
             db,
+            _member_user(),
         )
 
         assert response.success is True
@@ -80,12 +90,14 @@ def test_sync_mcp_tools_imports_tools_and_executes() -> None:
                 connection=MCPServerConnection(transport="builtin"),
             ),
             db,
+            _admin_user(),
         )
 
         sync = sync_mcp_tools(
             server.id,
             MCPSyncRequest(tenant_id="tenant_demo", tool_names=["echo"]),
             db,
+            current_user=_admin_user(),
         )
 
         assert sync.success is True
@@ -136,6 +148,7 @@ def test_sync_mcp_tools_scoped_to_employee_binds_privately() -> None:
                 connection=MCPServerConnection(transport="builtin"),
             ),
             db,
+            _admin_user(),
         )
 
         sync = sync_mcp_tools(
@@ -143,6 +156,7 @@ def test_sync_mcp_tools_scoped_to_employee_binds_privately() -> None:
             MCPSyncRequest(tenant_id="tenant_demo", tool_names=["echo"]),
             db,
             agent_id="agent_employee",
+            current_user=_admin_user(),
         )
         assert sync.success is True
         assert sync.imported == ["echo"]
@@ -170,13 +184,24 @@ def test_sync_is_idempotent_and_updates_schema() -> None:
                 connection=MCPServerConnection(transport="builtin"),
             ),
             db,
+            _admin_user(),
         )
 
-        first = sync_mcp_tools(server.id, MCPSyncRequest(tenant_id="tenant_demo"), db)
+        first = sync_mcp_tools(
+            server.id,
+            MCPSyncRequest(tenant_id="tenant_demo"),
+            db,
+            current_user=_admin_user(),
+        )
         assert first.success is True
         assert len(first.imported) == 3
 
-        second = sync_mcp_tools(server.id, MCPSyncRequest(tenant_id="tenant_demo"), db)
+        second = sync_mcp_tools(
+            server.id,
+            MCPSyncRequest(tenant_id="tenant_demo"),
+            db,
+            current_user=_admin_user(),
+        )
         assert second.success is True
         assert second.imported == []
         assert set(second.updated) == {"echo", "sum", "product_lookup"}
@@ -197,13 +222,20 @@ def test_discover_saved_server_marks_imported() -> None:
                 connection=MCPServerConnection(transport="builtin"),
             ),
             db,
+            _admin_user(),
         )
-        sync_mcp_tools(server.id, MCPSyncRequest(tenant_id="tenant_demo", tool_names=["echo"]), db)
+        sync_mcp_tools(
+            server.id,
+            MCPSyncRequest(tenant_id="tenant_demo", tool_names=["echo"]),
+            db,
+            current_user=_admin_user(),
+        )
 
         response = discover_mcp_tools(
             server.id,
             MCPDiscoverRequest(tenant_id="tenant_demo"),
             db,
+            _admin_user(),
         )
 
         assert response.success is True
@@ -225,10 +257,23 @@ def test_delete_mcp_server_removes_tools() -> None:
                 connection=MCPServerConnection(transport="builtin"),
             ),
             db,
+            _admin_user(),
         )
-        sync_mcp_tools(server.id, MCPSyncRequest(tenant_id="tenant_demo", tool_names=["echo"]), db)
+        sync_mcp_tools(
+            server.id,
+            MCPSyncRequest(tenant_id="tenant_demo", tool_names=["echo"]),
+            db,
+            current_user=_admin_user(),
+        )
 
-        result = delete_mcp_server(server.id, "tenant_demo", db, agent_id=None, remove_tools=True)
+        result = delete_mcp_server(
+            server.id,
+            "tenant_demo",
+            db,
+            agent_id=None,
+            remove_tools=True,
+            current_user=_admin_user(),
+        )
 
         assert result == {"status": "deleted"}
         assert db.get(MCPServer, server.id) is None

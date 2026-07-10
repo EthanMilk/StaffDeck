@@ -24,8 +24,8 @@ import WorkRecordTab, { dateKey } from './WorkRecordTab';
 import type { ReplyStats } from './WorkRecordTab';
 import {
   agentResourceCount,
-  canAccessEmployeeAgent,
   canManageEmployeeAgent,
+  canSelectCurrentEmployeeAgent,
   employeeCreatorNameOrAdmin,
   employeeDisplayName,
   employeeProfile,
@@ -97,7 +97,7 @@ export default function DashboardPage({
       api.get<ScheduledTaskRead[]>(`/api/enterprise/scheduled-tasks?tenant_id=${TENANT_ID}${agentId ? `&agent_id=${encodeURIComponent(agentId)}` : ''}`),
     ])
       .then(([agentRows, skillRows, generalSkillRows, kbRows, modelRows, toolRows, sessionRows, feedbackRows, taskRows]) => {
-        const visibleAgents = agentRows.filter((item) => canAccessEmployeeAgent(item, currentUser, {
+        const visibleAgents = agentRows.filter((item) => canSelectCurrentEmployeeAgent(item, currentUser, {
           activeOnly: true,
           includeOverall: isAdmin,
         }));

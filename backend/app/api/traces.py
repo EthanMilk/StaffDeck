@@ -5,17 +5,29 @@ from sqlmodel import Session, select
 
 from app.api.sessions import get_session_detail
 from app.db import get_session
-from app.db.models import AgentEvent, ChatSession, Message
+from app.db.models import AgentEvent, ChatSession, Message, User
+from app.security.auth import ensure_current_user_tenant, get_current_user
 from app.security.tenant import ensure_tenant
 
-router = APIRouter(prefix="/api/enterprise/traces", tags=["enterprise:traces"])
+router = APIRouter(
+    prefix="/api/enterprise/traces",
+    tags=["enterprise:traces"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 @router.get("")
-def list_traces(tenant_id: str = Query(...), db: Session = Depends(get_session)) -> list[dict]:
+def list_traces(
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_session),
+) -> list[dict]:
+    ensure_current_user_tenant(tenant_id, current_user)
     ensure_tenant(db, tenant_id)
     sessions = db.exec(
-        select(ChatSession).where(ChatSession.tenant_id == tenant_id).order_by(ChatSession.updated_at.desc())
+        select(ChatSession)
+        .where(ChatSession.tenant_id == tenant_id, ChatSession.user_id == current_user.id)
+        .order_by(ChatSession.updated_at.desc())
     ).all()
     traces: list[dict] = []
     for chat_session in sessions:
@@ -55,7 +67,12 @@ def list_traces(tenant_id: str = Query(...), db: Session = Depends(get_session))
 def get_trace(
     session_id: str,
     tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_session),
 ) -> dict:
-    return get_session_detail(session_id=session_id, tenant_id=tenant_id, db=db)
-
+    return get_session_detail(
+        session_id=session_id,
+        tenant_id=tenant_id,
+        current_user=current_user,
+        db=db,
+    )

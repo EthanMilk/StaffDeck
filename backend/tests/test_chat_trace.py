@@ -76,7 +76,7 @@ def test_turn_trace_uses_router_skill_hint_when_events_have_turn_id() -> None:
         if line["kind"] == "skill" and "购买商品流程" in line["text"]
     ]
     assert skill_lines
-    assert skill_lines[0]["text"] == "推进技能 购买商品流程"
+    assert skill_lines[0]["text"] == "推进SOP 购买商品流程"
     assert skill_lines[0]["detail"] == "step end"
 
 
@@ -209,6 +209,81 @@ def test_turn_trace_keeps_running_routing_status_for_refresh() -> None:
     assert any(
         line["id"] == "decision_router" and line["text"] == "判断意图" and line["state"] == "running"
         for line in traces[0]["lines"]
+    )
+
+
+def test_turn_trace_marks_model_and_intermediate_errors_failed() -> None:
+    started_at = datetime(2026, 7, 9, 12, 0, 0)
+    messages = [
+        Message(
+            id="msg_user",
+            tenant_id="tenant_demo",
+            session_id="session_error",
+            role="user",
+            content="总结一下",
+            created_at=started_at,
+        )
+    ]
+    events = [
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_error",
+            event_type="user_message_received",
+            payload_json={"message_id": "msg_user", "message": "总结一下"},
+            created_at=started_at,
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_error",
+            event_type="stream_status",
+            payload_json={
+                "turn_id": "msg_user",
+                "user_message_id": "msg_user",
+                "phase": "error",
+                "code": "LLM_ERROR",
+                "message": "upstream timeout",
+                "text": "模型调用失败",
+            },
+            created_at=started_at + timedelta(milliseconds=100),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_error",
+            event_type="general_skill_trace",
+            payload_json={
+                "turn_id": "msg_user",
+                "user_message_id": "msg_user",
+                "phase": "plan_failed",
+                "message": "模型生成 runner 失败",
+                "error": "invalid json",
+            },
+            created_at=started_at + timedelta(milliseconds=200),
+        ),
+        AgentEvent(
+            tenant_id="tenant_demo",
+            session_id="session_error",
+            event_type="error_occurred",
+            payload_json={
+                "turn_id": "msg_user",
+                "user_message_id": "msg_user",
+                "code": "LLM_ERROR",
+                "message": "upstream timeout",
+            },
+            created_at=started_at + timedelta(milliseconds=300),
+        ),
+    ]
+
+    traces = _build_turn_traces(messages, events, {})
+    lines = traces[0]["lines"]
+
+    assert traces[0]["completed_at"] == events[-1].created_at.isoformat()
+    assert any(
+        line["text"] == "模型调用失败" and line["state"] == "failed" and "upstream timeout" in line["detail"]
+        for line in lines
+    )
+    assert any(
+        line["text"] == "模型生成 runner 失败" and line["state"] == "failed" and "invalid json" in line["detail"]
+        for line in lines
     )
 
 

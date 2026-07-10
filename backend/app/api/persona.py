@@ -5,11 +5,17 @@ from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session
 
 from app.db import get_session
-from app.db.models import PersonaConfig, utc_now
+from app.db.models import PersonaConfig, User, utc_now
 from app.db.seed import DEFAULT_PERSONA_PROMPT
+from app.security.auth import get_current_user, require_current_tenant
+from app.security.permissions import ensure_tenant_admin
 from app.security.tenant import ensure_tenant
 
-router = APIRouter(prefix="/api/enterprise/persona", tags=["enterprise:persona"])
+router = APIRouter(
+    prefix="/api/enterprise/persona",
+    tags=["enterprise:persona"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 class PersonaRead(BaseModel):
@@ -33,7 +39,7 @@ def persona_read(row: PersonaConfig) -> PersonaRead:
     )
 
 
-@router.get("", response_model=PersonaRead)
+@router.get("", response_model=PersonaRead, dependencies=[Depends(require_current_tenant)])
 def get_persona(tenant_id: str = Query(...), db: Session = Depends(get_session)) -> PersonaRead:
     ensure_tenant(db, tenant_id)
     row = db.get(PersonaConfig, tenant_id)
@@ -46,7 +52,12 @@ def get_persona(tenant_id: str = Query(...), db: Session = Depends(get_session))
 
 
 @router.put("", response_model=PersonaRead)
-def update_persona(request: PersonaUpdateRequest, db: Session = Depends(get_session)) -> PersonaRead:
+def update_persona(
+    request: PersonaUpdateRequest,
+    db: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> PersonaRead:
+    ensure_tenant_admin(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
     row = db.get(PersonaConfig, request.tenant_id)
     if not row:

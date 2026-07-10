@@ -7,7 +7,7 @@ import json
 import time
 from typing import Any
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Query
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlmodel import Session
 
@@ -53,6 +53,21 @@ def get_current_user(
     if not user or user.tenant_id != payload.get("tenant_id"):
         raise HTTPException(status_code=401, detail="Invalid user token")
     return user
+
+
+def ensure_current_user_tenant(tenant_id: str, current_user: User) -> None:
+    if not isinstance(current_user, User):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    if tenant_id != current_user.tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant mismatch")
+
+
+def require_current_tenant(
+    tenant_id: str = Query(...),
+    current_user: User = Depends(get_current_user),
+) -> User:
+    ensure_current_user_tenant(tenant_id, current_user)
+    return current_user
 
 
 def _decode_token(token: str) -> dict[str, Any]:

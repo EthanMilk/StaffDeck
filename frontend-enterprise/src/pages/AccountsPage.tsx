@@ -16,6 +16,11 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
   Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from '@/components/ui';
 import { Button as UIButton } from '@/components/ui/button';
 import { notify } from '@/components/ui/app-toast';
@@ -39,6 +44,7 @@ type EmployeeAccount = {
   tenant_id: string;
   username: string;
   display_name?: string;
+  role: 'admin' | 'member';
   created_at?: string;
   updated_at?: string;
 };
@@ -46,16 +52,17 @@ type EmployeeAccount = {
 type AccountDraft = {
   displayName: string;
   password: string;
+  role: 'admin' | 'member';
 };
 
 type AccountCreateDraft = {
   username: string;
   displayName: string;
   password: string;
+  role: 'admin' | 'member';
 };
 
 const ACCOUNT_PAGE_SIZE = 10;
-const PROTECTED_ACCOUNTS = new Set(['admin', 'admin_demo']);
 
 export default function AccountsPage({
   currentUser,
@@ -68,10 +75,15 @@ export default function AccountsPage({
   const [loading, setLoading] = useState(false);
   const [searchText, setSearchText] = useState('');
   const [editing, setEditing] = useState<EmployeeAccount | null>(null);
-  const [draft, setDraft] = useState<AccountDraft>({ displayName: '', password: '' });
+  const [draft, setDraft] = useState<AccountDraft>({ displayName: '', password: '', role: 'member' });
   const [saving, setSaving] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  const [createDraft, setCreateDraft] = useState<AccountCreateDraft>({ username: '', displayName: '', password: '' });
+  const [createDraft, setCreateDraft] = useState<AccountCreateDraft>({
+    username: '',
+    displayName: '',
+    password: '',
+    role: 'member',
+  });
   const [creating, setCreating] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<EmployeeAccount | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -96,7 +108,8 @@ export default function AccountsPage({
     const keyword = searchText.trim().toLowerCase();
     if (!keyword) return rows;
     return rows.filter((row) =>
-      [row.username, row.display_name || ''].some((value) => value.toLowerCase().includes(keyword)),
+      [row.username, row.display_name || '', row.role === 'admin' ? '管理员' : '普通成员']
+        .some((value) => value.toLowerCase().includes(keyword)),
     );
   }, [rows, searchText]);
 
@@ -104,11 +117,11 @@ export default function AccountsPage({
 
   function openEdit(row: EmployeeAccount) {
     setEditing(row);
-    setDraft({ displayName: row.display_name || row.username, password: '' });
+    setDraft({ displayName: row.display_name || row.username, password: '', role: row.role });
   }
 
   function openCreate() {
-    setCreateDraft({ username: '', displayName: '', password: '' });
+    setCreateDraft({ username: '', displayName: '', password: '', role: 'member' });
     setCreateOpen(true);
   }
 
@@ -126,6 +139,7 @@ export default function AccountsPage({
         username,
         password,
         display_name: createDraft.displayName.trim() || username,
+        role: createDraft.role,
       });
       notify.success('账号已创建');
       setCreateOpen(false);
@@ -145,6 +159,7 @@ export default function AccountsPage({
         tenant_id: TENANT_ID,
         display_name: draft.displayName.trim() || editing.username,
         password: draft.password.trim() || undefined,
+        role: draft.role,
       });
       notify.success('账号已更新');
       setEditing(null);
@@ -173,7 +188,7 @@ export default function AccountsPage({
   }
 
   function renderActions(row: EmployeeAccount) {
-    const isProtected = PROTECTED_ACCOUNTS.has(row.username);
+    const isProtected = row.role === 'admin';
     return (
       <DropdownMenu>
         <DropdownMenuTrigger
@@ -222,6 +237,12 @@ export default function AccountsPage({
       title: '显示名',
       width: 200,
       render: (row) => <span className="block truncate">{row.display_name || row.username}</span>,
+    },
+    {
+      key: 'role',
+      title: '角色',
+      width: 120,
+      render: (row) => <span>{row.role === 'admin' ? '管理员' : '普通成员'}</span>,
     },
     { key: 'created', title: '创建时间', width: 180, render: (row) => formatDateTime(row.created_at) },
     { key: 'updated', title: '最近更新', width: 180, render: (row) => formatDateTime(row.updated_at) },
@@ -346,6 +367,8 @@ export default function AccountsPage({
         onDisplayNameChange={(value) => setCreateDraft((prev) => ({ ...prev, displayName: value }))}
         password={createDraft.password}
         onPasswordChange={(value) => setCreateDraft((prev) => ({ ...prev, password: value }))}
+        role={createDraft.role}
+        onRoleChange={(value) => setCreateDraft((prev) => ({ ...prev, role: value }))}
         passwordLabel="初始密码"
         onClose={() => setCreateOpen(false)}
         onSubmit={() => void saveCreate()}
@@ -361,6 +384,9 @@ export default function AccountsPage({
         onDisplayNameChange={(value) => setDraft((prev) => ({ ...prev, displayName: value }))}
         password={draft.password}
         onPasswordChange={(value) => setDraft((prev) => ({ ...prev, password: value }))}
+        role={draft.role}
+        onRoleChange={(value) => setDraft((prev) => ({ ...prev, role: value }))}
+        roleDisabled={editing?.id === currentUser?.id}
         passwordLabel="新密码"
         passwordPlaceholder="不修改请留空"
         onClose={() => setEditing(null)}
@@ -389,6 +415,9 @@ function AccountDialog({
   onDisplayNameChange,
   password,
   onPasswordChange,
+  role,
+  onRoleChange,
+  roleDisabled = false,
   passwordLabel,
   passwordPlaceholder,
   onClose,
@@ -403,6 +432,9 @@ function AccountDialog({
   onDisplayNameChange: (value: string) => void;
   password: string;
   onPasswordChange: (value: string) => void;
+  role: 'admin' | 'member';
+  onRoleChange: (value: 'admin' | 'member') => void;
+  roleDisabled?: boolean;
   passwordLabel: string;
   passwordPlaceholder?: string;
   onClose: () => void;
@@ -445,6 +477,21 @@ function AccountDialog({
               placeholder={passwordPlaceholder}
               onChange={(event) => onPasswordChange(event.target.value)}
             />
+          </LabeledField>
+          <LabeledField label="账号角色">
+            <Select
+              value={role}
+              disabled={roleDisabled}
+              onValueChange={(value) => onRoleChange(value as 'admin' | 'member')}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="member">普通成员</SelectItem>
+                <SelectItem value="admin">管理员</SelectItem>
+              </SelectContent>
+            </Select>
           </LabeledField>
         </div>
 
