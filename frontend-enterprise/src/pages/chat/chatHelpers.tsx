@@ -42,6 +42,7 @@ export const SIDEBAR_COLLAPSED_STORAGE_KEY = 'skill_agent_sidebar_collapsed';
 export const RUNNING_EVENT_RECOVERY_WINDOW_MS = 600 * 1000;
 export const CHAT_STREAM_IDLE_TIMEOUT_MS = 600 * 1000;
 export const CHAT_STREAM_IDLE_CHECK_INTERVAL_MS = 5 * 1000;
+export const CHAT_STREAM_HEARTBEAT_GRACE_MS = 20 * 1000;
 export const CHAT_TRACE_RECOVERY_WINDOW_MS = 10 * 60 * 1000;
 export const STREAM_TERMINAL_EVENTS = new Set(['complete', 'done', 'stream_end', 'stream_cancelled', 'stream_interrupted', 'error', 'error_occurred']);
 export const HIDDEN_GENERAL_SKILL_TRACE_PHASES = new Set(['replying']);

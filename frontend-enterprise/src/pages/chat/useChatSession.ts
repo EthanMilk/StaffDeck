@@ -51,6 +51,7 @@ import type {
 import {
   CHAT_STREAM_IDLE_TIMEOUT_MS,
   CHAT_STREAM_IDLE_CHECK_INTERVAL_MS,
+  CHAT_STREAM_HEARTBEAT_GRACE_MS,
   HIDDEN_GENERAL_SKILL_TRACE_PHASES,
   RUNNING_EVENT_RECOVERY_WINDOW_MS,
   SELECTED_AGENT_STORAGE_KEY,
@@ -2129,24 +2130,38 @@ export function useChatSession() {
       }
     });
 
+    const streamChanged = (
+      stream.turnId !== turnId
+      || !stream.loading
+      || !stream.phase
+      || stream.accumulated !== text
+      || stream.relayRecoveryTurnId !== turnId
+    );
     stream.turnId = turnId;
     stream.loading = true;
-    stream.phase = '执行中';
+    stream.phase = stream.phase || '执行中';
     stream.accumulated = text;
     stream.relayRecoveryStartedAt = stream.relayRecoveryStartedAt || Date.now();
     stream.relayRecoveryTurnId = turnId;
-    updateStreaming(id, text, turnId, true);
-    setRunningTurn({ sessionId: id, turnId });
+    if (streamChanged) {
+      updateStreaming(id, text, turnId, true);
+    }
+    setRunningTurn((current) => (
+      current?.sessionId === id && current.turnId === turnId
+        ? current
+        : { sessionId: id, turnId }
+    ));
 
-    runningGroup.forEach((event) => {
+    const unseenRunningEvents = runningGroup.filter((event) => !scheduledEventIdsRef.current.has(event.id));
+    unseenRunningEvents.forEach((event) => {
       scheduledEventIdsRef.current.add(event.id);
       const streamEvent = normalizeSessionEventForStream(event);
       if (streamEvent.event === 'stream_replace' || streamEvent.event === 'stream_delta' || streamEvent.event === 'token') return;
       handleStreamEvent(streamEvent, id, turnId);
     });
 
-    notifyStream();
-    return true;
+    if (streamChanged) notifyStream();
+    return streamChanged || unseenRunningEvents.length > 0;
   }, [
     clearStreamSlot,
     eventTextPayload,
@@ -2479,6 +2494,7 @@ export function useChatSession() {
     stream.abortController = controller;
     let receivedTerminalEvent = false;
     let streamWatchdog: number | null = null;
+    let lastStreamEventAt = Date.now();
 
     const clearRunningTurn = (targetId = liveConversationId) => {
       setRunningTurn((current) => (
@@ -2516,7 +2532,7 @@ export function useChatSession() {
       }, 250);
     };
 
-    const failStalledStream = () => {
+    const checkStreamHealth = () => {
       if (receivedTerminalEvent || controller.signal.aborted) return;
       const activeStream = getStreamSlot(liveConversationId);
       if (
@@ -2526,13 +2542,18 @@ export function useChatSession() {
       ) {
         return;
       }
+      if (Date.now() - lastStreamEventAt < CHAT_STREAM_HEARTBEAT_GRACE_MS) {
+        streamWatchdog = window.setTimeout(checkStreamHealth, CHAT_STREAM_IDLE_CHECK_INTERVAL_MS);
+        return;
+      }
       controller.abort();
-      beginRelayRecovery('stream_idle');
+      beginRelayRecovery();
     };
 
     const armStreamWatchdog = () => {
+      lastStreamEventAt = Date.now();
       clearStreamWatchdog();
-      streamWatchdog = window.setTimeout(failStalledStream, CHAT_STREAM_IDLE_CHECK_INTERVAL_MS);
+      streamWatchdog = window.setTimeout(checkStreamHealth, CHAT_STREAM_IDLE_CHECK_INTERVAL_MS);
     };
 
     const markStreamTerminal = () => {
@@ -2606,7 +2627,7 @@ export function useChatSession() {
       loadSessions();
     };
 
-    function beginRelayRecovery(reason: string) {
+    function beginRelayRecovery() {
       if (receivedTerminalEvent) return;
       clearStreamWatchdog();
       if (startedAsDraftConversation && createdSessionId) {
@@ -2621,18 +2642,16 @@ export function useChatSession() {
       const activeTurnId = activeStream.turnId || turnId;
       activeStream.abortController = null;
       activeStream.loading = true;
-      activeStream.phase = '正在同步';
+      activeStream.phase = activeStream.phase || '执行中';
       activeStream.turnId = activeTurnId;
       activeStream.relayRecoveryStartedAt = activeStream.relayRecoveryStartedAt || Date.now();
       activeStream.relayRecoveryTurnId = activeTurnId;
       updateStreaming(targetSessionId, activeStream.accumulated || '', activeTurnId, true);
-      upsertTraceLine(activeTurnId, {
-        id: 'stream_relay_recovering',
-        kind: 'thinking',
-        text: reason === 'stream_idle' ? '正在同步响应' : '正在恢复响应',
-        state: 'running',
-      });
-      setRunningTurn({ sessionId: targetSessionId, turnId: activeTurnId });
+      setRunningTurn((current) => (
+        current?.sessionId === targetSessionId && current.turnId === activeTurnId
+          ? current
+          : { sessionId: targetSessionId, turnId: activeTurnId }
+      ));
       notifyStream();
       void pollScheduledSessionEvents(targetSessionId);
     }
@@ -2704,7 +2723,7 @@ export function useChatSession() {
       }, controller.signal);
       clearStreamWatchdog();
       if (!receivedTerminalEvent && !controller.signal.aborted) {
-        beginRelayRecovery('stream_closed');
+        beginRelayRecovery();
       }
     } catch (error) {
       clearStreamWatchdog();
@@ -2719,7 +2738,7 @@ export function useChatSession() {
         redirectToLogin();
         return;
       }
-      beginRelayRecovery('stream_error');
+      beginRelayRecovery();
     } finally {
       clearStreamWatchdog();
       if (stream.abortController === controller) {
