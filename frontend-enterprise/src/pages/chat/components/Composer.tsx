@@ -12,6 +12,7 @@ import {
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card';
 import { employeeDisplayName } from '@/employee';
 import { cn } from '@/lib/utils';
+import { useI18n } from '@/i18n';
 
 import {
   CHAT_COMPOSER_ACTIONS_ROW_CLASS,
@@ -48,6 +49,7 @@ import { attachmentTypeLabel, modelDetailText, modelDisplayName } from '../chatH
 import type { UseChatSession } from '../useChatSession';
 
 export default function Composer({ chat }: { chat: UseChatSession }) {
+  const { t } = useI18n();
   const {
     input,
     setInput,
@@ -275,7 +277,7 @@ export default function Composer({ chat }: { chat: UseChatSession }) {
             className={CHAT_COMPOSER_TEXTAREA_CLASS}
             value={input}
             rows={2}
-            placeholder="输入消息，按 Enter 发送..."
+            placeholder={t('输入消息，按 Enter 发送...')}
             onChange={(event) => setInput(event.target.value)}
             onPaste={handleComposerPaste}
             onCompositionStart={() => setIsComposing(true)}

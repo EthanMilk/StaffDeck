@@ -78,7 +78,7 @@ export function UnderlineTabs<T extends string = string>({
             {!isLine && active && (
               <span
                 aria-hidden="true"
-                className="absolute top-[33px] left-1/2 h-[3px] w-[10px] -translate-x-1/2 rounded-[4px] bg-[#18181A]"
+                className="absolute top-[33px] left-1/2 h-[3px] w-[10px] -translate-x-1/2 rounded-[4px] bg-[#18181A] max-[560px]:top-auto max-[560px]:bottom-0"
               />
             )}
           </button>

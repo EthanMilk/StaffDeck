@@ -119,9 +119,11 @@ export default function EmployeeCard({
         {/* Name / role / status */}
         <div className="flex-1 flex flex-col gap-[2px]">
           <strong className="truncate text-[12px] font-bold text-[#18181A]">
-            {displayName}
+            {employee.is_overall ? displayName : <span data-i18n-ignore>{displayName}</span>}
           </strong>
-          <span className="truncate text-[10px] text-[#757F9C]">{rawRoleName}</span>
+          <span className="truncate text-[10px] text-[#757F9C]">
+            {rawRoleName === '待补充岗位' ? rawRoleName : <span data-i18n-ignore>{rawRoleName}</span>}
+          </span>
           <div className="leading-none">
             <span className="inline-flex items-center gap-[2px] py-[2px] px-[4px] text-[8px] font-semibold text-[#757F9C] rounded-[90px] bg-white">
               <i className={cn('size-[6px] shrink-0 rounded-full', online ? 'bg-[#22c55e]' : 'bg-[#9ca3af]')} aria-hidden="true" />
@@ -238,7 +240,7 @@ export default function EmployeeCard({
 
       {/* Description */}
       <p className="line-clamp-2 mt-[8px] h-[36px] shrink-0 text-[12px] leading-[18px] text-[#757F9C]">
-        {displayDescription}
+        {employee.description ? <span data-i18n-ignore>{displayDescription}</span> : displayDescription}
       </p>
 
       {/* Work style tags */}
@@ -248,7 +250,7 @@ export default function EmployeeCard({
             key={item}
             className="rounded-[20px] px-[8px] py-px text-[10px] leading-[13px] text-[#757f9c] border border-[#E3E7F1]"
           >
-            {item}
+            <span data-i18n-ignore>{item}</span>
           </span>
         ))}
       </div>

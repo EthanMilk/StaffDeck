@@ -1,3 +1,5 @@
+import { getDateLocale } from '@/i18n';
+
 const FALLBACK_TIME_ZONE = 'Asia/Shanghai';
 
 export function getClientTimeZone(): string {
@@ -19,7 +21,7 @@ export function formatClientDateTime(value?: string, emptyText = '-'): string {
   if (!value) return emptyText;
   const date = parseBackendDateTime(value);
   if (Number.isNaN(date.getTime())) return emptyText;
-  return date.toLocaleString('zh-CN', {
+  return date.toLocaleString(getDateLocale(), {
     hour12: false,
     timeZone: getClientTimeZone(),
   });

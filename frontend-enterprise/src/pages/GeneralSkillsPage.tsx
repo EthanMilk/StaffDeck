@@ -151,7 +151,7 @@ const SKILL_TRACE_MESSAGE_CLASS =
 const SKILL_TRACE_CODE_DETAILS_CLASS =
   'group/gs-trace box-border w-full min-w-0 max-w-full overflow-hidden rounded-xl border border-[#eceef1] bg-white';
 const SKILL_TRACE_CODE_SUMMARY_CLASS =
-  "flex min-h-[38px] cursor-pointer list-none items-center gap-2 px-3 py-[9px] text-[12px] font-semibold text-[#18181a] select-none after:ml-auto after:text-[12px] after:font-medium after:text-[#757f9c] after:content-['展开'] group-open/gs-trace:border-b group-open/gs-trace:border-[#eceef1] group-open/gs-trace:after:content-['收起'] [&::-webkit-details-marker]:hidden";
+  'flex min-h-[38px] cursor-pointer list-none items-center gap-2 px-3 py-[9px] text-[12px] font-semibold text-[#18181a] select-none group-open/gs-trace:border-b group-open/gs-trace:border-[#eceef1] [&::-webkit-details-marker]:hidden';
 const SKILL_CODE_BLOCK_CLASS =
   'm-0 max-h-[520px] max-w-full overflow-auto whitespace-pre border-0 p-[16px_18px] font-mono text-[12px] leading-[1.65]';
 const SKILL_OUTPUT_STACK_CLASS = 'grid gap-[10px]';
@@ -161,6 +161,15 @@ function skillFileNodeClass(active: boolean) {
     'flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-[10px] py-2 text-left text-[12px] text-[#757f9c] transition-[background,color,box-shadow] duration-150',
     'hover:bg-[#f6f6f6] hover:text-[#18181a]',
     active && 'bg-[#f6f6f6] text-[#18181a]',
+  );
+}
+
+function TraceDisclosureLabel() {
+  return (
+    <span className="ml-auto text-[12px] font-medium text-[#757f9c]">
+      <span className="group-open/gs-trace:hidden">展开</span>
+      <span className="hidden group-open/gs-trace:inline">收起</span>
+    </span>
   );
 }
 
@@ -282,7 +291,10 @@ function RunCodePanel({
 }) {
   return (
     <details className={cn(SKILL_TRACE_CODE_DETAILS_CLASS, 'mt-0', className)} open={defaultOpen}>
-      <summary className={SKILL_TRACE_CODE_SUMMARY_CLASS}>{title}</summary>
+      <summary className={SKILL_TRACE_CODE_SUMMARY_CLASS}>
+        {title}
+        <TraceDisclosureLabel />
+      </summary>
       <CodeBlock className={SKILL_CODE_BLOCK_CLASS} code={code} language={language || codeLanguage(code)} />
     </details>
   );
@@ -2284,7 +2296,10 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
                             )}
                             {code && (
                               <details className={cn(SKILL_TRACE_CODE_DETAILS_CLASS, 'mt-[10px]')} open={index === latestCodeIndex}>
-                                <summary className={SKILL_TRACE_CODE_SUMMARY_CLASS}>{codeTitle}</summary>
+                                <summary className={SKILL_TRACE_CODE_SUMMARY_CLASS}>
+                                  {codeTitle}
+                                  <TraceDisclosureLabel />
+                                </summary>
                                 <CodeBlock className={SKILL_CODE_BLOCK_CLASS} code={code} language="python" />
                               </details>
                             )}

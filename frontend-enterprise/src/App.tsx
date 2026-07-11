@@ -88,6 +88,7 @@ import {
   DIALOG_PRIMARY_BUTTON_CLASS,
 } from "@/lib/enterprise-ui";
 import type { AgentProfileRead } from "./types";
+import { useI18n } from "./i18n";
 
 const ENTERPRISE_SIDEBAR_STORAGE_KEY = "ultrarag_enterprise_sidebar_expanded";
 type AgentCreateMode = "copy" | "blank";
@@ -857,6 +858,9 @@ function AuthedApp({
 }
 
 export default function App() {
+  // Subscribe the application tree to locale changes so locale-sensitive dates
+  // and computed labels update without remounting or losing form state.
+  useI18n();
   const [auth, setAuth] = useState<EnterpriseAuthSession | null>(() =>
     getEnterpriseAuthSession(),
   );

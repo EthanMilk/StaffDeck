@@ -103,7 +103,9 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
 
           {!statusOnly && visibleContent ? (
             item.role === 'assistant' ? (
-              <MarkdownMessage content={visibleContent} />
+              <div data-i18n-ignore>
+                <MarkdownMessage content={visibleContent} />
+              </div>
             ) : (
               <div className={CHAT_PLAIN_ANSWER_CLASS}>
                 {queuedMessage && (
@@ -118,7 +120,7 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
                     定时任务
                   </span>
                 )}
-                <span>{visibleContent}</span>
+                <span data-i18n-ignore>{visibleContent}</span>
               </div>
             )
           ) : showTypingCaret ? (
@@ -137,8 +139,8 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
                     </span>
                   )}
                   <span className={CHAT_ATTACHMENT_COPY_CLASS}>
-                    <span className={CHAT_ATTACHMENT_NAME_CLASS}>{attachment.filename}</span>
-                    <span className={CHAT_ATTACHMENT_META_CLASS}>
+                    <span className={CHAT_ATTACHMENT_NAME_CLASS} data-i18n-ignore>{attachment.filename}</span>
+                    <span className={CHAT_ATTACHMENT_META_CLASS} data-i18n-ignore>
                       {attachmentTypeLabel(attachment)}
                       {attachment.error ? ` · ${attachment.error}` : ''}
                     </span>
@@ -162,8 +164,8 @@ export default function MessageBubble({ chat, item, render }: MessageBubbleProps
                     className={CHAT_CITATION_CHIP_CLASS}
                     onClick={() => setActiveCitation(citation)}
                   >
-                    <span className={CHAT_CITATION_INDEX_CLASS}>{citation.label || citation.id}</span>
-                    <span className={CHAT_CITATION_TITLE_CLASS}>{citationDisplayTitle(citation)}</span>
+                    <span className={CHAT_CITATION_INDEX_CLASS} data-i18n-ignore>{citation.label || citation.id}</span>
+                    <span className={CHAT_CITATION_TITLE_CLASS} data-i18n-ignore>{citationDisplayTitle(citation)}</span>
                   </button>
                 ))}
               </div>

@@ -10,6 +10,7 @@ import IconCotLoading from '@/assets/staffdeck/cot-icons/loading.svg?react';
 import IconCotSelect from '@/assets/staffdeck/cot-icons/select.svg?react';
 import IconCotTool from '@/assets/staffdeck/cot-icons/tool.svg?react';
 import { cn } from '@/lib/utils';
+import { useI18n } from '@/i18n';
 
 import {
   CHAT_TRACE_CHEVRON_CLASS,
@@ -67,6 +68,8 @@ export default function ExecutionRecord({
   expanded,
   onToggle,
 }: ExecutionRecordProps) {
+  const { t } = useI18n();
+
   return (
     <div className={CHAT_TRACE_WRAP_CLASS}>
       <button
@@ -79,7 +82,7 @@ export default function ExecutionRecord({
         onClick={() => onToggle(traceTurnId, expanded)}
       >
         <CotTraceIcon name={traceSummaryIconName(summary)} />
-        <span className={cn(summary.state === 'running' && CHAT_TRACE_FLOW_TEXT_CLASS)}>{summary.text}</span>
+        <span className={cn(summary.state === 'running' && CHAT_TRACE_FLOW_TEXT_CLASS)}>{t(summary.text)}</span>
         {details.length > 0 && (
           <StaffdeckIcon
             name="arrow"
@@ -101,9 +104,9 @@ export default function ExecutionRecord({
                     line.state === 'failed' && CHAT_TRACE_LINE_TEXT_FAILED_CLASS,
                   )}
                 >
-                  {line.text}
+                  {t(line.text)}
                 </span>
-                {line.detail && <span className={CHAT_TRACE_LINE_DETAIL_CLASS}>{line.detail}</span>}
+                {line.detail && <span className={CHAT_TRACE_LINE_DETAIL_CLASS}>{t(line.detail)}</span>}
                 {line.code && (
                   <details open className={CHAT_TRACE_CODE_DETAILS_CLASS}>
                     <summary className={CHAT_TRACE_CODE_SUMMARY_CLASS}>查看代码</summary>
@@ -112,7 +115,7 @@ export default function ExecutionRecord({
                 )}
                 {line.output && (
                   <details open className={CHAT_TRACE_CODE_DETAILS_CLASS}>
-                    <summary className={CHAT_TRACE_CODE_SUMMARY_CLASS}>{line.outputTitle || '查看输出'}</summary>
+                    <summary className={CHAT_TRACE_CODE_SUMMARY_CLASS}>{t(line.outputTitle || '查看输出')}</summary>
                     <CodeBlock className={CHAT_TRACE_CODE_BLOCK_CLASS} code={line.output} language={line.outputLanguage || 'text'} />
                   </details>
                 )}

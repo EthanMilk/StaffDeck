@@ -10,6 +10,7 @@ import { cn } from '@/lib/utils';
 
 import IconChevronDown from '../assets/icons/chevron-down.svg?react';
 import IconLogout from '../assets/icons/logout.svg?react';
+import LanguageSwitcher from './LanguageSwitcher';
 
 export type AppHeaderProps = {
   /**
@@ -69,6 +70,7 @@ export default function AppHeader({
     <header className={cn('flex w-full gap-[16px]', className)}>
       <div className="min-w-0 flex-1">{leftContent}</div>
       <div className="flex shrink-0 items-start gap-[8px]">
+        <LanguageSwitcher />
         {right !== undefined ? right : (
         <DropdownMenu>
           <DropdownMenuTrigger

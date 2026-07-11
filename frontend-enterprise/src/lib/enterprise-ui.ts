@@ -58,7 +58,7 @@ export const SEARCH_COMBO_INPUT_CLASS =
 export const SEARCH_COMBO_BUTTON_CLASS =
   'shrink-0 bg-[#18181a] px-[20px] text-[14px] font-normal text-white transition-colors hover:bg-[#303030] disabled:pointer-events-none disabled:opacity-50';
 
-/** Format a backend timestamp as a localized `zh-CN` date-time, or `-` when empty/invalid. */
+/** Format a backend timestamp in the active UI locale, or `-` when empty/invalid. */
 export function formatDateTime(value?: string): string {
   return formatClientDateTime(value, '-');
 }

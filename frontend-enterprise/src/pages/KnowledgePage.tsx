@@ -75,6 +75,7 @@ import {
 } from '../employee';
 import { useClientPagination } from '../hooks/useClientPagination';
 import { renderMarkdownBlocks } from './chat/chatHelpers';
+import { getDateLocale } from '@/i18n';
 import type {
   KnowledgeBaseRead,
   KnowledgeBucketRead,
@@ -3176,7 +3177,7 @@ function sortWikiConcepts(concepts: KnowledgeConceptRead[]) {
     const leftRank = rank[left.concept_type] ?? 99;
     const rightRank = rank[right.concept_type] ?? 99;
     if (leftRank !== rightRank) return leftRank - rightRank;
-    return (left.title || left.concept_id).localeCompare(right.title || right.concept_id, 'zh-CN');
+    return (left.title || left.concept_id).localeCompare(right.title || right.concept_id, getDateLocale());
   });
 }
 
@@ -3276,7 +3277,7 @@ function formatDateTime(value: string) {
   if (!value) return '未知时间';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString('zh-CN', {
+  return date.toLocaleString(getDateLocale(), {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',

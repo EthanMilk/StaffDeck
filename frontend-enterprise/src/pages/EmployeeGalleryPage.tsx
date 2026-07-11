@@ -212,11 +212,12 @@ export default function EmployeeGalleryPage({
       />
 
       <UnderlineTabs
-        className="mt-[36px] mb-[16px]"
+        className="mt-[36px] mb-[16px] max-[560px]:w-full"
         aria-label="数字员工分类"
         value={scope}
         onChange={setScope}
         items={galleryTabs}
+        tabClassName="max-[560px]:min-h-[54px] max-[560px]:w-auto max-[560px]:flex-1 max-[560px]:px-[6px] max-[560px]:text-[12px] max-[560px]:leading-[16px]"
       />
 
       <div className="grid auto-rows-[minmax(262px,auto)] grid-cols-1 content-start gap-[32px] sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 max-[900px]:gap-[18px]">
