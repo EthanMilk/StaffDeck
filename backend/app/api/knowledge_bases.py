@@ -18,10 +18,10 @@ from app.agents.branching import (
     knowledge_version_for_upload,
     mark_resource_open_gallery,
     mark_resource_private_for_agent,
+    metadata_preserving_creator,
     promote_knowledge_branch_to_overall,
     rollback_knowledge_branch,
     sync_knowledge_branch_from_overall,
-    system_creator_metadata,
     user_creator_metadata,
 )
 from app.db.models import (
@@ -70,7 +70,9 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=list[KnowledgeBaseRead], dependencies=[Depends(require_agent_scope_viewer)])
+@router.get(
+    "", response_model=list[KnowledgeBaseRead], dependencies=[Depends(require_agent_scope_viewer)]
+)
 def list_knowledge_bases(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
@@ -121,10 +123,15 @@ def list_knowledge_bases(
     visible_ids = list(visible_versions.keys())
     rows = db.exec(
         select(KnowledgeBase)
-        .where(KnowledgeBase.tenant_id == tenant_id, KnowledgeBase.id.in_(visible_ids) if visible_ids else KnowledgeBase.id == "__none__")
+        .where(
+            KnowledgeBase.tenant_id == tenant_id,
+            KnowledgeBase.id.in_(visible_ids) if visible_ids else KnowledgeBase.id == "__none__",
+        )
         .order_by(KnowledgeBase.updated_at.desc())
     ).all()
-    stats = _knowledge_base_stats(db, tenant_id, [version.id for version in visible_versions.values()])
+    stats = _knowledge_base_stats(
+        db, tenant_id, [version.id for version in visible_versions.values()]
+    )
     branch_meta = _knowledge_branch_meta(db, tenant_id, agent_id)
     return [
         knowledge_base_read(
@@ -149,7 +156,9 @@ def create_knowledge_base(
     if not name:
         raise HTTPException(status_code=400, detail="Knowledge base name cannot be empty")
     existing = db.exec(
-        select(KnowledgeBase).where(KnowledgeBase.tenant_id == request.tenant_id, KnowledgeBase.name == name)
+        select(KnowledgeBase).where(
+            KnowledgeBase.tenant_id == request.tenant_id, KnowledgeBase.name == name
+        )
     ).first()
     if existing:
         raise HTTPException(status_code=409, detail="Knowledge base name already exists")
@@ -236,7 +245,9 @@ def update_knowledge_base(
             )
         ).first()
         if not branch:
-            branch = sync_knowledge_branch_from_overall(db, request.tenant_id, agent.id, knowledge_base_id)
+            branch = sync_knowledge_branch_from_overall(
+                db, request.tenant_id, agent.id, knowledge_base_id
+            )
         version = ensure_knowledge_base_version(db, row, branch.head_version)
         if request.name is not None:
             name = request.name.strip()
@@ -246,7 +257,10 @@ def update_knowledge_base(
         if request.description is not None:
             version.description = request.description
         if request.metadata is not None:
-            version.metadata_json = request.metadata
+            version.metadata_json = metadata_preserving_creator(
+                version.metadata_json,
+                request.metadata,
+            )
         if request.status is not None:
             branch.status = "active" if request.status == "active" else "inactive"
             binding = db.exec(
@@ -261,7 +275,11 @@ def update_knowledge_base(
                 binding.status = branch.status
                 binding.updated_at = utc_now()
                 db.add(binding)
-        if request.name is not None or request.description is not None or request.metadata is not None:
+        if (
+            request.name is not None
+            or request.description is not None
+            or request.metadata is not None
+        ):
             branch.sync_state = "diverged"
         version.updated_at = utc_now()
         branch.updated_at = utc_now()
@@ -282,6 +300,7 @@ def update_knowledge_base(
             },
         )
     ensure_open_gallery_admin(request.tenant_id, current_user)
+    version = ensure_knowledge_base_version(db, row)
     if request.name is not None:
         name = request.name.strip()
         if not name:
@@ -296,20 +315,41 @@ def update_knowledge_base(
         if conflict:
             raise HTTPException(status_code=409, detail="Knowledge base name already exists")
         row.name = name
+        version.name = name
     if request.description is not None:
         row.description = request.description
+        version.description = request.description
     if request.status is not None:
         row.status = request.status
+        version.status = request.status
     if request.metadata is not None:
-        row.metadata_json = request.metadata
+        row.metadata_json = metadata_preserving_creator(
+            row.metadata_json,
+            request.metadata,
+        )
+        version.metadata_json = metadata_preserving_creator(
+            version.metadata_json,
+            request.metadata,
+        )
     row.updated_at = utc_now()
+    version.updated_at = utc_now()
     db.add(row)
+    db.add(version)
+    db.flush()
+    if request.status is not None:
+        ensure_open_gallery_binding(
+            db,
+            request.tenant_id,
+            "knowledge_base",
+            row.id,
+            "active" if request.status == "active" else "inactive",
+        )
     db.commit()
     db.refresh(row)
     return knowledge_base_read(
         row,
         _knowledge_base_stats(db, request.tenant_id).get(row.id, {}),
-        version_row=ensure_knowledge_base_version(db, row),
+        version_row=version,
     )
 
 
@@ -334,7 +374,10 @@ def list_knowledge_base_versions(
         ).first()
     rows = db.exec(
         select(KnowledgeBaseVersion)
-        .where(KnowledgeBaseVersion.tenant_id == tenant_id, KnowledgeBaseVersion.knowledge_base_id == row.id)
+        .where(
+            KnowledgeBaseVersion.tenant_id == tenant_id,
+            KnowledgeBaseVersion.knowledge_base_id == row.id,
+        )
         .order_by(KnowledgeBaseVersion.updated_at.desc())
     ).all()
     if agent and not agent.is_overall and branch:
@@ -345,7 +388,11 @@ def list_knowledge_base_versions(
             or (version.metadata_json or {}).get("owner_agent_id") == agent.id
         ]
     else:
-        rows = [version for version in rows if (version.metadata_json or {}).get("scope") != "agent_private"]
+        rows = [
+            version
+            for version in rows
+            if (version.metadata_json or {}).get("scope") != "agent_private"
+        ]
     return [
         {
             "id": version.id,
@@ -406,7 +453,9 @@ def get_okf_concept(
     return concept_read(row)
 
 
-@router.put("/{knowledge_base_id}/okf/concepts/{concept_id:path}", response_model=KnowledgeConceptRead)
+@router.put(
+    "/{knowledge_base_id}/okf/concepts/{concept_id:path}", response_model=KnowledgeConceptRead
+)
 def upsert_okf_concept(
     knowledge_base_id: str,
     concept_id: str,
@@ -415,8 +464,12 @@ def upsert_okf_concept(
     db: Session = Depends(get_session),
     current_user: User = Depends(get_current_user),
 ) -> KnowledgeConceptRead:
-    version = _writable_knowledge_version(db, request.tenant_id, knowledge_base_id, agent_id, current_user)
-    document_id = _document_id_for_version(db, request.tenant_id, knowledge_base_id, version.id, request.document_id)
+    version = _writable_knowledge_version(
+        db, request.tenant_id, knowledge_base_id, agent_id, current_user
+    )
+    document_id = _document_id_for_version(
+        db, request.tenant_id, knowledge_base_id, version.id, request.document_id
+    )
     parsed = parse_okf_markdown(concept_id, request.content_md)
     rows = upsert_concepts(
         db,
@@ -463,7 +516,7 @@ def export_okf(
         media_type="application/zip",
         headers={
             "Content-Disposition": (
-                f'attachment; filename="{fallback_filename}"; filename*=UTF-8\'\'{quote(filename)}'
+                f"attachment; filename=\"{fallback_filename}\"; filename*=UTF-8''{quote(filename)}"
             )
         },
     )
@@ -531,7 +584,9 @@ def delete_knowledge_base(
     row = _get_knowledge_base(db, tenant_id, knowledge_base_id)
     if agent and agent.is_overall:
         if not is_open_gallery_resource(db, tenant_id, "knowledge_base", row):
-            raise HTTPException(status_code=404, detail="Knowledge base not visible in open gallery")
+            raise HTTPException(
+                status_code=404, detail="Knowledge base not visible in open gallery"
+            )
         ensure_open_gallery_admin(tenant_id, current_user)
         hide_open_gallery_binding(db, tenant_id, "knowledge_base", row.id)
         db.commit()
@@ -584,7 +639,11 @@ def sync_knowledge_base_from_overall(
         raise HTTPException(status_code=400, detail="Overall agent is already the trunk")
     branch = sync_knowledge_branch_from_overall(db, tenant_id, agent_id, knowledge_base_id)
     db.commit()
-    return {"status": "synced", "knowledge_base_id": knowledge_base_id, "head_version": branch.head_version}
+    return {
+        "status": "synced",
+        "knowledge_base_id": knowledge_base_id,
+        "head_version": branch.head_version,
+    }
 
 
 @router.post("/{knowledge_base_id}/promote-to-overall")
@@ -599,11 +658,17 @@ def promote_knowledge_base_to_overall(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     if agent.is_overall:
-        raise HTTPException(status_code=400, detail="Overall agent does not have a branch to promote")
+        raise HTTPException(
+            status_code=400, detail="Overall agent does not have a branch to promote"
+        )
     ensure_open_gallery_admin(tenant_id, current_user)
     version = promote_knowledge_branch_to_overall(db, tenant_id, agent_id, knowledge_base_id)
     db.commit()
-    return {"status": "promoted", "knowledge_base_id": knowledge_base_id, "version": version.version}
+    return {
+        "status": "promoted",
+        "knowledge_base_id": knowledge_base_id,
+        "version": version.version,
+    }
 
 
 @router.post("/{knowledge_base_id}/rollback")
@@ -617,10 +682,18 @@ def rollback_knowledge_base(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
     if agent.is_overall:
-        raise HTTPException(status_code=400, detail="Use overall version management for trunk knowledge base")
-    branch = rollback_knowledge_branch(db, request.tenant_id, request.agent_id, knowledge_base_id, request.version)
+        raise HTTPException(
+            status_code=400, detail="Use overall version management for trunk knowledge base"
+        )
+    branch = rollback_knowledge_branch(
+        db, request.tenant_id, request.agent_id, knowledge_base_id, request.version
+    )
     db.commit()
-    return {"status": "rolled_back", "knowledge_base_id": knowledge_base_id, "head_version": branch.head_version}
+    return {
+        "status": "rolled_back",
+        "knowledge_base_id": knowledge_base_id,
+        "head_version": branch.head_version,
+    }
 
 
 def knowledge_base_read(
@@ -648,7 +721,7 @@ def knowledge_base_read(
         branch_sync_state=(branch_meta or {}).get("sync_state"),
         branch_base_version=(branch_meta or {}).get("base_version"),
         branch_head_version=(branch_meta or {}).get("head_version"),
-        metadata=system_creator_metadata((version_row.metadata_json if version_row else row.metadata_json) or {}),
+        metadata=dict((version_row.metadata_json if version_row else row.metadata_json) or {}),
         document_count=int(stats.get("document_count", 0)),
         bucket_count=int(stats.get("bucket_count", 0)),
         chunk_count=int(stats.get("chunk_count", 0)),
@@ -742,7 +815,9 @@ def _ensure_okf_concepts_for_version(
         if existing:
             continue
         metadata = document.metadata_json or {}
-        section_nodes = metadata.get("section_tree") if isinstance(metadata.get("section_tree"), list) else []
+        section_nodes = (
+            metadata.get("section_tree") if isinstance(metadata.get("section_tree"), list) else []
+        )
         buckets = db.exec(
             select(KnowledgeBucket)
             .where(
@@ -803,7 +878,11 @@ def _document_id_for_version(
         and current.knowledge_base_version_id == knowledge_base_version_id
     ):
         return current.id
-    if not current or current.tenant_id != tenant_id or current.knowledge_base_id != knowledge_base_id:
+    if (
+        not current
+        or current.tenant_id != tenant_id
+        or current.knowledge_base_id != knowledge_base_id
+    ):
         return document_id
     cloned = db.exec(
         select(KnowledgeDocument)
@@ -846,7 +925,9 @@ def _management_knowledge_base_versions(
                     AgentResourceBinding.resource_id == kb.id,
                 )
             ).first()
-            if not binding or not is_bound_resource_visible_for_agent(db, tenant_id, "knowledge_base", kb, binding):
+            if not binding or not is_bound_resource_visible_for_agent(
+                db, tenant_id, "knowledge_base", kb, binding
+            ):
                 continue
             result[kb.id] = ensure_knowledge_base_version(db, kb, branch.head_version)
         return result
@@ -882,16 +963,24 @@ def _knowledge_base_stats(
         doc_stmt = doc_stmt.where(KnowledgeDocument.knowledge_base_version_id.in_(version_ids))
         bucket_stmt = bucket_stmt.where(KnowledgeBucket.knowledge_base_version_id.in_(version_ids))
         chunk_stmt = chunk_stmt.where(KnowledgeChunk.knowledge_base_version_id.in_(version_ids))
-    for knowledge_base_id, count in db.exec(doc_stmt.group_by(KnowledgeDocument.knowledge_base_id)).all():
+    for knowledge_base_id, count in db.exec(
+        doc_stmt.group_by(KnowledgeDocument.knowledge_base_id)
+    ).all():
         stats.setdefault(knowledge_base_id, {})["document_count"] = int(count or 0)
-    for knowledge_base_id, count in db.exec(bucket_stmt.group_by(KnowledgeBucket.knowledge_base_id)).all():
+    for knowledge_base_id, count in db.exec(
+        bucket_stmt.group_by(KnowledgeBucket.knowledge_base_id)
+    ).all():
         stats.setdefault(knowledge_base_id, {})["bucket_count"] = int(count or 0)
-    for knowledge_base_id, count in db.exec(chunk_stmt.group_by(KnowledgeChunk.knowledge_base_id)).all():
+    for knowledge_base_id, count in db.exec(
+        chunk_stmt.group_by(KnowledgeChunk.knowledge_base_id)
+    ).all():
         stats.setdefault(knowledge_base_id, {})["chunk_count"] = int(count or 0)
     return stats
 
 
-def _knowledge_branch_meta(db: Session, tenant_id: str, agent_id: str | None) -> dict[str, dict[str, str]]:
+def _knowledge_branch_meta(
+    db: Session, tenant_id: str, agent_id: str | None
+) -> dict[str, dict[str, str]]:
     agent = get_agent(db, tenant_id, agent_id)
     if not agent or agent.is_overall:
         return {}

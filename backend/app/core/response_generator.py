@@ -41,19 +41,6 @@ def format_runtime_failure_reply(
 
 
 def model_failure_suggestion(detail: object) -> str:
-    lowered = str(detail or "").lower()
-    if "model returned an empty response" in lowered or "no usable message.content" in lowered:
-        return "模型服务已接受请求，但没有返回可用文本；请检查响应格式支持、输出长度限制和模型服务日志后重试。"
-    if "timeout" in lowered or "timed out" in lowered:
-        return "模型服务调用已超时；请检查服务负载、网络延迟和超时配置后重试。"
-    if any(token in lowered for token in ("status_code=401", "unauthorized", "authentication", "invalid api key")):
-        return "模型服务鉴权失败；请检查 API Key 是否有效且具有当前模型的调用权限。"
-    if any(token in lowered for token in ("status_code=403", "forbidden", "permission denied")):
-        return "模型服务拒绝访问；请检查账号权限、模型授权范围和服务端访问策略。"
-    if any(token in lowered for token in ("status_code=429", "rate limit", "too many requests", "quota")):
-        return "模型服务触发限流或额度不足；请检查调用配额、并发限制和计费状态后重试。"
-    if any(token in lowered for token in ("connection refused", "connection error", "connecterror", "name resolution")):
-        return "无法连接模型服务；请检查服务地址、网络连通性和模型服务进程状态。"
     return MODEL_FAILURE_SUGGESTION
 
 

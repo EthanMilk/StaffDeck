@@ -18,6 +18,7 @@ from app.agents.branching import (
     knowledge_version_for_upload,
     mark_resource_open_gallery,
     mark_resource_private_for_agent,
+    metadata_preserving_creator,
     user_creator_metadata,
     visible_knowledge_base_versions,
     visible_knowledge_base_version_ids,
@@ -51,7 +52,12 @@ from app.knowledge.schema import (
     KnowledgeSearchRequest,
     KnowledgeSearchResponse,
 )
-from app.knowledge.okf import build_okf_for_document, create_concept_evidence_rows, parse_okf_bundle, upsert_concepts
+from app.knowledge.okf import (
+    build_okf_for_document,
+    create_concept_evidence_rows,
+    parse_okf_bundle,
+    upsert_concepts,
+)
 from app.knowledge.service import IngestPayload, KnowledgeService, bucket_read, chunk_read
 from app.security.auth import ensure_current_user_tenant, get_current_user
 from app.security.permissions import (
@@ -126,7 +132,9 @@ def import_okf_bundle(
     except Exception as exc:  # noqa: BLE001 - surface stable import failures.
         raise HTTPException(status_code=400, detail=f"OKF import failed: {exc}") from exc
     if not parsed_docs:
-        raise HTTPException(status_code=400, detail="OKF bundle does not contain concept markdown files")
+        raise HTTPException(
+            status_code=400, detail="OKF bundle does not contain concept markdown files"
+        )
 
     upload_request = KnowledgeDocumentUploadRequest(
         tenant_id=request.tenant_id,
@@ -178,7 +186,9 @@ def import_okf_bundle(
                     for item in parsed_docs[:80]
                 ],
                 "applicable_scenarios": ["OKF Wiki", "业务知识检索"],
-                "key_entities": sorted({str(item.frontmatter.get("type") or "Topic") for item in parsed_docs}),
+                "key_entities": sorted(
+                    {str(item.frontmatter.get("type") or "Topic") for item in parsed_docs}
+                ),
                 "section_count": len(parsed_docs),
             },
             "okf": {"version": "0.1", "concept_count": len(parsed_docs)},
@@ -201,7 +211,9 @@ def import_okf_bundle(
             for item in parsed_docs
         ],
     )
-    create_concept_evidence_rows(db, request.tenant_id, knowledge_base.id, version.id, document, concept_rows)
+    create_concept_evidence_rows(
+        db, request.tenant_id, knowledge_base.id, version.id, document, concept_rows
+    )
     return {
         "status": "imported",
         "knowledge_base_id": knowledge_base.id,
@@ -229,7 +241,9 @@ def _resolve_upload_knowledge_base(
         ):
             raise HTTPException(status_code=404, detail="Knowledge base not found")
         if not (agent and not agent.is_overall):
-            _ensure_open_gallery_knowledge_admin(db, request.tenant_id, knowledge_base.id, current_user)
+            _ensure_open_gallery_knowledge_admin(
+                db, request.tenant_id, knowledge_base.id, current_user
+            )
         return knowledge_base
 
     if not (agent and not agent.is_overall):
@@ -282,7 +296,9 @@ def _knowledge_base_name_from_upload(request: KnowledgeDocumentUploadRequest) ->
 
 def _unique_knowledge_base_name(db: Session, tenant_id: str, base_name: str) -> str:
     normalized_base = base_name.strip() or "未命名知识库"
-    existing_names = set(db.exec(select(KnowledgeBase.name).where(KnowledgeBase.tenant_id == tenant_id)).all())
+    existing_names = set(
+        db.exec(select(KnowledgeBase.name).where(KnowledgeBase.tenant_id == tenant_id)).all()
+    )
     if normalized_base not in existing_names:
         return normalized_base
     index = 2
@@ -293,7 +309,11 @@ def _unique_knowledge_base_name(db: Session, tenant_id: str, base_name: str) -> 
         index += 1
 
 
-@router.get("/jobs", response_model=list[KnowledgeIngestJobRead], dependencies=[Depends(require_agent_scope_viewer)])
+@router.get(
+    "/jobs",
+    response_model=list[KnowledgeIngestJobRead],
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
 def list_jobs(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(None),
@@ -303,7 +323,9 @@ def list_jobs(
 ) -> list[KnowledgeIngestJobRead]:
     ensure_tenant(db, tenant_id)
     KnowledgeService(db).finalize_stale_cancel_requested_jobs(tenant_id)
-    visible_version_ids = visible_knowledge_base_version_ids(db, tenant_id, agent_id, include_inactive=True)
+    visible_version_ids = visible_knowledge_base_version_ids(
+        db, tenant_id, agent_id, include_inactive=True
+    )
     if not visible_version_ids:
         return []
     statement = select(KnowledgeIngestJob).where(
@@ -315,12 +337,18 @@ def list_jobs(
         if statuses:
             statement = statement.where(KnowledgeIngestJob.status.in_(statuses))
     rows = db.exec(
-        statement.order_by(KnowledgeIngestJob.created_at.desc(), KnowledgeIngestJob.id.desc()).limit(limit)
+        statement.order_by(
+            KnowledgeIngestJob.created_at.desc(), KnowledgeIngestJob.id.desc()
+        ).limit(limit)
     ).all()
     return [job_read(row) for row in rows]
 
 
-@router.get("/jobs/{job_id}", response_model=KnowledgeIngestJobRead, dependencies=[Depends(require_agent_scope_viewer)])
+@router.get(
+    "/jobs/{job_id}",
+    response_model=KnowledgeIngestJobRead,
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
 def get_job(
     job_id: str,
     tenant_id: str = Query(...),
@@ -347,14 +375,20 @@ def cancel_job(
     ensure_tenant(db, tenant_id)
     existing = db.get(KnowledgeIngestJob, job_id)
     if existing and existing.tenant_id == tenant_id:
-        _ensure_open_gallery_knowledge_admin(db, tenant_id, existing.knowledge_base_id, current_user)
+        _ensure_open_gallery_knowledge_admin(
+            db, tenant_id, existing.knowledge_base_id, current_user
+        )
     job = KnowledgeService(db).cancel_ingest_job(job_id, tenant_id)
     if not job:
         raise HTTPException(status_code=404, detail="Knowledge ingest job not found")
     return job_read(job)
 
 
-@router.get("/documents", response_model=list[KnowledgeDocumentRead], dependencies=[Depends(require_agent_scope_viewer)])
+@router.get(
+    "/documents",
+    response_model=list[KnowledgeDocumentRead],
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
 def list_documents(
     tenant_id: str = Query(...),
     knowledge_base_id: str | None = Query(None),
@@ -363,14 +397,18 @@ def list_documents(
     db: Session = Depends(get_session),
 ) -> list[KnowledgeDocumentRead]:
     ensure_tenant(db, tenant_id)
-    visible_versions = visible_knowledge_base_versions(db, tenant_id, agent_id, include_inactive=True)
+    visible_versions = visible_knowledge_base_versions(
+        db, tenant_id, agent_id, include_inactive=True
+    )
     if not visible_versions:
         return []
     if knowledge_base_id and knowledge_base_id not in visible_versions:
         return []
     stmt = select(KnowledgeDocument).where(KnowledgeDocument.tenant_id == tenant_id)
     if include_all_versions:
-        visible_knowledge_base_ids = [knowledge_base_id] if knowledge_base_id else list(visible_versions)
+        visible_knowledge_base_ids = (
+            [knowledge_base_id] if knowledge_base_id else list(visible_versions)
+        )
         stmt = stmt.where(KnowledgeDocument.knowledge_base_id.in_(visible_knowledge_base_ids))
     else:
         visible_version_ids = [
@@ -383,7 +421,11 @@ def list_documents(
     return [document_read(row) for row in rows]
 
 
-@router.get("/documents/{document_id}", response_model=KnowledgeDocumentRead, dependencies=[Depends(require_agent_scope_viewer)])
+@router.get(
+    "/documents/{document_id}",
+    response_model=KnowledgeDocumentRead,
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
 def get_document(
     document_id: str,
     tenant_id: str = Query(...),
@@ -406,10 +448,12 @@ def update_document(
     _ensure_open_gallery_knowledge_admin(db, request.tenant_id, row.knowledge_base_id, current_user)
     metadata = dict(row.metadata_json or {})
     if request.metadata is not None:
-        metadata = dict(request.metadata)
+        metadata = metadata_preserving_creator(row.metadata_json, request.metadata)
     if request.title is not None:
         row.title = request.title.strip() or row.filename
-        document_card = metadata.get("document_card") if isinstance(metadata.get("document_card"), dict) else {}
+        document_card = (
+            metadata.get("document_card") if isinstance(metadata.get("document_card"), dict) else {}
+        )
         metadata["document_card"] = {**document_card, "title": row.title}
     if request.status is not None:
         row.status = request.status
@@ -444,7 +488,10 @@ def get_document_buckets(
             .group_by(KnowledgeChunk.bucket_id)
         ).all()
     )
-    return [_bucket_read_mapping_with_stats(row, int(chunk_counts.get(str(row.get("id")), 0))) for row in rows]
+    return [
+        _bucket_read_mapping_with_stats(row, int(chunk_counts.get(str(row.get("id")), 0)))
+        for row in rows
+    ]
 
 
 @router.put("/buckets/{bucket_id}", response_model=KnowledgeBucketRead)
@@ -464,7 +511,10 @@ def update_bucket(
     if request.summary is not None:
         row.summary = request.summary
     if request.metadata is not None:
-        row.metadata_json = request.metadata
+        row.metadata_json = metadata_preserving_creator(
+            row.metadata_json,
+            request.metadata,
+        )
     row.updated_at = utc_now()
     db.add(row)
     db.commit()
@@ -518,7 +568,10 @@ def update_chunk(
     if request.summary is not None:
         row.summary = request.summary
     if request.metadata is not None:
-        row.metadata_json = request.metadata
+        row.metadata_json = metadata_preserving_creator(
+            row.metadata_json,
+            request.metadata,
+        )
     row.updated_at = utc_now()
     db.add(row)
     bucket = _sync_bucket_content_from_chunks(db, request.tenant_id, row.bucket_id)
@@ -552,7 +605,9 @@ def search_knowledge(
     if request.knowledge_base_version_ids:
         allowed_ids = set(visible_version_ids)
         request.knowledge_base_version_ids = [
-            version_id for version_id in request.knowledge_base_version_ids if version_id in allowed_ids
+            version_id
+            for version_id in request.knowledge_base_version_ids
+            if version_id in allowed_ids
         ]
     else:
         request.knowledge_base_version_ids = visible_version_ids
@@ -569,7 +624,9 @@ def _get_default_model(db: Session, tenant_id: str) -> ModelConfig | None:
     ).first()
 
 
-def _get_request_model(db: Session, tenant_id: str, model_config_id: str | None = None) -> ModelConfig | None:
+def _get_request_model(
+    db: Session, tenant_id: str, model_config_id: str | None = None
+) -> ModelConfig | None:
     if not model_config_id:
         return _get_default_model(db, tenant_id)
     model_config = db.get(ModelConfig, model_config_id)
@@ -591,7 +648,9 @@ def list_discoveries(
     db: Session = Depends(get_session),
 ) -> list[KnowledgeDiscoveryRead]:
     ensure_tenant(db, tenant_id)
-    visible_versions = visible_knowledge_base_versions(db, tenant_id, agent_id, include_inactive=True)
+    visible_versions = visible_knowledge_base_versions(
+        db, tenant_id, agent_id, include_inactive=True
+    )
     if knowledge_base_id and knowledge_base_id not in visible_versions:
         return []
     visible_version_ids = [
@@ -639,7 +698,9 @@ def reject_discovery(
 
 def _refresh_document_okf_concepts(db: Session, document: KnowledgeDocument) -> None:
     metadata = document.metadata_json or {}
-    section_nodes = metadata.get("section_tree") if isinstance(metadata.get("section_tree"), list) else []
+    section_nodes = (
+        metadata.get("section_tree") if isinstance(metadata.get("section_tree"), list) else []
+    )
     buckets = db.exec(
         select(KnowledgeBucket)
         .where(
@@ -707,7 +768,11 @@ def job_read(row: KnowledgeIngestJob) -> KnowledgeIngestJobRead:
         stage=row.stage,
         progress=row.progress,
         error=row.error,
-        metadata={key: value for key, value in (row.metadata_json or {}).items() if key != "content_base64"},
+        metadata={
+            key: value
+            for key, value in (row.metadata_json or {}).items()
+            if key != "content_base64"
+        },
         created_at=row.created_at.isoformat(),
         started_at=row.started_at.isoformat() if row.started_at else None,
         finished_at=row.finished_at.isoformat() if row.finished_at else None,
@@ -741,7 +806,9 @@ def bucket_read_with_stats(row: KnowledgeBucket, chunk_count: int) -> KnowledgeB
     return item
 
 
-def _safe_document_bucket_rows(db: Session, tenant_id: str, document_id: str) -> list[Mapping[str, Any]]:
+def _safe_document_bucket_rows(
+    db: Session, tenant_id: str, document_id: str
+) -> list[Mapping[str, Any]]:
     return list(
         db.execute(
             text(
@@ -802,7 +869,9 @@ def _safe_bucket_chunk_rows(db: Session, tenant_id: str, bucket_id: str) -> list
     )
 
 
-def _bucket_read_mapping_with_stats(row: Mapping[str, Any], chunk_count: int) -> KnowledgeBucketRead:
+def _bucket_read_mapping_with_stats(
+    row: Mapping[str, Any], chunk_count: int
+) -> KnowledgeBucketRead:
     summary = _safe_text(row.get("summary"))
     metadata = _safe_json_object(row.get("metadata_json"))
     return KnowledgeBucketRead(
@@ -814,7 +883,10 @@ def _bucket_read_mapping_with_stats(row: Mapping[str, Any], chunk_count: int) ->
         title=_safe_text(row.get("title"), "未命名片段"),
         summary=summary,
         token_estimate=_safe_int(row.get("token_estimate")),
-        chunk_count=chunk_count or int(metadata.get("chunk_count") or len(metadata.get("representative_chunk_ids") or []) or 0),
+        chunk_count=chunk_count
+        or int(
+            metadata.get("chunk_count") or len(metadata.get("representative_chunk_ids") or []) or 0
+        ),
         status="ready" if chunk_count > 0 and summary.strip() else "incomplete",
         metadata=metadata,
         created_at=_safe_datetime_text(row.get("created_at")),
@@ -958,7 +1030,11 @@ def _ensure_open_gallery_knowledge_admin(
     current_user: object | None,
 ) -> None:
     knowledge_base = db.get(KnowledgeBase, knowledge_base_id)
-    metadata = knowledge_base.metadata_json if knowledge_base and isinstance(knowledge_base.metadata_json, dict) else {}
+    metadata = (
+        knowledge_base.metadata_json
+        if knowledge_base and isinstance(knowledge_base.metadata_json, dict)
+        else {}
+    )
     owner_agent_id = metadata.get("owner_agent_id")
     if isinstance(owner_agent_id, str) and owner_agent_id:
         ensure_agent_scope_manager(db, tenant_id, owner_agent_id, current_user)

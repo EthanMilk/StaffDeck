@@ -7,19 +7,33 @@ from fastapi import HTTPException
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.agents.branching import ensure_open_gallery_binding
-from app.api.tools import _normalize_probe_url, delete_tool, list_tools, probe_tool as _probe_tool
+from app.agents.branching import ensure_open_gallery_binding, ensure_private_resource_binding
+from app.api.tools import (
+    _ensure_tool_visible,
+    _normalize_probe_url,
+    delete_tool,
+    list_tools,
+    probe_tool as _probe_tool,
+)
 from app.config import get_settings
 from app.db.models import AgentProfile, AgentResourceBinding, Tenant, Tool, User
 from app.tools.tool_schema import ToolProbeRequest
 
 
 def _admin_user() -> User:
-    return User(id="user_admin", tenant_id="tenant_demo", username="ops", role="admin", password_hash="test")
+    return User(
+        id="user_admin", tenant_id="tenant_demo", username="ops", role="admin", password_hash="test"
+    )
 
 
 def _member_user() -> User:
-    return User(id="user_member", tenant_id="tenant_demo", username="member", role="member", password_hash="test")
+    return User(
+        id="user_member",
+        tenant_id="tenant_demo",
+        username="member",
+        role="member",
+        password_hash="test",
+    )
 
 
 def probe_tool(request: ToolProbeRequest, db: Session):  # noqa: ANN201
@@ -71,8 +85,16 @@ def test_delete_tool_is_tenant_scoped() -> None:
 def test_open_gallery_delete_tool_hides_gallery_without_removing_agent_binding() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True))
-        db.add(AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="研发员工", is_overall=False))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True
+            )
+        )
+        db.add(
+            AgentProfile(
+                id="agent_branch", tenant_id="tenant_demo", name="研发员工", is_overall=False
+            )
+        )
         tool = Tool(
             id="tool_weather",
             tenant_id="tenant_demo",
@@ -118,10 +140,14 @@ def test_open_gallery_delete_tool_hides_gallery_without_removing_agent_binding()
         assert list_tools("tenant_demo", bucket=None, agent_id="agent_branch", db=db) == []
 
 
-def test_open_gallery_tool_read_returns_system_creator_metadata() -> None:
+def test_open_gallery_tool_read_returns_persisted_creator_metadata() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True
+            )
+        )
         tool = Tool(
             id="tool_weather",
             tenant_id="tenant_demo",
@@ -132,7 +158,14 @@ def test_open_gallery_tool_read_returns_system_creator_metadata() -> None:
         )
         db.add(tool)
         db.commit()
-        ensure_open_gallery_binding(db, "tenant_demo", "tool", tool.id, "active")
+        ensure_open_gallery_binding(
+            db,
+            "tenant_demo",
+            "tool",
+            tool.id,
+            "active",
+            metadata_json={"creator_name": "admin", "created_by_username": "admin"},
+        )
         db.commit()
 
         rows = list_tools("tenant_demo", bucket=None, agent_id="agent_overall", db=db)
@@ -142,11 +175,42 @@ def test_open_gallery_tool_read_returns_system_creator_metadata() -> None:
         assert rows[0].metadata["created_by_username"] == "admin"
 
 
+def test_private_tool_is_not_visible_without_employee_scope() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        agent = AgentProfile(id="agent_private", tenant_id="tenant_demo", name="研发员工")
+        tool = Tool(
+            id="tool_private",
+            tenant_id="tenant_demo",
+            name="private.lookup",
+            method="POST",
+            url="https://example.test/private",
+        )
+        db.add(agent)
+        db.add(tool)
+        db.flush()
+        ensure_private_resource_binding(db, "tenant_demo", agent.id, "tool", tool.id, "active")
+        db.commit()
+
+        with pytest.raises(HTTPException) as exc_info:
+            _ensure_tool_visible(db, "tenant_demo", tool, None)
+
+        assert exc_info.value.status_code == 404
+
+
 def test_agent_without_tool_binding_does_not_see_open_gallery_tools() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True))
-        db.add(AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="研发员工", is_overall=False))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True
+            )
+        )
+        db.add(
+            AgentProfile(
+                id="agent_branch", tenant_id="tenant_demo", name="研发员工", is_overall=False
+            )
+        )
         tool = Tool(
             id="tool_weather",
             tenant_id="tenant_demo",
@@ -168,7 +232,11 @@ def test_agent_without_tool_binding_does_not_see_open_gallery_tools() -> None:
 def test_invalid_agent_id_does_not_fall_back_to_open_gallery_tools() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True
+            )
+        )
         tool = Tool(
             id="tool_weather",
             tenant_id="tenant_demo",

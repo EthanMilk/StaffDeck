@@ -171,6 +171,7 @@ function scheduledTaskTraceLines(draft?: Partial<ScheduledTaskDraftRead> | Recor
       text: '识别定时任务需求',
       detail: '用户选择了创建定时任务模式',
       state: 'completed',
+      icon: 'judge',
     },
     {
       id: 'scheduled_task_parse',
@@ -178,6 +179,7 @@ function scheduledTaskTraceLines(draft?: Partial<ScheduledTaskDraftRead> | Recor
       text: '解析执行计划',
       detail: `计划：${formatScheduledTaskDraftSchedule(draft)}`,
       state: 'completed',
+      icon: 'advance',
     },
     {
       id: 'scheduled_task_draft',
@@ -185,6 +187,7 @@ function scheduledTaskTraceLines(draft?: Partial<ScheduledTaskDraftRead> | Recor
       text: '生成定时任务草案',
       detail: scheduledTaskDraftTraceDetail(draft),
       state: 'completed',
+      icon: 'advance',
     },
   ];
 }
@@ -197,6 +200,7 @@ function scheduledTaskStatusTraceLine(phase: string, data: Record<string, unknow
       text: '识别定时任务需求',
       detail: '用户选择了创建定时任务模式',
       state: 'running',
+      icon: 'judge',
     };
   }
   if (phase === 'scheduled_task_parse') {
@@ -205,6 +209,7 @@ function scheduledTaskStatusTraceLine(phase: string, data: Record<string, unknow
       kind: 'decision',
       text: '解析执行计划',
       state: 'running',
+      icon: 'advance',
     };
   }
   if (phase === 'scheduled_task_draft') {
@@ -214,6 +219,7 @@ function scheduledTaskStatusTraceLine(phase: string, data: Record<string, unknow
       text: '生成定时任务草案',
       detail: scheduledTaskDraftTraceDetail(data),
       state: 'completed',
+      icon: 'advance',
     };
   }
   return null;
@@ -360,7 +366,7 @@ export function useChatSession() {
       return true;
     }
     const rawMessage = error instanceof Error ? error.message : fallback;
-    const isNetworkError = rawMessage === 'Failed to fetch' || rawMessage.includes('NetworkError');
+    const isNetworkError = error instanceof TypeError;
     const noticeKey = isNetworkError ? 'chat-network-error' : `chat-${scope}-error`;
     const now = Date.now();
     const lastShownAt = loadErrorNoticeRef.current[noticeKey] || 0;
@@ -1677,6 +1683,7 @@ export function useChatSession() {
             text: `${label} ${skill.name || skill.skillId}`,
             detail: skill.stepId ? `当前步骤 ${skill.stepId}` : undefined,
             state: skill.state === 'suspended' ? 'completed' : 'running',
+            icon: 'advance',
           });
         });
       return;
@@ -1690,6 +1697,7 @@ export function useChatSession() {
         text: `选择通用技能 ${skillName || skillSlug || ''}`.trim(),
         detail: skillSlug || undefined,
         state: 'running',
+        icon: 'advance',
       });
       return;
     }
@@ -1716,7 +1724,7 @@ export function useChatSession() {
       const previousOutput = existing?.output || existing?.detail || '';
       const detail = isOutputChunk && previousOutput && rawDetail ? `${previousOutput}${rawDetail}` : rawDetail;
       const outputInfo = generalSkillTraceOutput(item.data, phase, detail);
-      const codePhases = new Set(['plan_created', 'attempt_started', 'running_code', 'stdout_chunk', 'stderr_chunk', 'code_finished', 'code_timeout']);
+      const codePhases = new Set(['plan_created', 'plan_failed', 'attempt_started', 'running_code', 'stdout_chunk', 'stderr_chunk', 'code_finished', 'code_timeout']);
       const runningPhases = new Set(['planning', 'repair_planning', 'attempt_started', 'running_code', 'reflection_reviewing', 'replying']);
       upsertTraceLine(traceTurnId, {
         id,
@@ -1730,6 +1738,11 @@ export function useChatSession() {
         outputTitle: outputInfo.title,
         state: runningPhases.has(phase) ? 'running' : phase.includes('failed') || phase === 'code_timeout' ? 'failed' : 'completed',
         collapsible: Boolean(code || outputInfo.output),
+        icon: codePhases.has(phase)
+          ? 'generated'
+          : phase.startsWith('reflection_') || phase === 'repair_planning'
+            ? 'loading'
+            : 'advance',
       });
       return;
     }
@@ -1740,6 +1753,7 @@ export function useChatSession() {
         text: '读取知识库',
         detail: knowledgeResultTraceDetail(item.data),
         state: 'completed',
+        icon: 'advance',
       });
       return;
     }
@@ -1752,6 +1766,7 @@ export function useChatSession() {
           text: `${tool.isError ? '工具调用失败' : '调用工具'} ${tool.toolName}`,
           detail: toolTraceDetail(tool),
           state: tool.isError ? 'failed' : 'completed',
+          icon: 'tool',
         });
       }
       return;
@@ -1767,6 +1782,7 @@ export function useChatSession() {
           ? (targetTool ? `决定继续调用 ${targetTool}` : '决定继续调用工具')
           : '判断无需继续调用工具',
         state: 'completed',
+        icon: 'loading',
       });
       return;
     }
@@ -1779,6 +1795,7 @@ export function useChatSession() {
         text: skipped ? '反思已关闭' : needsRetry ? '反思后继续尝试' : '反思通过',
         detail: reflectionTraceDetail(item.data),
         state: 'completed',
+        icon: 'loading',
       });
       return;
     }
@@ -1802,9 +1819,9 @@ export function useChatSession() {
         finishTrace(traceTurnId, true);
       } else if (phase === 'tool' && typeof item.data.tool_name === 'string') {
         const toolCallId = typeof item.data.tool_call_id === 'string' ? item.data.tool_call_id : item.data.tool_name;
-        upsertTraceLine(traceTurnId, { id: `tool_${toolCallId}`, kind: 'tool', text: `正在调用 ${item.data.tool_name}`, state: 'running' });
+        upsertTraceLine(traceTurnId, { id: `tool_${toolCallId}`, kind: 'tool', text: `正在调用 ${item.data.tool_name}`, state: 'running', icon: 'tool' });
       } else if (phase === 'routing') {
-        upsertTraceLine(traceTurnId, { id: 'decision_router', kind: 'decision', text: '判断意图', state: 'running' });
+        upsertTraceLine(traceTurnId, { id: 'decision_router', kind: 'decision', text: '判断意图', state: 'running', icon: 'judge', provisional: true });
       } else if (isKnowledgeTracePhase(phase)) {
         upsertTraceLine(traceTurnId, {
           id: 'knowledge_lookup',
@@ -1812,6 +1829,7 @@ export function useChatSession() {
           text: knowledgeTraceText(item.data),
           detail: knowledgeTraceDetail(item.data),
           state: phase === 'evidence_pack' || phase.startsWith('no_') || phase === 'okf_only' ? 'completed' : 'running',
+          icon: 'advance',
         });
       } else if (phase === 'stepping') {
         const repairReason = typeof item.data.repair_reason === 'string' ? item.data.repair_reason : 'main';
@@ -1821,15 +1839,17 @@ export function useChatSession() {
           kind: 'decision',
           text: repairReason === 'main' ? '决定下一步' : '重新分析',
           state: 'running',
+          icon: repairReason === 'main' ? 'advance' : 'loading',
         });
       } else if (phase === 'reflecting') {
-        upsertTraceLine(traceTurnId, { id: 'reflection', kind: 'decision', text: '正在反思', state: 'running' });
+        upsertTraceLine(traceTurnId, { id: 'reflection', kind: 'decision', text: '正在反思', state: 'running', icon: 'loading' });
       } else if (phase !== 'received') {
         upsertTraceLine(traceTurnId, {
           id: `decision_status_${phase}`,
           kind: 'decision',
           text: shouldTouchStream ? eventStream.phase : publicStreamPhase(item.data),
           state: 'running',
+          icon: 'advance',
         });
       }
       notifyStream();
@@ -2229,6 +2249,7 @@ export function useChatSession() {
               text: '响应同步超时',
               detail: '前端已从事件日志持续同步，但服务端没有写入完成事件。',
               state: 'failed',
+              icon: 'loading',
             });
             finishTrace(recoveringTurnId, true);
             appendRealtime(id, {
@@ -2476,7 +2497,7 @@ export function useChatSession() {
       },
       created_at: prepared.createdAt,
     });
-    upsertTraceLine(turnId, { id: 'decision_router', kind: 'decision', text: '判断意图', state: 'running' });
+    upsertTraceLine(turnId, { id: 'decision_router', kind: 'decision', text: '判断意图', state: 'running', icon: 'judge', provisional: true });
     setCollapsedTraceIds((current) => current.filter((item) => item !== turnId));
     setExpandedTraceIds((current) => (current.includes(turnId) ? current : [...current, turnId]));
     stream.loading = true;

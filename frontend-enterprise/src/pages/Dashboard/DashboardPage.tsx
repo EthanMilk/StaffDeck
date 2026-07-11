@@ -26,7 +26,7 @@ import {
   agentResourceCount,
   canManageEmployeeAgent,
   canSelectCurrentEmployeeAgent,
-  employeeCreatorNameOrAdmin,
+  employeeCreatorName,
   employeeDisplayName,
   employeeProfile,
   preferredEmployeeAgent,
@@ -248,7 +248,7 @@ export default function DashboardPage({
   }
 
   const employee = employeeProfile(selectedAgent);
-  const employeeCreator = employeeCreatorNameOrAdmin(selectedAgent);
+  const employeeCreator = employeeCreatorName(selectedAgent);
   const canEditSelectedAgent = canManageEmployeeAgent(selectedAgent, currentUser);
   const activeSkills = skills.filter((item) => item.status === 'published' && item.branch_status !== 'inactive');
   const activeGeneralSkills = generalSkills.filter((item) => item.status === 'published');

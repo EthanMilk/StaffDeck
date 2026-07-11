@@ -13,7 +13,15 @@ from typing import Any, Literal
 
 from sqlmodel import Session, select
 
-from app.agents.branching import model_for_agent, visible_knowledge_base_ids, visible_published_skills, visible_skill
+from app.agents.branching import (
+    is_bound_resource_visible_for_agent,
+    is_open_gallery_resource,
+    model_for_agent,
+    visible_knowledge_base_ids,
+    visible_published_skills,
+    visible_skill,
+    visible_tool_rows,
+)
 from app.core.conversation_context import build_conversation_context
 from app.core.cancellation import clear_chat_turn_cancelled, is_chat_turn_cancelled
 from app.core.reflection_agent import ReflectionAgent, ReflectionDecision, action_needs_reflection
@@ -46,16 +54,18 @@ from app.db.models import (
 from app.general_skills import GeneralSkillRunner, GeneralSkillSelector
 from app.general_skills.schema import GeneralSkillRunResponse, GeneralSkillSelection
 from app.knowledge import KnowledgeService
-from app.knowledge.citations import compact_knowledge_citation_labels, knowledge_citations_from_results
+from app.knowledge.citations import (
+    compact_knowledge_citation_labels,
+    knowledge_citations_from_results,
+)
 from app.knowledge.schema import KnowledgeSearchRequest, KnowledgeSearchResponse
-from app.llm import LLMError, MULTIMODAL_UNSUPPORTED_MESSAGE, model_supports_images
+from app.llm import LLMError
 from app.memory.jobs import enqueue_memory_capture
 from app.memory.service import MemoryService, memory_read
 from app.observability import EventLog
 from app.session.attachments import (
     message_content_with_attachment_context,
     message_images_from_metadata,
-    request_has_image_attachments,
 )
 from app.session.helpers import public_session
 from app.session.session_schema import (
@@ -83,7 +93,6 @@ GENERAL_SKILL_TOOL_PREFIX = "general_skill."
 CANCELLED_ASSISTANT_REPLY = "已停止生成"
 IDEMPOTENT_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 ERROR_TRACEBACK_CHAR_LIMIT = 6000
-PROFILE_NAME_PREFIX = "用户姓名/称呼："
 AGENT_PERSONA_METADATA_FIELDS: tuple[tuple[str, str], ...] = (
     ("role_name", "岗位"),
     ("position", "岗位"),
@@ -148,19 +157,7 @@ def _normalize_action(action: object) -> str:
     if text.startswith("call_tool:"):
         tool_name = text.split(":", 1)[1].strip().strip("`'\"").strip()
         return f"call_tool:{tool_name}" if tool_name else ""
-    aliases = {
-        "ask": "ask_user",
-        "ask_for_info": "ask_user",
-        "ask_user_info": "ask_user",
-        "reply": "answer_user",
-        "respond": "answer_user",
-        "transfer_to_human": "handoff_human",
-        "human_handoff": "handoff_human",
-        "manual_handoff": "handoff_human",
-        "manual_service": "handoff_human",
-        "escalate_to_human": "handoff_human",
-    }
-    return aliases.get(text, text)
+    return text
 
 
 def _slot_has_value(slots: dict[str, Any], field: str) -> bool:
@@ -192,13 +189,10 @@ def _profile_name_from_memory(memory_context: list[dict[str, object]]) -> str:
         metadata = memory.get("metadata")
         key = metadata.get("key") if isinstance(metadata, dict) else None
         content = str(memory.get("content") or "").strip()
-        if key != "preferred_name" and not content.startswith(PROFILE_NAME_PREFIX):
+        if key != "preferred_name":
             continue
-        name = content.split("：", 1)[1] if "：" in content else content
-        name = re.split(r"[。；;，,\n]", name, maxsplit=1)[0].strip()
-        name = re.sub(r"^(用户)?(姓名|称呼)?[:：为是叫\s]+", "", name).strip()
-        if name:
-            return name[:40]
+        if content:
+            return content[:40]
     return ""
 
 
@@ -281,14 +275,18 @@ class AgentLoop:
         skills_by_id = {skill.skill_id: skill for skill in skills}
         hydrated: dict[str, Any] = {}
 
-        target_skill = skills_by_id.get(router_decision.target_skill_id or chat_session.active_skill_id or "")
+        target_skill = skills_by_id.get(
+            router_decision.target_skill_id or chat_session.active_skill_id or ""
+        )
         base_slots = dict(chat_session.slots_json or {})
         base_slots.update(dict(router_decision.slot_hints or {}))
         patch = self._slot_hydration_patch(target_skill, base_slots, memory_context)
         if patch:
             router_decision.slot_hints = {**dict(router_decision.slot_hints or {}), **patch}
             hydrated["primary"] = patch
-        remaining_awaiting = self._trim_satisfied_awaiting_fields(router_decision, {**base_slots, **patch})
+        remaining_awaiting = self._trim_satisfied_awaiting_fields(
+            router_decision, {**base_slots, **patch}
+        )
         if remaining_awaiting is not None:
             hydrated["awaiting_input_expected_fields"] = remaining_awaiting
 
@@ -406,7 +404,9 @@ class AgentLoop:
                 "error_occurred",
                 {"code": "LLM_ERROR", "message": str(exc)},
             )
-            reply = format_runtime_failure_reply("模型调用失败", exc, "LLM_ERROR", model_failure_suggestion(exc))
+            reply = format_runtime_failure_reply(
+                "模型调用失败", exc, "LLM_ERROR", model_failure_suggestion(exc)
+            )
         except Exception as exc:
             chat_session = chat_session or self._get_or_create_session(request)
             self.events.record(
@@ -503,8 +503,12 @@ class AgentLoop:
                 user_message_id,
             ),
         )
-        run_response = self.general_skill_runner.run(skill, request.message, model_config, request.user_id)
-        self._record_general_skill_run_events(request.tenant_id, chat_session, run_response, user_message_id)
+        run_response = self.general_skill_runner.run(
+            skill, request.message, model_config, request.user_id
+        )
+        self._record_general_skill_run_events(
+            request.tenant_id, chat_session, run_response, user_message_id
+        )
         step_result, tool_result = self._general_skill_agent_outputs(run_response)
         knowledge_step = self._auto_knowledge_step_result(
             request,
@@ -514,7 +518,9 @@ class AgentLoop:
             selection,
         )
         self._merge_capability_knowledge(step_result, knowledge_step)
-        active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
+        active_skill = self._get_active_skill(
+            request.tenant_id, chat_session.active_skill_id, chat_session.agent_id
+        )
         reply = self._generate_reply_segment(
             request.message,
             chat_session,
@@ -558,7 +564,10 @@ class AgentLoop:
     def _general_skill_agent_outputs(
         self, run_response: GeneralSkillRunResponse
     ) -> tuple[StepAgentResult, ToolResult]:
-        success = bool(run_response.structured_result.get("success", True)) and not run_response.stderr.strip()
+        success = (
+            bool(run_response.structured_result.get("success", True))
+            and not run_response.stderr.strip()
+        )
         data = {
             "skill_slug": run_response.skill_slug,
             "reply": run_response.reply,
@@ -570,7 +579,11 @@ class AgentLoop:
             tool_name=f"{GENERAL_SKILL_TOOL_PREFIX}{run_response.skill_slug}",
             success=success,
             data=data if success else None,
-            error=None if success else ToolError(code="GENERAL_SKILL_FAILED", message=run_response.stderr or run_response.reply),
+            error=None
+            if success
+            else ToolError(
+                code="GENERAL_SKILL_FAILED", message=run_response.stderr or run_response.reply
+            ),
         )
         step_result = StepAgentResult(
             reply=run_response.reply,
@@ -592,13 +605,15 @@ class AgentLoop:
     def _scene_router_deferred_to_general(self, router_decision: RouterDecision) -> bool:
         if router_decision.selected_task_id:
             return False
-        if router_decision.pending_tasks or router_decision.created_tasks or router_decision.task_updates:
+        if (
+            router_decision.pending_tasks
+            or router_decision.created_tasks
+            or router_decision.task_updates
+        ):
             return False
         return router_decision.decision in {
             "answer_only",
             "clarify",
-            "answer_related_question_then_resume",
-            "answer_chitchat_then_resume",
         }
 
     def _should_run_step_agent(
@@ -612,8 +627,6 @@ class AgentLoop:
             "create_pending",
             "update_pending",
             "complete_task",
-            "exit_current_skill",
-            "handoff",
             "handoff_human",
         }
 
@@ -808,8 +821,12 @@ class AgentLoop:
                 chat_session,
                 self._turn_payload(payload, user_message_id),
             )
-        yield self._stream_status(chat_session, "responding", "正在生成回复", user_message_id=user_message_id)
-        active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
+        yield self._stream_status(
+            chat_session, "responding", "正在生成回复", user_message_id=user_message_id
+        )
+        active_skill = self._get_active_skill(
+            request.tenant_id, chat_session.active_skill_id, chat_session.agent_id
+        )
         reply = ""
         for chunk in self._generate_reply_stream_segment(
             request.message,
@@ -843,7 +860,9 @@ class AgentLoop:
                 self._pace_stream()
         if is_cancelled and is_cancelled():
             return
-        yield self._stream_event("stream_end", chat_session, self._turn_payload({}, user_message_id))
+        yield self._stream_event(
+            "stream_end", chat_session, self._turn_payload({}, user_message_id)
+        )
         if is_cancelled and is_cancelled():
             return
         self._finalize_turn(
@@ -894,7 +913,7 @@ class AgentLoop:
         replace_existing_reply: bool = False,
         user_message_id: str | None = None,
     ) -> Iterator[dict[str, object]]:
-        if not (chat_session.pending_tasks_json or chat_session.skill_stack_json):
+        if not chat_session.pending_tasks_json:
             return None
         max_actions = max(1, self._get_agent_loop_max_actions(request.tenant_id))
         executed_actions = 0
@@ -907,7 +926,7 @@ class AgentLoop:
         tool_result: ToolResult | None = None
 
         for schedule_round in range(max_actions):
-            if not (chat_session.pending_tasks_json or chat_session.skill_stack_json):
+            if not chat_session.pending_tasks_json:
                 break
             yield self._stream_status(
                 chat_session,
@@ -958,15 +977,21 @@ class AgentLoop:
                 before_skill = chat_session.active_skill_id
                 before_step = chat_session.active_step_id
                 self.runtime.apply_decision(chat_session, router_decision)
-                state_pruned = self._drop_unavailable_skill_state(request.tenant_id, chat_session, skills)
-                if self._should_record_runtime_event_after_prune(router_decision, chat_session, skills, state_pruned):
+                state_pruned = self._drop_unavailable_skill_state(
+                    request.tenant_id, chat_session, skills
+                )
+                if self._should_record_runtime_event_after_prune(
+                    router_decision, chat_session, skills, state_pruned
+                ):
                     self._record_runtime_event(
                         request.tenant_id, chat_session, before_skill, before_step, router_decision
                     )
                 self.db.commit()
                 self.db.refresh(chat_session)
 
-                active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
+                active_skill = self._get_active_skill(
+                    request.tenant_id, chat_session.active_skill_id, chat_session.agent_id
+                )
                 if not self._should_run_step_agent(router_decision, active_skill):
                     continue
                 yield self._stream_event(
@@ -975,14 +1000,19 @@ class AgentLoop:
                     self._skill_state_payload(
                         chat_session,
                         skills,
-                        self._runtime_stream_context(router_decision, before_skill, before_step, chat_session),
+                        self._runtime_stream_context(
+                            router_decision, before_skill, before_step, chat_session
+                        ),
                     ),
                 )
                 yield self._stream_status(
                     chat_session,
                     "stepping",
                     "正在思考",
-                    {"active_skill_id": chat_session.active_skill_id, "active_step_id": chat_session.active_step_id},
+                    {
+                        "active_skill_id": chat_session.active_skill_id,
+                        "active_step_id": chat_session.active_step_id,
+                    },
                     user_message_id=user_message_id,
                 )
                 repair_stream_events: list[tuple[str, dict[str, object]]] = []
@@ -1005,7 +1035,9 @@ class AgentLoop:
                 self.db.commit()
                 self.db.refresh(chat_session)
                 for event_name, payload in repair_stream_events:
-                    yield self._stream_event(event_name, chat_session, self._turn_payload(payload, user_message_id))
+                    yield self._stream_event(
+                        event_name, chat_session, self._turn_payload(payload, user_message_id)
+                    )
 
                 tool_result = None
                 if step_result.tool_call:
@@ -1020,11 +1052,15 @@ class AgentLoop:
                         tool_stream_events,
                     )
                     for event_name, payload in tool_stream_events:
-                        yield self._stream_event(event_name, chat_session, self._turn_payload(payload, user_message_id))
+                        yield self._stream_event(
+                            event_name, chat_session, self._turn_payload(payload, user_message_id)
+                        )
 
                 reflection_stream_events: list[tuple[str, dict[str, object]]] = []
                 reflection_max_rounds = self._get_reflection_max_rounds(request.tenant_id)
-                if reflection_max_rounds > 0 and self._should_try_reflection(router_decision, step_result, tool_result):
+                if reflection_max_rounds > 0 and self._should_try_reflection(
+                    router_decision, step_result, tool_result
+                ):
                     yield self._stream_status(
                         chat_session,
                         "reflecting",
@@ -1077,9 +1113,13 @@ class AgentLoop:
                     completed_skill_ids_this_turn,
                 )
                 for event_name, payload in graph_stream_events:
-                    yield self._stream_event(event_name, chat_session, self._turn_payload(payload, user_message_id))
+                    yield self._stream_event(
+                        event_name, chat_session, self._turn_payload(payload, user_message_id)
+                    )
 
-                yield self._stream_status(chat_session, "responding", "正在生成回复", user_message_id=user_message_id)
+                yield self._stream_status(
+                    chat_session, "responding", "正在生成回复", user_message_id=user_message_id
+                )
                 chunks: list[str] = []
                 for chunk in self._generate_reply_stream_segment(
                     request.message,
@@ -1129,7 +1169,9 @@ class AgentLoop:
                     yield self._stream_event(
                         "stream_replace",
                         chat_session,
-                        self._turn_payload({"content": "\n\n".join(replies).strip()}, user_message_id),
+                        self._turn_payload(
+                            {"content": "\n\n".join(replies).strip()}, user_message_id
+                        ),
                     )
                 executed_actions += 1
                 finalize_state = self._finalize_execution_after_reply(
@@ -1164,12 +1206,17 @@ class AgentLoop:
                     request.tenant_id,
                     chat_session.id,
                     "pending_tasks_waiting",
-                    {"pending_tasks": chat_session.pending_tasks_json or [], "round": schedule_round + 1},
+                    {
+                        "pending_tasks": chat_session.pending_tasks_json or [],
+                        "round": schedule_round + 1,
+                    },
                 )
             if executed_actions >= max_actions:
                 break
 
-        return self._scheduled_continuation(replies, active_skill, router_decision, step_result, tool_result)
+        return self._scheduled_continuation(
+            replies, active_skill, router_decision, step_result, tool_result
+        )
 
     def handle_turn_stream(self, request: ChatTurnRequest) -> Iterator[dict[str, object]]:
         router_decision: RouterDecision | None = None
@@ -1207,7 +1254,9 @@ class AgentLoop:
                     str(payload.get("client_turn_id") or "").strip(),
                 }
                 matches_server_turn = user_message_id in event_turn_ids
-                matches_client_turn = bool(normalized_client_turn_id and normalized_client_turn_id in event_turn_ids)
+                matches_client_turn = bool(
+                    normalized_client_turn_id and normalized_client_turn_id in event_turn_ids
+                )
                 if matches_server_turn or matches_client_turn:
                     self._persist_cancelled_assistant_message(
                         request.tenant_id,
@@ -1251,7 +1300,9 @@ class AgentLoop:
                 return False
             client_turn_id = (request.client_turn_id or "").strip()
             server_cancelled = is_chat_turn_cancelled(chat_session.id, user_message_id)
-            client_cancelled = bool(client_turn_id and is_chat_turn_cancelled(chat_session.id, client_turn_id))
+            client_cancelled = bool(
+                client_turn_id and is_chat_turn_cancelled(chat_session.id, client_turn_id)
+            )
             if not server_cancelled and not client_cancelled:
                 return False
             return record_current_turn_cancelled(client_turn_id)
@@ -1277,7 +1328,9 @@ class AgentLoop:
 
         def recover_chat_session_after_exception() -> ChatSession:
             nonlocal chat_session
-            session_id = str((chat_session.id if chat_session else request.session_id) or "").strip()
+            session_id = str(
+                (chat_session.id if chat_session else request.session_id) or ""
+            ).strip()
             self.db.rollback()
             recovered = self.db.get(ChatSession, session_id) if session_id else None
             if recovered is None:
@@ -1325,7 +1378,9 @@ class AgentLoop:
                     self._turn_payload({"content": chunk}, user_message_id),
                 )
                 self._pace_stream()
-            yield self._stream_event("stream_end", target_session, self._turn_payload({}, user_message_id))
+            yield self._stream_event(
+                "stream_end", target_session, self._turn_payload({}, user_message_id)
+            )
             finalize_turn_once(target_session, reply, step_result, request.message)
             self.db.commit()
             self.db.refresh(target_session)
@@ -1380,18 +1435,19 @@ class AgentLoop:
             model_config = self._get_request_model(request, chat_session.agent_id)
             if not model_config:
                 raise AgentLoopPreconditionError("missing_model_config", "没有默认模型配置。")
-            self._ensure_request_multimodal_supported(request, model_config)
             memory_model_config = model_config
             skills = self._list_published_skills(request.tenant_id, chat_session.agent_id)
             tools = self._tools_with_general_skills(
                 request.tenant_id,
-                self._list_enabled_tools(request.tenant_id),
+                self._list_enabled_tools(request.tenant_id, chat_session.agent_id),
                 chat_session.agent_id,
             )
             persona_prompt = self._get_persona_prompt(request.tenant_id, chat_session.agent_id)
             self._drop_unavailable_skill_state(request.tenant_id, chat_session, skills)
             if not skills:
-                yield self._stream_status(chat_session, "routing", "正在判断用户意图", user_message_id=user_message_id)
+                yield self._stream_status(
+                    chat_session, "routing", "正在判断用户意图", user_message_id=user_message_id
+                )
                 capability = self._select_general_capability(
                     request.message, model_config, chat_session.agent_id
                 )
@@ -1428,8 +1484,12 @@ class AgentLoop:
                     stream_events=knowledge_stream_events,
                 )
                 for event_name, payload in knowledge_stream_events:
-                    yield self._stream_event(event_name, chat_session, self._turn_payload(payload, user_message_id))
-                yield self._stream_status(chat_session, "responding", "正在生成回复", user_message_id=user_message_id)
+                    yield self._stream_event(
+                        event_name, chat_session, self._turn_payload(payload, user_message_id)
+                    )
+                yield self._stream_status(
+                    chat_session, "responding", "正在生成回复", user_message_id=user_message_id
+                )
                 reply = ""
                 for chunk in self._generate_reply_stream_segment(
                     request.message,
@@ -1452,7 +1512,9 @@ class AgentLoop:
                     self._pace_stream()
                 if mark_current_turn_cancelled():
                     return
-                yield self._stream_event("stream_end", chat_session, self._turn_payload({}, user_message_id))
+                yield self._stream_event(
+                    "stream_end", chat_session, self._turn_payload({}, user_message_id)
+                )
                 if mark_current_turn_cancelled():
                     return
                 finalize_turn_once(chat_session, reply, step_result, request.message)
@@ -1492,9 +1554,13 @@ class AgentLoop:
             self.db.commit()
             self.db.refresh(chat_session)
             conversation_context = self._conversation_context(chat_session)
-            router_context = self._conversation_context(chat_session, max_messages=ROUTER_CONTEXT_MESSAGES)
+            router_context = self._conversation_context(
+                chat_session, max_messages=ROUTER_CONTEXT_MESSAGES
+            )
 
-            yield self._stream_status(chat_session, "routing", "正在判断用户意图", user_message_id=user_message_id)
+            yield self._stream_status(
+                chat_session, "routing", "正在判断用户意图", user_message_id=user_message_id
+            )
             router_decision = self.router.decide(
                 request.message, chat_session, skills, model_config, router_context, memory_context
             )
@@ -1580,9 +1646,13 @@ class AgentLoop:
                     yield self._stream_event(
                         "router_decision",
                         chat_session,
-                        self._turn_payload(router_decision.model_dump(mode="json"), user_message_id),
+                        self._turn_payload(
+                            router_decision.model_dump(mode="json"), user_message_id
+                        ),
                     )
-                    yield self._stream_status(chat_session, "responding", "正在生成回复", user_message_id=user_message_id)
+                    yield self._stream_status(
+                        chat_session, "responding", "正在生成回复", user_message_id=user_message_id
+                    )
                     chunks: list[str] = []
                     for chunk in self._generate_reply_stream_segment(
                         request.message,
@@ -1612,8 +1682,12 @@ class AgentLoop:
                                 self._turn_payload({"content": chunk}, user_message_id),
                             )
                             self._pace_stream()
-                yield self._stream_event("stream_end", chat_session, self._turn_payload({}, user_message_id))
-                memory_recent_messages = self._recent_messages(chat_session) if memory_model_config else []
+                yield self._stream_event(
+                    "stream_end", chat_session, self._turn_payload({}, user_message_id)
+                )
+                memory_recent_messages = (
+                    self._recent_messages(chat_session) if memory_model_config else []
+                )
                 finalize_turn_once(chat_session, reply, step_result, request.message)
                 self.db.commit()
                 self.db.refresh(chat_session)
@@ -1645,13 +1719,21 @@ class AgentLoop:
             before_skill = chat_session.active_skill_id
             before_step = chat_session.active_step_id
             self.runtime.apply_decision(chat_session, router_decision)
-            state_pruned = self._drop_unavailable_skill_state(request.tenant_id, chat_session, skills)
-            if self._should_record_runtime_event_after_prune(router_decision, chat_session, skills, state_pruned):
-                self._record_runtime_event(request.tenant_id, chat_session, before_skill, before_step, router_decision)
+            state_pruned = self._drop_unavailable_skill_state(
+                request.tenant_id, chat_session, skills
+            )
+            if self._should_record_runtime_event_after_prune(
+                router_decision, chat_session, skills, state_pruned
+            ):
+                self._record_runtime_event(
+                    request.tenant_id, chat_session, before_skill, before_step, router_decision
+                )
             self.db.commit()
             self.db.refresh(chat_session)
 
-            active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
+            active_skill = self._get_active_skill(
+                request.tenant_id, chat_session.active_skill_id, chat_session.agent_id
+            )
             if not self._should_run_step_agent(router_decision, active_skill):
                 knowledge_stream_events = []
                 auto_step_result = self._auto_knowledge_step_result(
@@ -1665,8 +1747,12 @@ class AgentLoop:
                 if auto_step_result.knowledge_query:
                     step_result = auto_step_result
                 for event_name, payload in knowledge_stream_events:
-                    yield self._stream_event(event_name, chat_session, self._turn_payload(payload, user_message_id))
-                yield self._stream_status(chat_session, "responding", "正在生成回复", user_message_id=user_message_id)
+                    yield self._stream_event(
+                        event_name, chat_session, self._turn_payload(payload, user_message_id)
+                    )
+                yield self._stream_status(
+                    chat_session, "responding", "正在生成回复", user_message_id=user_message_id
+                )
                 for chunk in self._generate_reply_stream_segment(
                     request.message,
                     chat_session,
@@ -1686,7 +1772,9 @@ class AgentLoop:
                         self._turn_payload({"content": chunk}, user_message_id),
                     )
                     self._pace_stream()
-                yield self._stream_event("stream_end", chat_session, self._turn_payload({}, user_message_id))
+                yield self._stream_event(
+                    "stream_end", chat_session, self._turn_payload({}, user_message_id)
+                )
                 finalize_turn_once(chat_session, reply, step_result, request.message)
                 self.db.commit()
                 self.db.refresh(chat_session)
@@ -1710,14 +1798,19 @@ class AgentLoop:
                 self._skill_state_payload(
                     chat_session,
                     skills,
-                    self._runtime_stream_context(router_decision, before_skill, before_step, chat_session),
+                    self._runtime_stream_context(
+                        router_decision, before_skill, before_step, chat_session
+                    ),
                 ),
             )
             yield self._stream_status(
                 chat_session,
                 "stepping",
                 "正在思考",
-                {"active_skill_id": chat_session.active_skill_id, "active_step_id": chat_session.active_step_id},
+                {
+                    "active_skill_id": chat_session.active_skill_id,
+                    "active_step_id": chat_session.active_step_id,
+                },
                 user_message_id=user_message_id,
             )
             repair_stream_events: list[tuple[str, dict[str, object]]] = []
@@ -1740,7 +1833,9 @@ class AgentLoop:
             self.db.commit()
             self.db.refresh(chat_session)
             for event_name, payload in repair_stream_events:
-                yield self._stream_event(event_name, chat_session, self._turn_payload(payload, user_message_id))
+                yield self._stream_event(
+                    event_name, chat_session, self._turn_payload(payload, user_message_id)
+                )
 
             if step_result.knowledge_query:
                 knowledge_stream_events: list[tuple[str, dict[str, object]]] = []
@@ -1758,7 +1853,9 @@ class AgentLoop:
                 self.db.commit()
                 self.db.refresh(chat_session)
                 for event_name, payload in knowledge_stream_events:
-                    yield self._stream_event(event_name, chat_session, self._turn_payload(payload, user_message_id))
+                    yield self._stream_event(
+                        event_name, chat_session, self._turn_payload(payload, user_message_id)
+                    )
             if step_result.tool_call:
                 tool_stream_events: list[tuple[str, dict[str, object]]] = []
                 step_result, tool_result = self._execute_tool_action_cycle(
@@ -1771,11 +1868,15 @@ class AgentLoop:
                     tool_stream_events,
                 )
                 for event_name, payload in tool_stream_events:
-                    yield self._stream_event(event_name, chat_session, self._turn_payload(payload, user_message_id))
+                    yield self._stream_event(
+                        event_name, chat_session, self._turn_payload(payload, user_message_id)
+                    )
 
             reflection_stream_events: list[tuple[str, dict[str, object]]] = []
             reflection_max_rounds = self._get_reflection_max_rounds(request.tenant_id)
-            if reflection_max_rounds > 0 and self._should_try_reflection(router_decision, step_result, tool_result):
+            if reflection_max_rounds > 0 and self._should_try_reflection(
+                router_decision, step_result, tool_result
+            ):
                 yield self._stream_status(
                     chat_session,
                     "reflecting",
@@ -1803,7 +1904,9 @@ class AgentLoop:
                 reflection_stream_events,
             )
             for event_name, payload in reflection_stream_events:
-                yield self._stream_event(event_name, chat_session, self._turn_payload(payload, user_message_id))
+                yield self._stream_event(
+                    event_name, chat_session, self._turn_payload(payload, user_message_id)
+                )
 
             graph_stream_events: list[tuple[str, dict[str, object]]] = []
             (
@@ -1826,9 +1929,13 @@ class AgentLoop:
                 graph_stream_events,
             )
             for event_name, payload in graph_stream_events:
-                yield self._stream_event(event_name, chat_session, self._turn_payload(payload, user_message_id))
+                yield self._stream_event(
+                    event_name, chat_session, self._turn_payload(payload, user_message_id)
+                )
 
-            yield self._stream_status(chat_session, "responding", "正在生成回复", user_message_id=user_message_id)
+            yield self._stream_status(
+                chat_session, "responding", "正在生成回复", user_message_id=user_message_id
+            )
             chunks: list[str] = []
             for chunk in self._generate_reply_stream_segment(
                 request.message,
@@ -1876,7 +1983,9 @@ class AgentLoop:
                 )
             if mark_current_turn_cancelled():
                 return
-            yield self._stream_event("stream_end", chat_session, self._turn_payload({}, user_message_id))
+            yield self._stream_event(
+                "stream_end", chat_session, self._turn_payload({}, user_message_id)
+            )
             if mark_current_turn_cancelled():
                 return
 
@@ -1898,7 +2007,9 @@ class AgentLoop:
             )
             return
         except LLMError as exc:
-            yield from stream_failure_response("模型调用失败", exc, "LLM_ERROR", model_failure_suggestion(exc))
+            yield from stream_failure_response(
+                "模型调用失败", exc, "LLM_ERROR", model_failure_suggestion(exc)
+            )
             return
         except Exception as exc:
             turn_finalized = False
@@ -1916,7 +2027,9 @@ class AgentLoop:
                 chat_session = self._get_or_create_session(request)
             if mark_current_turn_cancelled():
                 return
-            memory_recent_messages = self._recent_messages(chat_session) if memory_model_config else []
+            memory_recent_messages = (
+                self._recent_messages(chat_session) if memory_model_config else []
+            )
             finalize_turn_once(chat_session, reply, step_result, request.message)
             self.db.commit()
             turn_commit_completed = True
@@ -1966,7 +2079,9 @@ class AgentLoop:
         if user_message_id:
             payload = self._turn_payload(payload, user_message_id)
             if phase != "received":
-                self.events.record(chat_session.tenant_id, chat_session.id, "stream_status", payload)
+                self.events.record(
+                    chat_session.tenant_id, chat_session.id, "stream_status", payload
+                )
                 self.db.commit()
         return self._stream_event(
             "status",
@@ -1994,7 +2109,9 @@ class AgentLoop:
             "stream_end",
             "tool_result",
         }
-        if kind in persisted_stream_events and (payload.get("turn_id") or payload.get("user_message_id")):
+        if kind in persisted_stream_events and (
+            payload.get("turn_id") or payload.get("user_message_id")
+        ):
             self.events.record(chat_session.tenant_id, chat_session.id, kind, payload)
             self.db.commit()
         data = {
@@ -2043,12 +2160,11 @@ class AgentLoop:
         skills = self._list_published_skills(request.tenant_id, chat_session.agent_id)
         tools = self._tools_with_general_skills(
             request.tenant_id,
-            self._list_enabled_tools(request.tenant_id),
+            self._list_enabled_tools(request.tenant_id, chat_session.agent_id),
             chat_session.agent_id,
         )
         if not model_config:
             raise AgentLoopPreconditionError("missing_model_config", "没有默认模型配置。")
-        self._ensure_request_multimodal_supported(request, model_config)
         self._drop_unavailable_skill_state(request.tenant_id, chat_session, skills)
         if not skills:
             capability = self._select_general_capability(
@@ -2121,7 +2237,9 @@ class AgentLoop:
         self.db.commit()
         self.db.refresh(chat_session)
         conversation_context = self._conversation_context(chat_session)
-        router_context = self._conversation_context(chat_session, max_messages=ROUTER_CONTEXT_MESSAGES)
+        router_context = self._conversation_context(
+            chat_session, max_messages=ROUTER_CONTEXT_MESSAGES
+        )
 
         status("routing")
         router_decision = self.router.decide(
@@ -2229,12 +2347,18 @@ class AgentLoop:
         before_step = chat_session.active_step_id
         self.runtime.apply_decision(chat_session, router_decision)
         state_pruned = self._drop_unavailable_skill_state(request.tenant_id, chat_session, skills)
-        if self._should_record_runtime_event_after_prune(router_decision, chat_session, skills, state_pruned):
-            self._record_runtime_event(request.tenant_id, chat_session, before_skill, before_step, router_decision)
+        if self._should_record_runtime_event_after_prune(
+            router_decision, chat_session, skills, state_pruned
+        ):
+            self._record_runtime_event(
+                request.tenant_id, chat_session, before_skill, before_step, router_decision
+            )
         self.db.commit()
         self.db.refresh(chat_session)
 
-        active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
+        active_skill = self._get_active_skill(
+            request.tenant_id, chat_session.active_skill_id, chat_session.agent_id
+        )
         if not self._should_run_step_agent(router_decision, active_skill):
             step_result = self._auto_knowledge_step_result(
                 request,
@@ -2257,7 +2381,10 @@ class AgentLoop:
             )
         status(
             "stepping",
-            {"active_skill_id": chat_session.active_skill_id, "active_step_id": chat_session.active_step_id},
+            {
+                "active_skill_id": chat_session.active_skill_id,
+                "active_step_id": chat_session.active_step_id,
+            },
         )
         step_result = self._run_step_agent_with_context_repair(
             request,
@@ -2359,7 +2486,9 @@ class AgentLoop:
         requested_handoff = router_decision.decision == "handoff_human" or step_result.handoff
         if requested_handoff:
             if self._current_step_allows_human_handoff(active_skill, chat_session.active_step_id):
-                self._create_human_handoff_request(tenant_id, chat_session, active_skill, step_result)
+                self._create_human_handoff_request(
+                    tenant_id, chat_session, active_skill, step_result
+                )
                 return "handoff"
             else:
                 self.events.record(
@@ -2379,7 +2508,9 @@ class AgentLoop:
             return "completed"
         return "continued"
 
-    def _current_step_allows_human_handoff(self, skill: Skill | None, active_step_id: str | None) -> bool:
+    def _current_step_allows_human_handoff(
+        self, skill: Skill | None, active_step_id: str | None
+    ) -> bool:
         if not skill:
             return False
         current_step = self._current_skill_step(skill, active_step_id)
@@ -2388,32 +2519,8 @@ class AgentLoop:
         return self._step_declares_human_handoff(current_step)
 
     def _step_declares_human_handoff(self, step: dict[str, Any]) -> bool:
-        explicit_flags = (
-            "requires_human",
-            "human_handoff",
-            "handoff_required",
-            "needs_human",
-            "requires_manual_review",
-        )
-        if any(bool(step.get(key)) for key in explicit_flags):
-            return True
-
-        for key in ("type", "node_type", "kind", "action"):
-            value = str(step.get(key) or "").strip().lower()
-            if value in {"handoff", "human_handoff", "handoff_human", "manual_handoff"}:
-                return True
-
-        policy = step.get("handoff") or step.get("handoff_policy") or step.get("manual_review")
-        if isinstance(policy, dict):
-            return policy.get("enabled") is not False
-        if policy is True:
-            return True
-        if isinstance(policy, str) and policy.strip():
-            return True
-
-        if any(action in {"handoff", "handoff_human", "human_handoff", "manual_handoff"} for action in self._step_actions(step)):
-            return True
-        return False
+        node_type = str(step.get("type") or "").strip()
+        return node_type == "handoff" or "handoff_human" in self._step_actions(step)
 
     def _create_human_handoff_request(
         self,
@@ -2438,13 +2545,19 @@ class AgentLoop:
             chat_session.updated_at = utc_now()
             return existing
 
-        current_step = self._current_skill_step(active_skill, chat_session.active_step_id) if active_skill else None
+        current_step = (
+            self._current_skill_step(active_skill, chat_session.active_step_id)
+            if active_skill
+            else None
+        )
         handoff = HumanHandoffRequest(
             tenant_id=tenant_id,
             session_id=chat_session.id,
             agent_id=chat_session.agent_id,
             requester_user_id=chat_session.user_id,
-            assignee_user_id=self._human_handoff_assignee_user_id(tenant_id, chat_session.agent_id, chat_session.user_id),
+            assignee_user_id=self._human_handoff_assignee_user_id(
+                tenant_id, chat_session.agent_id, chat_session.user_id
+            ),
             trigger_skill_id=chat_session.active_skill_id,
             trigger_step_id=chat_session.active_step_id,
             context_summary=self._human_handoff_context_summary(chat_session),
@@ -2454,7 +2567,6 @@ class AgentLoop:
                 "active_step_id": chat_session.active_step_id,
                 "slots": chat_session.slots_json or {},
                 "pending_tasks": chat_session.pending_tasks_json or [],
-                "skill_stack": chat_session.skill_stack_json or [],
             },
             metadata_json={
                 "step": current_step or {},
@@ -2490,11 +2602,19 @@ class AgentLoop:
     ) -> str | None:
         if agent_id:
             agent = self.db.exec(
-                select(AgentProfile).where(AgentProfile.tenant_id == tenant_id, AgentProfile.id == agent_id)
+                select(AgentProfile).where(
+                    AgentProfile.tenant_id == tenant_id, AgentProfile.id == agent_id
+                )
             ).first()
             metadata = agent.metadata_json if agent else {}
             if isinstance(metadata, dict):
-                for key in ("owner_user_id", "created_by_user_id", "creator_user_id", "created_by", "owner_id"):
+                for key in (
+                    "owner_user_id",
+                    "created_by_user_id",
+                    "creator_user_id",
+                    "created_by",
+                    "owner_id",
+                ):
                     value = metadata.get(key)
                     if value:
                         return str(value)
@@ -2602,9 +2722,15 @@ class AgentLoop:
         tasks: list[PendingTask] = [*router_decision.pending_tasks, *router_decision.created_tasks]
         existing_selected_count = 0
         if router_decision.decision == "switch_to_pending" and router_decision.selected_task_id:
-            existing_selected_count = 1 if self._find_task_frame(chat_session, router_decision.selected_task_id) else 0
-        primary_task = self._primary_task_from_router_decision(request, chat_session, router_decision)
-        active_task = self._active_task_for_scheduler(request, chat_session, router_decision, primary_task)
+            existing_selected_count = (
+                1 if self._find_task_frame(chat_session, router_decision.selected_task_id) else 0
+            )
+        primary_task = self._primary_task_from_router_decision(
+            request, chat_session, router_decision
+        )
+        active_task = self._active_task_for_scheduler(
+            request, chat_session, router_decision, primary_task
+        )
         if active_task:
             tasks = [active_task, *tasks]
         if primary_task:
@@ -2635,7 +2761,7 @@ class AgentLoop:
             return None
         if primary_task.target_skill_id == chat_session.active_skill_id:
             return None
-        if router_decision.decision not in {"start_skill", "start_new_task"}:
+        if router_decision.decision != "start_new_task":
             return None
         active_task_id = None
         if isinstance(chat_session.awaiting_input_json, dict):
@@ -2695,8 +2821,6 @@ class AgentLoop:
             "create_pending",
             "update_pending",
             "complete_task",
-            "exit_current_skill",
-            "handoff",
             "handoff_human",
             "switch_to_pending",
         }:
@@ -2712,7 +2836,7 @@ class AgentLoop:
         return PendingTask(
             task_id=router_decision.selected_task_id or new_id("task"),
             status="pending",
-            decision="start_skill",
+            decision="start_new_task",
             target_skill_id=skill_id,
             target_step_id=step_id,
             confidence=router_decision.confidence,
@@ -2735,7 +2859,7 @@ class AgentLoop:
         completed_reply: str,
         completed_skill_ids_this_turn: set[str] | None = None,
     ) -> TaskScheduleContinuation | None:
-        if not (chat_session.pending_tasks_json or chat_session.skill_stack_json):
+        if not chat_session.pending_tasks_json:
             return None
         max_actions = max(1, self._get_agent_loop_max_actions(request.tenant_id))
         executed_actions = 0
@@ -2747,7 +2871,7 @@ class AgentLoop:
         tool_result: ToolResult | None = None
 
         for schedule_round in range(max_actions):
-            if not (chat_session.pending_tasks_json or chat_session.skill_stack_json):
+            if not chat_session.pending_tasks_json:
                 break
             schedule = self.router.schedule_tasks_after_completion(
                 request.message,
@@ -2781,15 +2905,21 @@ class AgentLoop:
                 before_skill = chat_session.active_skill_id
                 before_step = chat_session.active_step_id
                 self.runtime.apply_decision(chat_session, router_decision)
-                state_pruned = self._drop_unavailable_skill_state(request.tenant_id, chat_session, skills)
-                if self._should_record_runtime_event_after_prune(router_decision, chat_session, skills, state_pruned):
+                state_pruned = self._drop_unavailable_skill_state(
+                    request.tenant_id, chat_session, skills
+                )
+                if self._should_record_runtime_event_after_prune(
+                    router_decision, chat_session, skills, state_pruned
+                ):
                     self._record_runtime_event(
                         request.tenant_id, chat_session, before_skill, before_step, router_decision
                     )
                 self.db.commit()
                 self.db.refresh(chat_session)
 
-                active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
+                active_skill = self._get_active_skill(
+                    request.tenant_id, chat_session.active_skill_id, chat_session.agent_id
+                )
                 if not self._should_run_step_agent(router_decision, active_skill):
                     continue
                 step_result = self._run_step_agent_with_context_repair(
@@ -2900,12 +3030,17 @@ class AgentLoop:
                     request.tenant_id,
                     chat_session.id,
                     "pending_tasks_waiting",
-                    {"pending_tasks": chat_session.pending_tasks_json or [], "round": schedule_round + 1},
+                    {
+                        "pending_tasks": chat_session.pending_tasks_json or [],
+                        "round": schedule_round + 1,
+                    },
                 )
             if executed_actions >= max_actions:
                 break
 
-        return self._scheduled_continuation(replies, active_skill, router_decision, step_result, tool_result)
+        return self._scheduled_continuation(
+            replies, active_skill, router_decision, step_result, tool_result
+        )
 
     def _scheduled_continuation(
         self,
@@ -2937,7 +3072,7 @@ class AgentLoop:
             return False
         if chat_session.awaiting_input_json:
             return False
-        if not (chat_session.pending_tasks_json or chat_session.skill_stack_json):
+        if not chat_session.pending_tasks_json:
             return False
 
         self._finish_stale_completed_skill(request.tenant_id, chat_session, skills)
@@ -2947,7 +3082,7 @@ class AgentLoop:
 
         if chat_session.awaiting_input_json or chat_session.active_skill_id:
             return False
-        if not (chat_session.pending_tasks_json or chat_session.skill_stack_json):
+        if not chat_session.pending_tasks_json:
             return False
 
         self.events.record(
@@ -2963,7 +3098,9 @@ class AgentLoop:
         )
         return True
 
-    def _merge_scheduled_reply_segment(self, replies: list[str], segment: str) -> tuple[list[str], bool]:
+    def _merge_scheduled_reply_segment(
+        self, replies: list[str], segment: str
+    ) -> tuple[list[str], bool]:
         clean_segment = str(segment or "").strip()
         if not clean_segment:
             return replies, False
@@ -2999,10 +3136,9 @@ class AgentLoop:
         )
 
     def _find_task_frame(self, chat_session: ChatSession, task_id: str) -> dict[str, Any] | None:
-        for frames in (chat_session.pending_tasks_json or [], chat_session.skill_stack_json or []):
-            for frame in frames:
-                if isinstance(frame, dict) and str(frame.get("task_id") or "") == str(task_id):
-                    return frame
+        for frame in chat_session.pending_tasks_json or []:
+            if isinstance(frame, dict) and str(frame.get("task_id") or "") == str(task_id):
+                return frame
         return None
 
     def _run_reflection_rounds(
@@ -3121,7 +3257,9 @@ class AgentLoop:
                 "iteration": iteration + 1,
                 "max_iterations": max_actions,
             }
-            self.events.record(request.tenant_id, chat_session.id, "graph_auto_progress_started", payload)
+            self.events.record(
+                request.tenant_id, chat_session.id, "graph_auto_progress_started", payload
+            )
             if stream_events is not None:
                 stream_events.append(("status", payload))
 
@@ -3130,7 +3268,7 @@ class AgentLoop:
                 tuple(self._graph_pending_steps(chat_session)),
             )
             router_decision = RouterDecision(
-                decision="continue_current_skill",
+                decision="continue_active",
                 target_skill_id=active_skill.skill_id,
                 target_step_id=chat_session.active_step_id,
                 confidence=max(router_decision.confidence, 0.7),
@@ -3139,7 +3277,9 @@ class AgentLoop:
                 source_message=router_decision.source_message or request.message,
                 slot_hints={},
             )
-            repair_events: list[tuple[str, dict[str, object]]] | None = [] if stream_events is not None else None
+            repair_events: list[tuple[str, dict[str, object]]] | None = (
+                [] if stream_events is not None else None
+            )
             step_result = self._run_step_agent_with_context_repair(
                 request,
                 chat_session,
@@ -3219,7 +3359,11 @@ class AgentLoop:
                 chat_session.active_step_id,
                 tuple(self._graph_pending_steps(chat_session)),
             )
-            if after_state == before_state and not step_result.tool_call and not step_result.knowledge_query:
+            if (
+                after_state == before_state
+                and not step_result.tool_call
+                and not step_result.knowledge_query
+            ):
                 break
         return active_skill, router_decision, step_result, tool_result
 
@@ -3439,12 +3583,18 @@ class AgentLoop:
         before_step = chat_session.active_step_id
         self.runtime.apply_decision(chat_session, router_decision)
         state_pruned = self._drop_unavailable_skill_state(request.tenant_id, chat_session, skills)
-        if self._should_record_runtime_event_after_prune(router_decision, chat_session, skills, state_pruned):
-            self._record_runtime_event(request.tenant_id, chat_session, before_skill, before_step, router_decision)
+        if self._should_record_runtime_event_after_prune(
+            router_decision, chat_session, skills, state_pruned
+        ):
+            self._record_runtime_event(
+                request.tenant_id, chat_session, before_skill, before_step, router_decision
+            )
         self.db.commit()
         self.db.refresh(chat_session)
 
-        active_skill = self._get_active_skill(request.tenant_id, chat_session.active_skill_id, chat_session.agent_id)
+        active_skill = self._get_active_skill(
+            request.tenant_id, chat_session.active_skill_id, chat_session.agent_id
+        )
         if stream_events is not None:
             stream_events.append(
                 (
@@ -3493,7 +3643,7 @@ class AgentLoop:
                 model_config,
                 step_result,
                 stream_events,
-        )
+            )
         return active_skill, router_decision, step_result, tool_result
 
     def _tool_loop_decision_payload(
@@ -3533,8 +3683,12 @@ class AgentLoop:
                     step_result = step_result.model_copy(
                         update={"tool_call": None, "is_step_completed": True}
                     )
-                    payload = self._tool_loop_decision_payload(iteration + 1, "respond_after_duplicate")
-                    self.events.record(request.tenant_id, chat_session.id, "agent_loop_completed", payload)
+                    payload = self._tool_loop_decision_payload(
+                        iteration + 1, "respond_after_duplicate"
+                    )
+                    self.events.record(
+                        request.tenant_id, chat_session.id, "agent_loop_completed", payload
+                    )
                     if stream_events is not None:
                         stream_events.append(("agent_loop_completed", payload))
                     break
@@ -3597,7 +3751,9 @@ class AgentLoop:
                     iteration + 1,
                 ),
             )
-            self._apply_step_result(request.tenant_id, chat_session, continuation_result, active_skill)
+            self._apply_step_result(
+                request.tenant_id, chat_session, continuation_result, active_skill
+            )
             self.db.commit()
             self.db.refresh(chat_session)
             step_result = continuation_result
@@ -3607,7 +3763,9 @@ class AgentLoop:
                     "model_tool_call",
                     step_result.tool_call,
                 )
-                self.events.record(request.tenant_id, chat_session.id, "agent_loop_continued", payload)
+                self.events.record(
+                    request.tenant_id, chat_session.id, "agent_loop_continued", payload
+                )
                 if stream_events is not None:
                     stream_events.append(("agent_loop_continued", payload))
                 continue
@@ -3665,7 +3823,10 @@ class AgentLoop:
             request.tenant_id,
             chat_session.agent_id,
         )
-        if self._agent_requires_resource_filter(request.tenant_id, chat_session.agent_id) and not knowledge_base_ids:
+        if (
+            self._agent_requires_resource_filter(request.tenant_id, chat_session.agent_id)
+            and not knowledge_base_ids
+        ):
             search_response = KnowledgeSearchResponse(
                 selected_buckets=[],
                 chunks=[],
@@ -3697,7 +3858,9 @@ class AgentLoop:
         knowledge_items = {
             "query": query.model_dump(mode="json"),
             "source_message": request.message,
-            "selected_buckets": [item.model_dump(mode="json") for item in search_response.selected_buckets],
+            "selected_buckets": [
+                item.model_dump(mode="json") for item in search_response.selected_buckets
+            ],
             "chunks": [item.model_dump(mode="json") for item in search_response.chunks],
             "trace": search_response.route_trace or search_response.trace,
             "selected_documents": search_response.selected_documents,
@@ -3847,7 +4010,9 @@ class AgentLoop:
         return {
             "query": knowledge_query.model_dump(mode="json"),
             "source_message": message,
-            "selected_buckets": [item.model_dump(mode="json") for item in search_response.selected_buckets],
+            "selected_buckets": [
+                item.model_dump(mode="json") for item in search_response.selected_buckets
+            ],
             "chunks": [item.model_dump(mode="json") for item in search_response.chunks],
             "trace": search_response.route_trace or search_response.trace,
             "selected_documents": search_response.selected_documents,
@@ -4010,7 +4175,9 @@ class AgentLoop:
             memory_context=memory_context,
             conversation_context=conversation_context,
         )
-        if not self._step_result_has_progress(validation_result) and not self._step_result_has_reply_repair(
+        if not self._step_result_has_progress(
+            validation_result
+        ) and not self._step_result_has_reply_repair(
             step_result,
             validation_result,
         ):
@@ -4042,10 +4209,7 @@ class AgentLoop:
             return True
         return router_decision.decision in {
             "start_new_task",
-            "start_skill",
             "continue_active",
-            "continue_current_skill",
-            "jump_within_current_skill",
         }
 
     def _step_result_has_progress(self, step_result: StepAgentResult) -> bool:
@@ -4063,9 +4227,7 @@ class AgentLoop:
         repaired_reply = (validation_result.reply or "").strip()
         return bool(repaired_reply and repaired_reply != previous_reply)
 
-    def _missing_expected_fields(
-        self, skill: Skill | None, chat_session: ChatSession
-    ) -> list[str]:
+    def _missing_expected_fields(self, skill: Skill | None, chat_session: ChatSession) -> list[str]:
         if not skill:
             return []
         step = self._current_skill_step(skill, chat_session.active_step_id)
@@ -4082,12 +4244,8 @@ class AgentLoop:
         self, router_decision: RouterDecision, chat_session: ChatSession
     ) -> bool:
         if router_decision.decision not in {
-            "start_skill",
             "start_new_task",
             "continue_active",
-            "continue_current_skill",
-            "jump_within_current_skill",
-            "suspend_current_and_start_new_skill",
         }:
             return False
         if (
@@ -4231,7 +4389,10 @@ class AgentLoop:
         active_skill: Skill | None = None,
     ) -> None:
         if step_result.slot_updates:
-            chat_session.slots_json = {**(chat_session.slots_json or {}), **step_result.slot_updates}
+            chat_session.slots_json = {
+                **(chat_session.slots_json or {}),
+                **step_result.slot_updates,
+            }
             self.events.record(
                 tenant_id,
                 chat_session.id,
@@ -4242,7 +4403,9 @@ class AgentLoop:
         if not chat_session.active_skill_id:
             return
 
-        active_skill_matches = bool(active_skill and active_skill.skill_id == chat_session.active_skill_id)
+        active_skill_matches = bool(
+            active_skill and active_skill.skill_id == chat_session.active_skill_id
+        )
         if active_skill_matches and step_result.next_step_id:
             next_step_id = str(step_result.next_step_id).strip()
             if not self._skill_has_step(active_skill, next_step_id):
@@ -4491,13 +4654,17 @@ class AgentLoop:
             enabled = self._idempotency_enabled_value(
                 config.get("enabled", config.get("mode", config.get("scope")))
             )
-            fields = config.get("key_fields") or config.get("fields") or config.get("argument_fields")
+            fields = (
+                config.get("key_fields") or config.get("fields") or config.get("argument_fields")
+            )
             if isinstance(fields, list):
                 key_fields = [str(item).strip() for item in fields if str(item).strip()]
         else:
             enabled = self._idempotency_enabled_value(config)
 
-        requires_confirmation = raw_config.get("requires_confirmation", raw_schema.get("requires_confirmation"))
+        requires_confirmation = raw_config.get(
+            "requires_confirmation", raw_schema.get("requires_confirmation")
+        )
         confirmation_enabled = self._idempotency_enabled_value(requires_confirmation)
         if enabled is None and confirmation_enabled is True:
             enabled = True
@@ -4509,13 +4676,35 @@ class AgentLoop:
         if isinstance(value, bool):
             return value
         normalized = str(value).strip().lower()
-        if normalized in {"1", "true", "yes", "on", "enabled", "enable", "replay", "session", "session_arguments"}:
+        if normalized in {
+            "1",
+            "true",
+            "yes",
+            "on",
+            "enabled",
+            "enable",
+            "replay",
+            "session",
+            "session_arguments",
+        }:
             return True
-        if normalized in {"0", "false", "no", "off", "disabled", "disable", "none", "read_only", "readonly"}:
+        if normalized in {
+            "0",
+            "false",
+            "no",
+            "off",
+            "disabled",
+            "disable",
+            "none",
+            "read_only",
+            "readonly",
+        }:
             return False
         return None
 
-    def _tool_requires_idempotent_replay(self, tenant_id: str, tool_call: ToolCall) -> tuple[bool, list[str] | None]:
+    def _tool_requires_idempotent_replay(
+        self, tenant_id: str, tool_call: ToolCall
+    ) -> tuple[bool, list[str] | None]:
         if tool_call.name.startswith(GENERAL_SKILL_TOOL_PREFIX):
             return False, None
         if not hasattr(self.db, "exec"):
@@ -4537,7 +4726,9 @@ class AgentLoop:
             return False, None
         return True, key_fields
 
-    def _idempotency_arguments(self, arguments: dict[str, Any], key_fields: list[str] | None) -> dict[str, Any]:
+    def _idempotency_arguments(
+        self, arguments: dict[str, Any], key_fields: list[str] | None
+    ) -> dict[str, Any]:
         if not key_fields:
             return arguments
         return {field: arguments.get(field) for field in key_fields if field in arguments}
@@ -4572,10 +4763,14 @@ class AgentLoop:
             payload_tool_name = str(payload.get("tool_name") or "").strip()
             if payload_tool_name != tool_call.name:
                 continue
-            payload_tool_call = payload.get("tool_call") if isinstance(payload.get("tool_call"), dict) else {}
+            payload_tool_call = (
+                payload.get("tool_call") if isinstance(payload.get("tool_call"), dict) else {}
+            )
             payload_arguments = payload_tool_call.get("arguments")
             if not isinstance(payload_arguments, dict):
-                payload_arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+                payload_arguments = (
+                    payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+                )
             replay_arguments = self._idempotency_arguments(payload_arguments, key_fields)
             if self._tool_signature(payload_tool_name, replay_arguments) != target_signature:
                 continue
@@ -4603,6 +4798,44 @@ class AgentLoop:
         tool_call_id: str | None = None,
         stream_events: list[tuple[str, dict[str, object]]] | None = None,
     ) -> ToolResult:
+        if (
+            not tool_call.name.startswith(GENERAL_SKILL_TOOL_PREFIX)
+            and chat_session.agent_id
+            and tool_call.name
+            not in {
+                row.name
+                for row in self._list_enabled_tools(request.tenant_id, chat_session.agent_id)
+            }
+        ):
+            tool_result = ToolResult(
+                tool_name=tool_call.name,
+                success=False,
+                data=None,
+                error=ToolError(code="NOT_ALLOWED", message="当前员工未启用该工具。"),
+            )
+            started_payload = tool_call.model_dump(mode="json")
+            if tool_call_id:
+                started_payload["tool_call_id"] = tool_call_id
+            self.events.record(
+                request.tenant_id,
+                chat_session.id,
+                "tool_call_started",
+                started_payload,
+            )
+            finished_payload = tool_result.model_dump(mode="json")
+            if tool_call_id:
+                finished_payload["tool_call_id"] = tool_call_id
+            finished_payload["tool_call"] = tool_call.model_dump(mode="json")
+            self.events.record(
+                request.tenant_id,
+                chat_session.id,
+                "tool_call_finished",
+                finished_payload,
+            )
+            self.db.commit()
+            self.db.refresh(chat_session)
+            return tool_result
+
         replayed = self._previous_successful_side_effect_tool_result(
             request.tenant_id,
             chat_session.id,
@@ -4617,7 +4850,9 @@ class AgentLoop:
             }
             if tool_call_id:
                 replay_payload["tool_call_id"] = tool_call_id
-            self.events.record(request.tenant_id, chat_session.id, "tool_call_reused", replay_payload)
+            self.events.record(
+                request.tenant_id, chat_session.id, "tool_call_reused", replay_payload
+            )
             finished_payload = tool_result.model_dump(mode="json")
             if tool_call_id:
                 finished_payload["tool_call_id"] = tool_call_id
@@ -4678,7 +4913,10 @@ class AgentLoop:
             )
         else:
             tool_result = self.tool_executor.execute(
-                request.tenant_id, tool_call, chat_session.active_skill_id
+                request.tenant_id,
+                tool_call,
+                chat_session.active_skill_id,
+                chat_session.agent_id,
             )
         finished_payload = tool_result.model_dump(mode="json")
         if tool_call_id:
@@ -4790,7 +5028,9 @@ class AgentLoop:
         for trace_item in response.execution_trace:
             if trace_key(trace_item) not in emitted_trace_keys:
                 emit_general_skill_trace(trace_item)
-        structured = response.structured_result if isinstance(response.structured_result, dict) else {}
+        structured = (
+            response.structured_result if isinstance(response.structured_result, dict) else {}
+        )
         success = structured.get("success")
         is_success = True if success is None else bool(success)
         finished_payload: dict[str, object] = {
@@ -4801,7 +5041,9 @@ class AgentLoop:
             "structured_result": response.structured_result,
             "tool_call": tool_call.model_dump(mode="json"),
         }
-        self.events.record(request.tenant_id, chat_session.id, "general_skill_run_finished", finished_payload)
+        self.events.record(
+            request.tenant_id, chat_session.id, "general_skill_run_finished", finished_payload
+        )
         if stream_events is not None:
             stream_events.append(("general_skill_run_finished", finished_payload))
         data = {
@@ -4844,7 +5086,9 @@ class AgentLoop:
                     "selected_slug": None,
                     "reason": "通用技能调用缺少自然语言任务。",
                 },
-                error=ToolError(code="GENERAL_SKILL_MISMATCH", message="通用技能调用缺少自然语言任务。"),
+                error=ToolError(
+                    code="GENERAL_SKILL_MISMATCH", message="通用技能调用缺少自然语言任务。"
+                ),
             )
         candidates = self._list_published_general_skills(request.tenant_id, agent_id)
         if not candidates:
@@ -4856,7 +5100,9 @@ class AgentLoop:
                     "selected_slug": None,
                     "reason": "当前员工没有可用通用技能。",
                 },
-                error=ToolError(code="GENERAL_SKILL_NOT_FOUND", message="当前员工没有可用通用技能。"),
+                error=ToolError(
+                    code="GENERAL_SKILL_NOT_FOUND", message="当前员工没有可用通用技能。"
+                ),
             )
         try:
             selection = self.general_skill_selector.decide(query, candidates, model_config)
@@ -4872,7 +5118,9 @@ class AgentLoop:
             "query": query,
             "tool_call": tool_call.model_dump(mode="json"),
         }
-        self.events.record(request.tenant_id, chat_session.id, "general_skill_guard_rejected", payload)
+        self.events.record(
+            request.tenant_id, chat_session.id, "general_skill_guard_rejected", payload
+        )
         return ToolResult(
             tool_name=tool_call.name,
             success=False,
@@ -4895,8 +5143,7 @@ class AgentLoop:
             not active_skill
             or not step_result.tool_call
             or (
-                step_result.next_step_id
-                and step_result.next_step_id != chat_session.active_step_id
+                step_result.next_step_id and step_result.next_step_id != chat_session.active_step_id
             )
             or not tool_result
             or not tool_result.success
@@ -4978,9 +5225,9 @@ class AgentLoop:
         if not target_skill:
             return None
         decision = (
-            "continue_current_skill"
+            "continue_active"
             if chat_session.active_skill_id == target_skill.skill_id
-            else "start_skill"
+            else "start_new_task"
         )
         return RouterDecision(
             decision=decision,
@@ -5035,7 +5282,9 @@ class AgentLoop:
         for field in fields:
             if self._slot_has_value(slots, field):
                 arguments[field] = slots[field]
-        used_signatures = {self._tool_history_signature(item) for item in self._tool_call_history(slots)}
+        used_signatures = {
+            self._tool_history_signature(item) for item in self._tool_call_history(slots)
+        }
         if self._tool_signature(tool.name, arguments) in used_signatures:
             return {}
         return arguments
@@ -5069,7 +5318,9 @@ class AgentLoop:
         if not nodes:
             return []
         content = skill.content_json or {}
-        nodes_by_id = {str(node.get("node_id") or ""): node for node in nodes if node.get("node_id")}
+        nodes_by_id = {
+            str(node.get("node_id") or ""): node for node in nodes if node.get("node_id")
+        }
         start_node_id = str(content.get("start_node_id") or "").strip()
         if not start_node_id or start_node_id not in nodes_by_id:
             start_node_id = str(nodes[0].get("node_id") or "")
@@ -5109,10 +5360,14 @@ class AgentLoop:
             grouped[source] = sorted(items, key=lambda item: int(item.get("priority") or 0))
         return grouped
 
-    def _next_steps_from_graph(self, skill: Skill, active_step_id: str | None) -> list[dict[str, Any]]:
+    def _next_steps_from_graph(
+        self, skill: Skill, active_step_id: str | None
+    ) -> list[dict[str, Any]]:
         if not active_step_id:
             return []
-        nodes_by_id = {str(node.get("node_id") or ""): _node_as_step(node) for node in self._skill_nodes(skill)}
+        nodes_by_id = {
+            str(node.get("node_id") or ""): _node_as_step(node) for node in self._skill_nodes(skill)
+        }
         outgoing = self._graph_outgoing_edges(skill).get(active_step_id, [])
         return [
             nodes_by_id[target_id]
@@ -5123,7 +5378,9 @@ class AgentLoop:
     def _default_next_step(self, skill: Skill, active_step_id: str | None) -> dict[str, Any] | None:
         if not active_step_id:
             return None
-        nodes_by_id = {str(node.get("node_id") or ""): _node_as_step(node) for node in self._skill_nodes(skill)}
+        nodes_by_id = {
+            str(node.get("node_id") or ""): _node_as_step(node) for node in self._skill_nodes(skill)
+        }
         outgoing = self._graph_outgoing_edges(skill).get(active_step_id, [])
         if not outgoing:
             return None
@@ -5159,41 +5416,17 @@ class AgentLoop:
     def _finish_stale_completed_skill(
         self, tenant_id: str, chat_session: ChatSession, skills: list[Skill]
     ) -> None:
-        skills_by_id = {skill.skill_id: skill for skill in skills}
-        self._drop_stale_completed_stack_frames(tenant_id, chat_session, skills_by_id)
+        if chat_session.skill_stack_json or chat_session.resume_after_answer_json:
+            chat_session.skill_stack_json = []
+            chat_session.resume_after_answer_json = None
+            chat_session.updated_at = utc_now()
         active_skill = next(
             (skill for skill in skills if skill.skill_id == chat_session.active_skill_id), None
         )
         if active_skill and self._is_terminal_skill_state(active_skill, chat_session):
-            self._complete_active_skill(tenant_id, chat_session, active_skill, "stale_terminal_state")
-
-    def _drop_stale_completed_stack_frames(
-        self, tenant_id: str, chat_session: ChatSession, skills_by_id: dict[str, Skill]
-    ) -> None:
-        kept_frames: list[dict[str, Any]] = []
-        changed = False
-        for frame in chat_session.skill_stack_json or []:
-            skill_id = str(frame.get("skill_id") or "")
-            skill = skills_by_id.get(skill_id)
-            if skill and self._is_terminal_skill_frame(skill, frame):
-                changed = True
-                self.events.record(
-                    tenant_id,
-                    chat_session.id,
-                    "skill_completed",
-                    {
-                        "skill_id": skill_id,
-                        "step_id": frame.get("step_id"),
-                        "reason": "stale_suspended_terminal_state",
-                        "resumed_skill_id": chat_session.active_skill_id,
-                        "resumed_step_id": chat_session.active_step_id,
-                    },
-                )
-                continue
-            kept_frames.append(frame)
-        if changed:
-            chat_session.skill_stack_json = kept_frames
-            chat_session.updated_at = utc_now()
+            self._complete_active_skill(
+                tenant_id, chat_session, active_skill, "stale_terminal_state"
+            )
 
     def _should_complete_skill(
         self,
@@ -5206,8 +5439,10 @@ class AgentLoop:
             return False
         if tool_result and not tool_result.success:
             return False
-        if tool_result and tool_result.success and self._current_step_can_finish_after_tool(
-            skill, chat_session
+        if (
+            tool_result
+            and tool_result.success
+            and self._current_step_can_finish_after_tool(skill, chat_session)
         ):
             return True
         if self._graph_pending_steps(chat_session):
@@ -5303,15 +5538,18 @@ class AgentLoop:
             return True
         terminal_actions = {
             "answer_user",
-            "reply",
             "handoff_human",
             "continue_flow",
             "ask_user",
             "ask_clarification",
         }
-        return all(action in terminal_actions or action.startswith("call_tool:") for action in actions)
+        return all(
+            action in terminal_actions or action.startswith("call_tool:") for action in actions
+        )
 
-    def _current_skill_step(self, skill: Skill, active_step_id: str | None) -> dict[str, Any] | None:
+    def _current_skill_step(
+        self, skill: Skill, active_step_id: str | None
+    ) -> dict[str, Any] | None:
         if not active_step_id:
             return None
         for step in self._skill_steps(skill):
@@ -5326,9 +5564,7 @@ class AgentLoop:
                 return step
         return None
 
-    def _current_step_can_finish_after_tool(
-        self, skill: Skill, chat_session: ChatSession
-    ) -> bool:
+    def _current_step_can_finish_after_tool(self, skill: Skill, chat_session: ChatSession) -> bool:
         step = self._current_skill_step(skill, chat_session.active_step_id)
         if not step:
             return False
@@ -5337,13 +5573,12 @@ class AgentLoop:
             return False
         expected = [str(field) for field in step.get("expected_user_info", [])]
         return all(
-            self._skill_slot_satisfied(chat_session.slots_json or {}, field)
-            for field in expected
+            self._skill_slot_satisfied(chat_session.slots_json or {}, field) for field in expected
         )
 
     def _actions_allow_final_reply(self, actions: list[str]) -> bool:
         actions = [_normalize_action(action) for action in actions]
-        return any(action in {"answer_user", "reply"} for action in actions)
+        return "answer_user" in actions
 
     def _skill_slot_satisfied(self, slots: dict[str, Any], field: str) -> bool:
         normalized = field.strip()
@@ -5391,7 +5626,9 @@ class AgentLoop:
             return row
         return self._get_default_model(request.tenant_id, agent_id, role)
 
-    def _get_default_model(self, tenant_id: str, agent_id: str | None = None, role: str = "default") -> ModelConfig | None:
+    def _get_default_model(
+        self, tenant_id: str, agent_id: str | None = None, role: str = "default"
+    ) -> ModelConfig | None:
         return model_for_agent(self.db, tenant_id, agent_id, role)
 
     def _get_persona_prompt(self, tenant_id: str, agent_id: str | None = None) -> str | None:
@@ -5418,17 +5655,45 @@ class AgentLoop:
     def _list_published_skills(self, tenant_id: str, agent_id: str | None = None) -> list[Skill]:
         return visible_published_skills(self.db, tenant_id, agent_id)
 
-    def _list_published_general_skills(self, tenant_id: str, agent_id: str | None = None) -> list[GeneralSkill]:
-        statement = select(GeneralSkill).where(
-            GeneralSkill.tenant_id == tenant_id,
-            GeneralSkill.status == "published",
-        )
-        if self._agent_requires_resource_filter(tenant_id, agent_id):
-            resource_ids = self._agent_resource_ids(tenant_id, agent_id, "general_skill")
-            if not resource_ids:
-                return []
-            statement = statement.where(GeneralSkill.id.in_(resource_ids))  # type: ignore[attr-defined]
-        return list(self.db.exec(statement).all())
+    def _list_published_general_skills(
+        self, tenant_id: str, agent_id: str | None = None
+    ) -> list[GeneralSkill]:
+        agent = self._get_agent_profile(tenant_id, agent_id)
+        if not agent or agent.is_overall:
+            rows = self.db.exec(
+                select(GeneralSkill).where(
+                    GeneralSkill.tenant_id == tenant_id,
+                    GeneralSkill.status == "published",
+                )
+            ).all()
+            return [
+                row
+                for row in rows
+                if is_open_gallery_resource(self.db, tenant_id, "general_skill", row)
+            ]
+
+        bindings = self.db.exec(
+            select(AgentResourceBinding).where(
+                AgentResourceBinding.tenant_id == tenant_id,
+                AgentResourceBinding.agent_id == agent.id,
+                AgentResourceBinding.resource_type == "general_skill",
+                AgentResourceBinding.status == "active",
+            )
+        ).all()
+        visible: list[GeneralSkill] = []
+        for binding in bindings:
+            row = self.db.get(GeneralSkill, binding.resource_id)
+            if not row or row.tenant_id != tenant_id or row.status != "published":
+                continue
+            if is_bound_resource_visible_for_agent(
+                self.db,
+                tenant_id,
+                "general_skill",
+                row,
+                binding,
+            ):
+                visible.append(row)
+        return visible
 
     def _select_general_skill(
         self,
@@ -5454,19 +5719,21 @@ class AgentLoop:
             return None, GeneralSkillSelection(reason=f"Capability selection failed: {exc}")
         if not selection.use_general_skill or not selection.selected_slug:
             return None, selection
-        skill = next((item for item in general_skills if item.slug == selection.selected_slug), None)
+        skill = next(
+            (item for item in general_skills if item.slug == selection.selected_slug), None
+        )
         if not skill:
-            return None, selection.model_copy(update={"use_general_skill": False, "selected_slug": None})
+            return None, selection.model_copy(
+                update={"use_general_skill": False, "selected_slug": None}
+            )
         return skill, selection
 
-    def _list_enabled_tools(self, tenant_id: str) -> list[Tool]:
-        return list(
-            self.db.exec(
-                select(Tool).where(Tool.tenant_id == tenant_id, Tool.enabled == True)  # noqa: E712
-            ).all()
-        )
+    def _list_enabled_tools(self, tenant_id: str, agent_id: str | None = None) -> list[Tool]:
+        return visible_tool_rows(self.db, tenant_id, agent_id, include_inactive=False)
 
-    def _tools_with_general_skills(self, tenant_id: str, tools: list[Tool], agent_id: str | None = None) -> list[Any]:
+    def _tools_with_general_skills(
+        self, tenant_id: str, tools: list[Tool], agent_id: str | None = None
+    ) -> list[Any]:
         combined: list[Any] = list(tools)
         for skill in self._list_published_general_skills(tenant_id, agent_id):
             combined.append(
@@ -5506,25 +5773,12 @@ class AgentLoop:
         agent = self._get_agent_profile(tenant_id, agent_id)
         return bool(agent and not agent.is_overall)
 
-    def _agent_resource_ids(self, tenant_id: str, agent_id: str | None, resource_type: str) -> list[str]:
-        if not agent_id:
-            return []
-        return [
-            row.resource_id
-            for row in self.db.exec(
-                select(AgentResourceBinding).where(
-                    AgentResourceBinding.tenant_id == tenant_id,
-                    AgentResourceBinding.agent_id == agent_id,
-                    AgentResourceBinding.resource_type == resource_type,
-                    AgentResourceBinding.status == "active",
-                )
-            ).all()
-        ]
-
     def _agent_visible_knowledge_base_ids(self, tenant_id: str, agent_id: str | None) -> list[str]:
         return visible_knowledge_base_ids(self.db, tenant_id, agent_id)
 
-    def _get_active_skill(self, tenant_id: str, skill_id: str | None, agent_id: str | None = None) -> Skill | None:
+    def _get_active_skill(
+        self, tenant_id: str, skill_id: str | None, agent_id: str | None = None
+    ) -> Skill | None:
         if not skill_id:
             return None
         return visible_skill(self.db, tenant_id, skill_id, agent_id)
@@ -5538,6 +5792,11 @@ class AgentLoop:
         available_skill_ids = {skill.skill_id for skill in skills}
         changed = False
         removed_skill_ids: set[str] = set()
+
+        if chat_session.skill_stack_json or chat_session.resume_after_answer_json:
+            chat_session.skill_stack_json = []
+            chat_session.resume_after_answer_json = None
+            changed = True
 
         def frame_skill_id(frame: object) -> str:
             if not isinstance(frame, dict):
@@ -5563,7 +5822,7 @@ class AgentLoop:
             chat_session.resume_after_answer_json = None
             changed = True
 
-        for attr in ("pending_tasks_json", "skill_stack_json"):
+        for attr in ("pending_tasks_json",):
             value = getattr(chat_session, attr) or []
             if not isinstance(value, list):
                 continue
@@ -5607,17 +5866,16 @@ class AgentLoop:
             return True
         return target_skill_id in {skill.skill_id for skill in skills}
 
-    def _ensure_request_multimodal_supported(self, request: ChatTurnRequest, model_config: ModelConfig) -> None:
-        if request_has_image_attachments(request.attachments) and not model_supports_images(model_config):
-            raise LLMError(MULTIMODAL_UNSUPPORTED_MESSAGE)
-
     def _recent_messages(self, chat_session: ChatSession, limit: int = 8) -> list[dict[str, Any]]:
         if not hasattr(self, "db"):
             return []
         rows = list(
             self.db.exec(
                 select(Message)
-                .where(Message.tenant_id == chat_session.tenant_id, Message.session_id == chat_session.id)
+                .where(
+                    Message.tenant_id == chat_session.tenant_id,
+                    Message.session_id == chat_session.id,
+                )
                 .order_by(Message.created_at.desc())
                 .limit(limit)
             ).all()
@@ -5633,7 +5891,10 @@ class AgentLoop:
         rows = list(
             self.db.exec(
                 select(Message)
-                .where(Message.tenant_id == chat_session.tenant_id, Message.session_id == chat_session.id)
+                .where(
+                    Message.tenant_id == chat_session.tenant_id,
+                    Message.session_id == chat_session.id,
+                )
                 .order_by(Message.created_at.asc())
             ).all()
         )
@@ -5658,11 +5919,17 @@ class AgentLoop:
         source_message: str | None = None,
     ) -> dict[str, Any]:
         knowledge_results = list(step_result.knowledge_results or []) if step_result else []
-        citations = self._dedupe_knowledge_citations(knowledge_citations_from_results(knowledge_results))
+        citations = self._dedupe_knowledge_citations(
+            knowledge_citations_from_results(knowledge_results)
+        )
         if not citations:
             return {}
         first_query = next(
-            (item.get("query") for item in knowledge_results if isinstance(item.get("query"), dict)),
+            (
+                item.get("query")
+                for item in knowledge_results
+                if isinstance(item.get("query"), dict)
+            ),
             None,
         )
         return {
@@ -5686,9 +5953,6 @@ class AgentLoop:
                 or citation.get("id")
                 or ""
             )
-            identity = re.sub(r"/\s*evidence\s*\d+", "", identity, flags=re.IGNORECASE)
-            identity = re.split(r"在第\s*\d+\s*章第\s*\d+\s*节", identity)[0]
-            identity = identity.split("。")[0]
             key = re.sub(r"\s+", " ", identity).strip().lower()
             if not key or key in seen:
                 continue
@@ -5740,7 +6004,11 @@ class AgentLoop:
             turn_ids.add(normalized_client_turn_id)
         existing_messages = self.db.exec(
             select(Message)
-            .where(Message.tenant_id == tenant_id, Message.session_id == chat_session.id, Message.role == "assistant")
+            .where(
+                Message.tenant_id == tenant_id,
+                Message.session_id == chat_session.id,
+                Message.role == "assistant",
+            )
             .order_by(Message.created_at)
         ).all()
         for row in existing_messages:
@@ -5818,23 +6086,14 @@ class AgentLoop:
             "to_skill_version": self._skill_version(tenant_id, chat_session.active_skill_id),
             "from_step_id": before_step,
             "to_step_id": chat_session.active_step_id,
-            "skill_stack": chat_session.skill_stack_json,
         }
         event_type = "skill_step_changed"
-        if decision.decision in {"start_skill", "start_new_task"}:
+        if decision.decision == "start_new_task":
             event_type = "skill_started"
-        elif decision.decision in {"switch_to_pending"}:
+        elif decision.decision == "switch_to_pending":
             event_type = "skill_resumed"
-        elif decision.decision == "suspend_current_and_start_new_skill" or (
-            decision.decision
-            in {"answer_related_question_then_resume", "answer_chitchat_then_resume"}
-            and before_skill
-            and chat_session.active_skill_id
-            and before_skill != chat_session.active_skill_id
-        ):
-            event_type = "skill_suspended"
-        elif decision.decision == "exit_current_skill":
-            event_type = "skill_resumed" if chat_session.active_skill_id else "skill_exited"
+        elif decision.decision == "complete_task":
+            event_type = "skill_exited"
         elif decision.decision == "handoff_human":
             event_type = "handoff_triggered"
         self.events.record(tenant_id, chat_session.id, event_type, payload)
@@ -5871,19 +6130,11 @@ class AgentLoop:
         skill_names = {skill.skill_id: skill.name for skill in skills}
         visible_skill_ids = set(skill_names)
         current_skills: list[dict[str, object]] = []
-        for frame in chat_session.skill_stack_json or []:
-            skill_id = str(frame.get("skill_id") or "").strip()
-            if not skill_id or skill_id not in visible_skill_ids:
-                continue
-            current_skills.append(
-                {
-                    "skillId": skill_id,
-                    "name": skill_names.get(skill_id, skill_id),
-                    "stepId": frame.get("step_id"),
-                    "state": "suspended",
-                }
-            )
-        active_skill_id = chat_session.active_skill_id if chat_session.active_skill_id in visible_skill_ids else None
+        active_skill_id = (
+            chat_session.active_skill_id
+            if chat_session.active_skill_id in visible_skill_ids
+            else None
+        )
         if active_skill_id:
             current_skills.append(
                 {

@@ -35,7 +35,6 @@ class StepAgent:
             "router_decision": router_decision.model_dump() if router_decision else None,
             "slots": _step_agent_slots(session.slots_json),
             "awaiting_input": session.awaiting_input_json,
-            "skill_stack": session.skill_stack_json or [],
             "pending_tasks": session.pending_tasks_json or [],
             "repair_context": repair_context,
             "available_tools": [

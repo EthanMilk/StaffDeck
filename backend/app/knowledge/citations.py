@@ -60,22 +60,11 @@ def _normalize_identity(value: str) -> str:
 
 
 def _semantic_identity(value: str) -> str:
-    text = re.sub(r"\s+", " ", (value or "").strip())
-    text = re.split(r"在第\s*\d+\s*章第\s*\d+\s*节", text, maxsplit=1)[0]
-    text = re.split(r"第\s*\d+(?:\.\d+)*\s+", text, maxsplit=1)[0] or text
-    text = text.split("。", 1)[0]
-    return text or value
+    return re.sub(r"\s+", " ", (value or "").strip())
 
 
 def _display_title(value: str) -> str:
-    title = re.sub(r"\s+", " ", (value or "").strip())
-    if " / evidence" in title:
-        title = title.split(" / evidence", 1)[0].strip()
-    if "用于统一" in title:
-        title = title.split("用于统一", 1)[0].strip()
-    if "。服务人员" in title:
-        title = title.split("。", 1)[0].strip()
-    return _compact(title, 72)
+    return _compact(value, 72)
 
 
 def knowledge_citations_from_results(

@@ -39,7 +39,7 @@ def test_turn_trace_uses_router_skill_hint_when_events_have_turn_id() -> None:
             session_id="session_test",
             event_type="router_decision_created",
             payload_json={
-                "decision": "continue_current_skill",
+                "decision": "continue_active",
                 "target_skill_id": "skill_purchase_001",
                 "target_step_id": "confirm_purchase",
                 "user_intent": "下单",
@@ -78,6 +78,9 @@ def test_turn_trace_uses_router_skill_hint_when_events_have_turn_id() -> None:
     assert skill_lines
     assert skill_lines[0]["text"] == "推进SOP 购买商品流程"
     assert skill_lines[0]["detail"] == "step end"
+    router_line = next(line for line in traces[0]["lines"] if line["id"] == "decision_router")
+    assert router_line["icon"] == "judge"
+    assert skill_lines[0]["icon"] == "advance"
 
 
 def test_message_read_hydrates_knowledge_citation_content_from_concept() -> None:
@@ -153,7 +156,7 @@ def test_message_read_compacts_historical_knowledge_citation_labels() -> None:
     assert [item["label"] for item in read.metadata["knowledge_citations"]] == ["[1]", "[2]"]
 
 
-def test_turn_trace_falls_back_to_knowledge_citations_without_events() -> None:
+def test_turn_trace_does_not_reconstruct_events_from_message_metadata() -> None:
     started_at = datetime(2026, 6, 20, 10, 0, 0)
     messages = [
         Message(
@@ -184,15 +187,7 @@ def test_turn_trace_falls_back_to_knowledge_citations_without_events() -> None:
 
     traces = _build_turn_traces(messages, [], {})
 
-    assert len(traces) == 1
-    assert traces[0]["turn_id"] == "msg_user"
-    assert [line["text"] for line in traces[0]["lines"]] == [
-        "执行记录",
-        "识别为业务资料问答",
-        "查询业务资料",
-        "读取业务资料",
-        "生成带引用回答",
-    ]
+    assert traces == []
 
 
 def test_turn_trace_keeps_running_routing_status_for_refresh() -> None:
@@ -228,7 +223,10 @@ def test_turn_trace_keeps_running_routing_status_for_refresh() -> None:
 
     assert traces[0]["completed_at"] is None
     assert any(
-        line["id"] == "decision_router" and line["text"] == "判断意图" and line["state"] == "running"
+        line["id"] == "decision_router"
+        and line["text"] == "判断意图"
+        and line["state"] == "running"
+        and line["icon"] == "judge"
         for line in traces[0]["lines"]
     )
 
@@ -299,11 +297,17 @@ def test_turn_trace_marks_model_and_intermediate_errors_failed() -> None:
 
     assert traces[0]["completed_at"] == events[-1].created_at.isoformat()
     assert any(
-        line["text"] == "模型调用失败" and line["state"] == "failed" and "upstream timeout" in line["detail"]
+        line["text"] == "模型调用失败"
+        and line["state"] == "failed"
+        and line["icon"] == "loading"
+        and "upstream timeout" in line["detail"]
         for line in lines
     )
     assert any(
-        line["text"] == "模型生成 runner 失败" and line["state"] == "failed" and "invalid json" in line["detail"]
+        line["text"] == "模型生成 runner 失败"
+        and line["state"] == "failed"
+        and line["icon"] == "generated"
+        and "invalid json" in line["detail"]
         for line in lines
     )
 

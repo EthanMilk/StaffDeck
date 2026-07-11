@@ -34,6 +34,8 @@ export type TraceTool = {
   content?: unknown;
 };
 
+export type CotTraceIconName = 'advance' | 'execute' | 'generated' | 'judge' | 'loading' | 'select' | 'tool';
+
 export type TraceLine = {
   id: string;
   kind: 'thinking' | 'decision' | 'skill' | 'tool' | 'code' | 'knowledge';
@@ -46,6 +48,9 @@ export type TraceLine = {
   outputTitle?: string;
   state: 'running' | 'completed' | 'failed';
   collapsible?: boolean;
+  icon?: CotTraceIconName;
+  placeholder?: boolean;
+  provisional?: boolean;
 };
 
 export type TurnTrace = {
@@ -61,7 +66,6 @@ export type ComposerAttachment = ChatAttachmentRead & {
 
 export type ComposerInteractionMode = 'normal' | 'scheduled_task';
 export type DraftScheduleType = 'once' | 'daily' | 'weekly' | 'monthly';
-export type CotTraceIconName = 'advance' | 'execute' | 'generated' | 'judge' | 'loading' | 'select' | 'tool';
 
 export function createEmptySlot(): SessionSlot {
   return { serverMessages: [], realtimeMessages: [] };

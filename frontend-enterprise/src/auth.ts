@@ -12,33 +12,17 @@ export type EnterpriseAuthSession = {
 };
 
 export const ENTERPRISE_AUTH_STORAGE_KEY = 'ultrarag_auth';
-const LEGACY_ENTERPRISE_AUTH_STORAGE_KEY = 'ultrarag_enterprise_auth';
-const LEGACY_CHAT_AUTH_STORAGE_KEY = 'skill_agent_auth';
 
 export function getEnterpriseAuthSession(): EnterpriseAuthSession | null {
-  const current = readStoredSession(ENTERPRISE_AUTH_STORAGE_KEY);
-  if (current) return current;
-
-  const legacyEnterprise = readStoredSession(LEGACY_ENTERPRISE_AUTH_STORAGE_KEY);
-  const legacyChat = readStoredSession(LEGACY_CHAT_AUTH_STORAGE_KEY);
-  const migrated = legacyEnterprise || legacyChat;
-  if (migrated) {
-    setEnterpriseAuthSession(migrated);
-    return migrated;
-  }
-  return null;
+  return readStoredSession(ENTERPRISE_AUTH_STORAGE_KEY);
 }
 
 export function setEnterpriseAuthSession(session: EnterpriseAuthSession): void {
   window.localStorage.setItem(ENTERPRISE_AUTH_STORAGE_KEY, JSON.stringify(session));
-  window.localStorage.removeItem(LEGACY_ENTERPRISE_AUTH_STORAGE_KEY);
-  window.localStorage.removeItem(LEGACY_CHAT_AUTH_STORAGE_KEY);
 }
 
 export function clearEnterpriseAuthSession(): void {
   window.localStorage.removeItem(ENTERPRISE_AUTH_STORAGE_KEY);
-  window.localStorage.removeItem(LEGACY_ENTERPRISE_AUTH_STORAGE_KEY);
-  window.localStorage.removeItem(LEGACY_CHAT_AUTH_STORAGE_KEY);
 }
 
 function readStoredSession(key: string): EnterpriseAuthSession | null {

@@ -113,7 +113,7 @@ def action_needs_reflection(
     step_result: StepAgentResult,
     tool_result: ToolResult | None,
 ) -> bool:
-    if router_decision.decision in {"clarify", "answer_only", "answer_chitchat_then_resume"}:
+    if router_decision.decision in {"clarify", "answer_only"}:
         return bool(tool_result or step_result.tool_call or step_result.knowledge_query)
     if (
         tool_result

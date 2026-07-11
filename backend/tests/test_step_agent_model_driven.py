@@ -50,7 +50,7 @@ def test_step_agent_uses_model_json_for_slots_and_tool(monkeypatch):
         [_ticket_tool()],
         model_config=None,  # type: ignore[arg-type]
         router_decision=RouterDecision(
-            decision="start_skill",
+            decision="start_new_task",
             target_skill_id="repair_ticket",
             user_intent="设备报修",
         ),
@@ -60,7 +60,7 @@ def test_step_agent_uses_model_json_for_slots_and_tool(monkeypatch):
         memory_context=[
             {
                 "kind": "profile",
-                "content": "用户姓名/称呼：张三",
+                "content": "张三",
                 "metadata": {"key": "preferred_name"},
             }
         ],

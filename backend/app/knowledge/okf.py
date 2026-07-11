@@ -32,33 +32,6 @@ CONCEPT_TYPES = {
     "Business Rule",
     "Query Analysis",
 }
-GENERIC_QUERY_TOKENS = {
-    "请根据",
-    "根据",
-    "业务",
-    "资料",
-    "业务资料",
-    "说明",
-    "用户",
-    "服务",
-    "服务人员",
-    "人员",
-    "应该",
-    "应该怎么",
-    "怎么",
-    "怎么处理",
-    "处理",
-    "回答",
-    "必须",
-    "知识",
-    "引用",
-    "知识引用",
-    "规则",
-    "文档",
-    "信息",
-    "相关",
-    "基于",
-}
 MIN_CONCEPT_SEARCH_SCORE = 4.0
 
 
@@ -192,23 +165,22 @@ def search_concepts(query: str, concepts: list[KnowledgeConcept], limit: int = 6
         body_text = _strip_frontmatter(row.content_md).lower()[:2400]
         haystack = f"{heading_text} {body_text}"
         score = 0.0
-        specific_hit = False
+        matched = False
         for token in tokens:
             if not token:
                 continue
-            is_generic = token in GENERIC_QUERY_TOKENS
             if token in heading_text:
-                score += 1.0 if is_generic else (10.0 + min(len(token), 6))
-                specific_hit = specific_hit or not is_generic
+                score += 6.0 + min(len(token), 6)
+                matched = True
             elif token in body_text:
-                score += 0.25 if is_generic else (3.0 + min(len(token), 4) * 0.5)
-                specific_hit = specific_hit or not is_generic
+                score += 3.0 + min(len(token), 4) * 0.5
+                matched = True
         if query.lower() in haystack:
             score += 10
-            specific_hit = True
-        if row.concept_type == "Source Document" and specific_hit:
+            matched = True
+        if row.concept_type == "Source Document" and matched:
             score -= 2
-        if score >= MIN_CONCEPT_SEARCH_SCORE and specific_hit:
+        if score >= MIN_CONCEPT_SEARCH_SCORE and matched:
             scored.append((score, row.updated_at, row))
     scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return [row for _score, _updated_at, row in scored[:limit]]

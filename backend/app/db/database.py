@@ -68,8 +68,6 @@ def _migrate_sqlite_skill_schema() -> None:
             user_columns = {column["name"] for column in inspector.get_columns("users")}
             if "role" not in user_columns:
                 conn.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR NOT NULL DEFAULT 'member'"))
-                # One-time legacy migration. Runtime authorization only reads the persisted role.
-                conn.execute(text("UPDATE users SET role = 'admin' WHERE username IN ('admin', 'admin_demo')"))
 
         if "sessions" in tables:
             session_columns = {column["name"] for column in inspector.get_columns("sessions")}

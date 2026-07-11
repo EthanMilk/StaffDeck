@@ -481,6 +481,7 @@ export type ChatSession = {
   status: string;
   summary?: string;
   last_agent_question?: string;
+  is_scheduled?: boolean;
   updated_at: string;
 };
 

@@ -249,7 +249,7 @@ import {
   uploadItemClass,
   type ToolStatusBadgeVariant,
 } from './distillPageStyles';
-import { api, streamGet, streamPost, TENANT_ID } from '../api/client';
+import { api, ApiError, streamGet, streamPost, TENANT_ID } from '../api/client';
 import type { ModelConfigRead, SkillCard, SkillRead, ToolProbeResponse, ToolRead, ToolSuggestion } from '../types';
 
 type ChatItem = {
@@ -303,7 +303,6 @@ type ToolActionStatus = 'existing' | 'pending' | 'accepted' | 'created' | 'rejec
 type ToolStatusMap = Record<string, ToolActionStatus>;
 
 type ViewMode = 'source' | 'flow';
-type TeacherPraiseStage = 'idle' | 'praised';
 
 type SelectOption = {
   value: string;
@@ -364,16 +363,6 @@ const RETRY_STRATEGY_OPTIONS: SelectOption[] = [
   { value: 'stop', label: '停止流程' },
 ];
 
-const CONDITION_FIELD_LABELS: Record<string, string> = {
-  message_content: '用户消息内容',
-  product_name: '商品名称',
-  product_name_1: '第一个商品名称',
-  product_name_2: '第二个商品名称',
-  product_id: '商品编号',
-  order_id: '订单号',
-  user_name: '用户姓名',
-  quantity: '数量',
-};
 type PendingChange = {
   assistantId: string;
   previousDraft: SkillCard;
@@ -431,8 +420,6 @@ type DistillCacheSnapshot = {
   attachments: UploadAttachment[];
   streamStatus: string;
   activeJob: ActiveDistillJob | null;
-  manualSourceEdited: boolean;
-  teacherPraiseStage: TeacherPraiseStage;
 };
 
 type DistillHistoryOperationKind = 'skill_change' | 'version_save' | 'tool_add';
@@ -544,8 +531,6 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   );
   const [streamStatus, setStreamStatus] = useState('');
   const [activeJob, setActiveJob] = useState<ActiveDistillJob | null>(null);
-  const [manualSourceEdited, setManualSourceEdited] = useState(false);
-  const [teacherPraiseStage, setTeacherPraiseStage] = useState<TeacherPraiseStage>('idle');
   const [editingMessage, setEditingMessage] = useState<EditingMessage | null>(null);
   const [sourceAutoScroll, setSourceAutoScroll] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -591,8 +576,6 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
         setAttachments(cached.attachments.filter((item) => item.status !== 'uploading'));
         setStreamStatus(cached.streamStatus);
         setActiveJob(cached.activeJob || null);
-        setManualSourceEdited(cached.manualSourceEdited);
-        setTeacherPraiseStage(cached.teacherPraiseStage);
         if (cached.activeJob && cached.activeJob.status !== 'succeeded' && cached.activeJob.status !== 'failed') {
           setLoading(true);
         }
@@ -617,8 +600,6 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
       setTextDiffs([]);
       setAttachments([]);
       setStreamStatus('');
-      setManualSourceEdited(false);
-      setTeacherPraiseStage('idle');
       setSaveDraftSnapshot(null);
       setHydratedCacheKey(cacheKey);
       setCacheReady(true);
@@ -641,8 +622,6 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
         setTextDiffs([]);
         setAttachments([]);
         setStreamStatus('');
-        setManualSourceEdited(false);
-        setTeacherPraiseStage('idle');
         setSaveDraftSnapshot(null);
         setMessages([
           {
@@ -679,8 +658,6 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
       attachments: attachments.filter((item) => item.status !== 'uploading'),
       streamStatus,
       activeJob,
-      manualSourceEdited,
-      teacherPraiseStage,
     });
   }, [
     attachments,
@@ -694,13 +671,11 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
     lastSavedDraft,
     loadedSkill,
     loading,
-    manualSourceEdited,
     messages,
     pendingChange,
     selectedPaths,
     streamStatus,
     activeJob,
-    teacherPraiseStage,
     textDiffs,
     updatingPaths,
     viewMode,
@@ -833,12 +808,6 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
     setInput('');
     setAttachments([]);
     pushMessage('user', displayText, { attachments: displayAttachments, outgoingText: text, snapshotBefore });
-    const teacherPraiseReply = skillEditTeacherPraiseReply(displayText, manualSourceEdited, teacherPraiseStage);
-    if (teacherPraiseReply) {
-      pushMessage('assistant', teacherPraiseReply);
-      setTeacherPraiseStage('praised');
-      return;
-    }
     if (!confirmedDraft) {
       await createDraftFromText(text);
       return;
@@ -1118,7 +1087,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
         try {
           savedSkill = await api.post<SkillRead>(`/api/enterprise/skills${agentOnlyQuery}`, { tenant_id: TENANT_ID, content: finalDraft, status: 'published' });
         } catch (error) {
-          if (!(error instanceof Error) || !error.message.includes('409')) throw error;
+          if (!(error instanceof ApiError) || error.status !== 409) throw error;
           finalDraft = {
             ...cloneSkill(finalDraft),
             skill_id: uniqueDraftSkillId(finalDraft.skill_id),
@@ -1507,7 +1476,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
     setToolSuggestionStatus(messageId, suggestion.name, 'accepted');
     const shouldCommit = toolSuggestionSelectionsComplete(nextSuggestions);
     if (!shouldCommit) {
-      notify.success('已确认，等待其他工具建议处理完成后统一更新技能');
+      notify.success('已确认，等待其他工具建议处理完成后统一更新 SOP');
       return;
     }
     await commitToolSuggestionSelections(messageId, nextSuggestions);
@@ -1536,7 +1505,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
           createdTool = await api.post<ToolRead>(`/api/enterprise/tools${agentQuery ? `?${agentQuery.slice(1)}` : ''}`, payload);
           createdNewTool = true;
         } catch (error) {
-          if (!(error instanceof Error) || !error.message.includes('409')) throw error;
+          if (!(error instanceof ApiError) || error.status !== 409) throw error;
           createdTool = toolReadFromSuggestion(suggestion, activeDraft?.skill_id);
         }
         createdTools.push(createdTool);
@@ -1580,7 +1549,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
       }
       notify.success(`已确认 ${acceptedSuggestions.length} 个工具，当前草稿已局部更新`);
     } catch (error) {
-      notify.error(error instanceof Error ? error.message : '新增工具或更新技能失败');
+      notify.error(error instanceof Error ? error.message : '新增工具或更新 SOP 失败');
     }
   }
 
@@ -1691,8 +1660,6 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
     setAttachments([]);
     setStreamStatus('');
     setActiveJob(null);
-    setManualSourceEdited(false);
-    setTeacherPraiseStage('idle');
     if (skillId) {
       navigate(nextRoute, { replace: true });
     } else {
@@ -1713,7 +1680,6 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
   function handleSourceEdit(nextDraft: SkillCard, path: string) {
     const lockedDraft = lockSkillIdForDraft(nextDraft, lockedSkillId);
     setDraft(lockedDraft);
-    setManualSourceEdited(true);
     setDirtyPaths((current) => mergePaths(current, [path]));
     setHighlightedPaths((current) => mergePaths(current, [path]));
   }
@@ -2311,7 +2277,7 @@ export default function DistillPage({ active = true, searchParamsOverride, curre
                 placeholder={
                   draft
                     ? '说明你要如何改写右侧选中的部分'
-                    : '输入“标题：... 原始SOP文本：...”或直接粘贴流程说明'
+                    : '输入或粘贴需要整理的 SOP 流程说明'
                 }
               />
               <div className={CHAT_ACTIONS_CLASS}>
@@ -4327,8 +4293,8 @@ function flowEdgeDisplayLabel(
   if (hasDuplicateSourceLabel && targetName) {
     return `并行执行 · ${targetName}`;
   }
-  const genericLabel = label === '流转' || label.startsWith('来自 ');
-  if (siblingCount > 1 && targetName && (hasDuplicateSourceLabel || genericLabel)) {
+  const hasExplicitLabel = Boolean(String(edge.label || '').trim() || String(edge.condition || '').trim());
+  if (siblingCount > 1 && targetName && (hasDuplicateSourceLabel || !hasExplicitLabel)) {
     return `${label} · 到${targetName}`;
   }
   return label;
@@ -5213,18 +5179,13 @@ function actionsFromDiffText(value: string): string[] {
 }
 
 function parseInitialSkillPrompt(text: string): { title: string; raw_content: string } {
-  const titleMatch = text.match(/标题[:：]\s*([^\n，,]+)/);
-  const rawMatch = text.match(/原始(?:SOP|技能)?文本[:：]?\s*([\s\S]+)/);
-  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean);
-  const title = titleMatch?.[1]?.trim() || lines[0]?.slice(0, 32) || '新技能';
-  const rawContent = rawMatch?.[1]?.trim() || lines.slice(titleMatch ? 0 : 1).join('\n') || text;
-  return { title, raw_content: rawContent };
+  return { title: '新SOP', raw_content: text.trim() };
 }
 
 function createStreamingDraftSeed(payload: { title: string; raw_content: string }): SkillCard {
   return {
     skill_id: `skill_${slugSegment(payload.title) || 'preview'}`,
-    name: payload.title || '新技能',
+    name: payload.title || '新SOP',
     version: '1.0.0',
     business_domain: '',
     description: payload.raw_content.slice(0, 120),
@@ -5283,7 +5244,7 @@ function parseCompleteStreamSkill(streamText: string): SkillCard | null {
     if (!isRecord(draft)) return null;
     return {
       skill_id: stringValue(draft.skill_id, 'skill_preview'),
-      name: stringValue(draft.name, '新技能'),
+      name: stringValue(draft.name, '新SOP'),
       version: stringValue(draft.version, '1.0.0'),
       business_domain: stringValue(draft.business_domain, ''),
       description: stringValue(draft.description, ''),
@@ -5601,7 +5562,7 @@ async function fileToBase64(file: File): Promise<string> {
 }
 
 function filenameTitle(filename: string): string {
-  return filename.replace(/\.[^.]+$/, '').trim() || '新技能';
+  return filename.replace(/\.[^.]+$/, '').trim() || '新SOP';
 }
 
 const uploadContentMarker = '上传文档内容：';
@@ -5618,28 +5579,6 @@ function buildOutgoingText(input: string, attachments: UploadAttachment[]): stri
 function visibleChatContent(item: ChatItem): string {
   if (item.role !== 'user') return item.content;
   return stripUploadContent(item.content || item.outgoingText || '');
-}
-
-function skillEditTeacherPraiseReply(
-  input: string,
-  manualSourceEdited: boolean,
-  stage: TeacherPraiseStage,
-): string | null {
-  if (!manualSourceEdited) return null;
-  const normalized = input.replace(/\s+/g, '').replace(/[，。！？!?、,.]/g, '');
-  if (normalized.includes('我改的好还是你改的好') || normalized.includes('是我改的好还是你改的好')) {
-    return '老师改的太好了';
-  }
-  const asksForReview = normalized.includes('怎么样') || normalized.includes('如何') || normalized.includes('觉得');
-  const mentionsOwnEdit =
-    normalized.includes('我把这一块儿改了改') ||
-    normalized.includes('我把这一块改了改') ||
-    normalized.includes('我改了这一块') ||
-    normalized.includes('这一块改了改');
-  if (stage === 'idle' && asksForReview && mentionsOwnEdit) {
-    return '老师，你改的清楚多了';
-  }
-  return null;
 }
 
 function buildEditedOutgoingText(item: ChatItem, displayText: string): string {
@@ -5790,49 +5729,14 @@ function toolSuggestionSelectionsComplete(suggestions: ToolSuggestionItem[]): bo
   );
 }
 
-function compactWarning(warning: string): string {
-  const text = warning.trim();
-  const toolName = warningToolName(text);
-  if (
-    toolName &&
-    (text.includes('未配置工具') ||
-      text.includes('available_tools') ||
-      text.includes('tool_suggestions') ||
-      text.includes('allowed_actions'))
-  ) {
-    return `未配置工具 ${toolName}，需在原文中提供完整接口信息后新增。`;
-  }
-  if (text.includes('没有任何工具支持') || (text.includes('available_tools') && text.includes('工具'))) {
-    return '缺少可用工具，需先新增工具后再执行该流程。';
-  }
-  const replacements: Array<[string, string]> = [
-    ['原始改写未包含工具节点，已按可用工具补充闭环执行节点。', '已补充工具执行节点。'],
-    ['原始改写缺少执行前确认节点，已补充确认节点。', '已补充执行前确认节点。'],
-    ['原始改写缺少最终回复节点，已补充闭环反馈节点。', '已补充最终回复节点。'],
-    ['模型未生成节点，已使用规则生成默认节点。', '已生成默认节点。'],
-  ];
-  const matched = replacements.find(([source]) => source === text);
-  if (matched) return matched[1];
-  return text;
-}
-
 function compactWarningItems(
   warnings: string[],
-  toolSuggestions: ToolSuggestionItem[] | undefined,
+  _toolSuggestions: ToolSuggestionItem[] | undefined,
 ): Array<{ text: string; title: string }> {
-  const suggestionNames = new Set(
-    (toolSuggestions || [])
-      .flatMap((item) => [item.name, item.display_name, item.matched_tool_name, item.matched_tool_display_name])
-      .filter((value): value is string => Boolean(value))
-      .map((value) => value.toLowerCase()),
-  );
   const items: Array<{ text: string; title: string }> = [];
   for (const warning of warnings) {
-    const toolName = warningToolName(warning);
-    if (toolName && !suggestionNames.has(toolName.toLowerCase())) {
-      continue;
-    }
-    const text = compactWarning(warning);
+    const text = warning.trim();
+    if (!text) continue;
     const existing = items.find((item) => item.text === text);
     if (existing) {
       existing.title = `${existing.title}\n${warning}`;
@@ -5841,20 +5745,6 @@ function compactWarningItems(
     items.push({ text, title: warning });
   }
   return items;
-}
-
-function warningToolName(text: string): string {
-  const patterns = [
-    /未配置工具\s+`?([A-Za-z0-9_.:-]+)`?/,
-    /工具\s+`?([A-Za-z0-9_.:-]+)`?\s+不在/,
-    /引用了未配置工具\s+`?([A-Za-z0-9_.:-]+)`?/,
-    /提到了工具\s+`?([A-Za-z0-9_.:-]+)`?/,
-  ];
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) return match[1].replace(/[`，。,.]+$/g, '');
-  }
-  return '';
 }
 
 function readDistillCache(key: string): DistillCacheSnapshot | null {
@@ -5908,8 +5798,6 @@ function readDistillCache(key: string): DistillCacheSnapshot | null {
               : undefined,
           }
         : null,
-      manualSourceEdited: parsed.manualSourceEdited === true,
-      teacherPraiseStage: parsed.teacherPraiseStage === 'praised' ? 'praised' : 'idle',
     };
   } catch {
     window.sessionStorage.removeItem(key);
@@ -6032,25 +5920,11 @@ function integrateToolSuggestionsIntoDraft(
 
 function toolSuggestionTargetIndexes(
   nodes: Array<Record<string, unknown>>,
-  suggestion: ToolSuggestionItem,
+  _suggestion: ToolSuggestionItem,
   fallbackIndexes: number[],
 ): number[] {
   const uniqueFallbacks = Array.from(new Set(fallbackIndexes));
   if (uniqueFallbacks.length === 1) return uniqueFallbacks;
-  const suggestionText = [
-    suggestion.name,
-    suggestion.display_name,
-    suggestion.reason,
-    suggestion.description,
-    suggestion.source_excerpt,
-  ].filter(Boolean).join(' ').toLowerCase();
-  const matchedIndexes = nodes
-    .map((node, index) => {
-      const nodeName = String(node.name || node.node_id || node.step_id || '').toLowerCase();
-      return nodeName && suggestionText.includes(nodeName) ? index : -1;
-    })
-    .filter((index) => index >= 0);
-  if (matchedIndexes.length > 0) return Array.from(new Set(matchedIndexes));
   const toolNodeIndexes = nodes
     .map((node, index) => (String(node.type || '') === 'tool_call' ? index : -1))
     .filter((index) => index >= 0);
@@ -6417,14 +6291,6 @@ function conditionPresetValue(value: string): string {
   if (CONDITION_PRESET_OPTIONS.some((option) => option.value === trimmed)) return trimmed;
   const naturalMatch = Object.entries(CONDITION_PRESET_TEXT).find(([, text]) => text === trimmed);
   if (naturalMatch) return naturalMatch[0];
-  if (/^missing_slots\s*\(/.test(trimmed)) return 'missing_slots([])';
-  if (/(缺少|没有|未填写|未提供|未收集)/.test(trimmed)) return 'missing_slots([])';
-  if (/必填信息/.test(trimmed) && /(完成|完整|已收集|都收集)/.test(trimmed)) return 'all_required_info_collected';
-  if (/必填信息/.test(trimmed) && /(缺少|没有|未收集)/.test(trimmed)) return 'missing_required_info';
-  if (/工具/.test(trimmed) && /(成功|正常)/.test(trimmed)) return 'tool_success';
-  if (/工具/.test(trimmed) && /(失败|异常|报错)/.test(trimmed)) return 'tool_failed';
-  if (/(用户)?.*(确认|同意|通过)/.test(trimmed)) return 'user_confirmed';
-  if (/(用户)?.*(拒绝|不同意|驳回)/.test(trimmed)) return 'user_rejected';
   return '__custom__';
 }
 
@@ -6439,15 +6305,6 @@ function conditionNaturalText(value: string): string {
   if (CONDITION_PRESET_TEXT[trimmed]) return CONDITION_PRESET_TEXT[trimmed];
   const presetMatch = Object.entries(CONDITION_PRESET_TEXT).find(([, text]) => text === trimmed);
   if (presetMatch) return presetMatch[1];
-  const missingSlots = fieldsFromMissingSlotsCondition(trimmed);
-  if (missingSlots.length > 0) {
-    return `缺少${missingSlots.map(conditionFieldLabel).join('、')}时进入`;
-  }
-  const emptySlot = fieldFromEmptySlotCondition(trimmed);
-  if (emptySlot) return `还没有${conditionFieldLabel(emptySlot)}时进入`;
-  const filledSlot = fieldFromFilledSlotCondition(trimmed);
-  if (filledSlot) return `已经有${conditionFieldLabel(filledSlot)}后进入`;
-  if (isTechnicalCondition(trimmed)) return '满足旧版系统条件后进入';
   return trimmed;
 }
 
@@ -6459,37 +6316,6 @@ function conditionReadableText(value: string): string {
 function flowRuleConditionText(value: string): string {
   const natural = conditionNaturalText(value);
   return natural ? `进入条件：${natural}。` : '进入条件：总是进入。';
-}
-
-function fieldsFromMissingSlotsCondition(value: string): string[] {
-  const missingMatch = value.match(/^missing_slots\((.*)\)$/);
-  if (!missingMatch) return [];
-  return missingMatch[1]
-    .split(',')
-    .map((item) => item.replace(/[\[\]'"\s]/g, ''))
-    .filter(Boolean);
-}
-
-function fieldFromEmptySlotCondition(value: string): string {
-  const normalized = value.replace(/\s+/g, ' ').trim();
-  const match = normalized.match(/^slots\.([A-Za-z0-9_]+) is null or slots\.\1\s*==\s*['"]{2}$/)
-    || normalized.match(/^slots\.([A-Za-z0-9_]+)\s*==\s*['"]{2} or slots\.\1 is null$/);
-  return match?.[1] || '';
-}
-
-function fieldFromFilledSlotCondition(value: string): string {
-  const normalized = value.replace(/\s+/g, ' ').trim();
-  const match = normalized.match(/^slots\.([A-Za-z0-9_]+) is not null and slots\.\1\s*!=\s*['"]{2}$/)
-    || normalized.match(/^slots\.([A-Za-z0-9_]+)\s*!=\s*['"]{2} and slots\.\1 is not null$/);
-  return match?.[1] || '';
-}
-
-function conditionFieldLabel(field: string): string {
-  return CONDITION_FIELD_LABELS[field] || field.replace(/_/g, ' ');
-}
-
-function isTechnicalCondition(value: string): boolean {
-  return /(^|[^A-Za-z])slots\.|missing_slots\s*\(|==|!=|&&|\|\||\bis\s+(not\s+)?null\b/i.test(value);
 }
 
 function diffTargetLabel(path: string, skill: SkillCard | null): string {

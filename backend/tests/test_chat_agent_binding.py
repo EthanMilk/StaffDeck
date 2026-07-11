@@ -11,17 +11,33 @@ from app.api.chat import (
     _ensure_chat_agent_available,
     _user_message_metadata,
     create_chat_session,
+    list_chat_sessions,
 )
+from app.agents.branching import ensure_private_resource_binding
 from app.core.agent_loop import AgentLoop, AgentLoopPreconditionError
-from app.db.models import AgentEvent, AgentProfile, ChatSession, Message, ModelConfig, PersonaConfig, Tenant, User
-from app.llm import LLMError, MULTIMODAL_UNSUPPORTED_MESSAGE
-from app.session.session_schema import ChatAttachmentRead, ChatSessionCreateRequest, ChatTurnRequest
+from app.db.models import (
+    AgentEvent,
+    AgentProfile,
+    ChatSession,
+    Message,
+    ModelConfig,
+    PersonaConfig,
+    ScheduledTaskRun,
+    Tenant,
+    Tool,
+    User,
+    utc_now,
+)
+from app.session.session_schema import ChatSessionCreateRequest, ChatTurnRequest
+from app.tools.tool_schema import ToolCall
 
 
 def test_existing_chat_session_cannot_switch_agent() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
-        current_user = User(id="user_demo", tenant_id="tenant_demo", username="demo", password_hash="x")
+        current_user = User(
+            id="user_demo", tenant_id="tenant_demo", username="demo", password_hash="x"
+        )
         db.add(current_user)
         db.add(AgentProfile(id="agent_a", tenant_id="tenant_demo", name="客服 A", is_overall=False))
         db.add(AgentProfile(id="agent_b", tenant_id="tenant_demo", name="客服 B", is_overall=False))
@@ -52,10 +68,22 @@ def test_existing_chat_session_cannot_switch_agent() -> None:
 def test_chat_agent_must_be_active_non_overall_agent() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
-        current_user = User(id="user_demo", tenant_id="tenant_demo", username="demo", password_hash="x")
+        current_user = User(
+            id="user_demo", tenant_id="tenant_demo", username="demo", password_hash="x"
+        )
         db.add(current_user)
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体", is_overall=True))
-        db.add(AgentProfile(id="agent_archived", tenant_id="tenant_demo", name="已归档", is_overall=False, status="archived"))
+        db.add(
+            AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体", is_overall=True)
+        )
+        db.add(
+            AgentProfile(
+                id="agent_archived",
+                tenant_id="tenant_demo",
+                name="已归档",
+                is_overall=False,
+                status="archived",
+            )
+        )
         db.commit()
 
         with pytest.raises(HTTPException) as missing:
@@ -73,7 +101,9 @@ def test_chat_agent_must_be_active_non_overall_agent() -> None:
 def test_create_chat_session_always_creates_new_agent_session() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
-        current_user = User(id="user_demo", tenant_id="tenant_demo", username="demo", password_hash="x")
+        current_user = User(
+            id="user_demo", tenant_id="tenant_demo", username="demo", password_hash="x"
+        )
         db.add(current_user)
         db.add(
             AgentProfile(
@@ -104,11 +134,56 @@ def test_create_chat_session_always_creates_new_agent_session() -> None:
             current_user=current_user,
             db=db,
         )
-        session_rows = db.exec(select(ChatSession).where(ChatSession.agent_id == "agent_demo")).all()
+        session_rows = db.exec(
+            select(ChatSession).where(ChatSession.agent_id == "agent_demo")
+        ).all()
 
         assert first.id != "session_existing"
         assert second.id not in {"session_existing", first.id}
         assert len(session_rows) == 3
+
+
+def test_chat_session_list_exposes_scheduled_origin_without_title_inference() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        current_user = User(
+            id="user_demo", tenant_id="tenant_demo", username="demo", password_hash="x"
+        )
+        db.add(current_user)
+        db.add(
+            ChatSession(
+                id="session_normal",
+                tenant_id="tenant_demo",
+                user_id="user_demo",
+                title="定时任务：手动命名",
+            )
+        )
+        db.add(
+            ChatSession(
+                id="session_scheduled",
+                tenant_id="tenant_demo",
+                user_id="user_demo",
+                title="已重命名",
+            )
+        )
+        db.add(
+            ScheduledTaskRun(
+                id="schedrun_demo",
+                tenant_id="tenant_demo",
+                scheduled_task_id="sched_demo",
+                agent_id="agent_demo",
+                user_id="user_demo",
+                session_id="session_scheduled",
+                scheduled_for=utc_now(),
+            )
+        )
+        db.commit()
+
+        rows = list_chat_sessions("tenant_demo", current_user=current_user, db=db)
+        by_id = {row.id: row for row in rows}
+
+        assert by_id["session_normal"].is_scheduled is False
+        assert by_id["session_scheduled"].is_scheduled is True
 
 
 def test_session_title_summary_uses_first_user_message_when_title_empty(monkeypatch) -> None:
@@ -116,7 +191,15 @@ def test_session_title_summary_uses_first_user_message_when_title_empty(monkeypa
     monkeypatch.setattr(chat_api, "engine", engine)
     with Session(engine) as db:
         db.add(ChatSession(id="session_title", tenant_id="tenant_demo", user_id="user_demo"))
-        db.add(Message(id="msg_user", tenant_id="tenant_demo", session_id="session_title", role="user", content="请查询北京今天的天气。"))
+        db.add(
+            Message(
+                id="msg_user",
+                tenant_id="tenant_demo",
+                session_id="session_title",
+                role="user",
+                content="请查询北京今天的天气。",
+            )
+        )
         db.commit()
 
     chat_api._summarize_session_title_once("tenant_demo", "user_demo", "session_title", None)
@@ -140,7 +223,14 @@ def test_session_title_summary_does_not_override_existing_title(monkeypatch) -> 
     engine = _test_engine()
     monkeypatch.setattr(chat_api, "engine", engine)
     with Session(engine) as db:
-        db.add(ChatSession(id="session_manual_title", tenant_id="tenant_demo", user_id="user_demo", title="手动标题"))
+        db.add(
+            ChatSession(
+                id="session_manual_title",
+                tenant_id="tenant_demo",
+                user_id="user_demo",
+                title="手动标题",
+            )
+        )
         db.add(
             Message(
                 id="msg_user_manual",
@@ -156,7 +246,9 @@ def test_session_title_summary_does_not_override_existing_title(monkeypatch) -> 
 
     with Session(engine) as db:
         row = db.get(ChatSession, "session_manual_title")
-        events = db.exec(select(AgentEvent).where(AgentEvent.session_id == "session_manual_title")).all()
+        events = db.exec(
+            select(AgentEvent).where(AgentEvent.session_id == "session_manual_title")
+        ).all()
 
     assert row is not None
     assert row.title == "手动标题"
@@ -226,6 +318,92 @@ def test_chat_turn_can_select_enabled_model_config() -> None:
         assert model.id == "model_selected"
 
 
+def test_agent_loop_only_exposes_tools_bound_to_current_employee() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        agent_a = AgentProfile(id="agent_a", tenant_id="tenant_demo", name="员工 A")
+        agent_b = AgentProfile(id="agent_b", tenant_id="tenant_demo", name="员工 B")
+        tool_a = Tool(
+            id="tool_a",
+            tenant_id="tenant_demo",
+            name="tool.a",
+            method="POST",
+            url="https://example.test/a",
+            enabled=True,
+        )
+        tool_b = Tool(
+            id="tool_b",
+            tenant_id="tenant_demo",
+            name="tool.b",
+            method="POST",
+            url="https://example.test/b",
+            enabled=True,
+        )
+        db.add(agent_a)
+        db.add(agent_b)
+        db.add(tool_a)
+        db.add(tool_b)
+        db.flush()
+        ensure_private_resource_binding(db, "tenant_demo", agent_a.id, "tool", tool_a.id, "active")
+        ensure_private_resource_binding(db, "tenant_demo", agent_b.id, "tool", tool_b.id, "active")
+        db.commit()
+
+        loop = AgentLoop(db)
+
+        assert [row.id for row in loop._list_enabled_tools("tenant_demo", agent_a.id)] == [
+            tool_a.id
+        ]
+        assert [row.id for row in loop._list_enabled_tools("tenant_demo", agent_b.id)] == [
+            tool_b.id
+        ]
+
+
+def test_agent_loop_rejects_unbound_tool_before_execution_or_replay() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        owner = AgentProfile(id="agent_owner", tenant_id="tenant_demo", name="员工 A")
+        other = AgentProfile(id="agent_other", tenant_id="tenant_demo", name="员工 B")
+        tool = Tool(
+            id="tool_private",
+            tenant_id="tenant_demo",
+            name="private.lookup",
+            method="POST",
+            url="https://example.test/private",
+            enabled=True,
+        )
+        session = ChatSession(
+            id="session_other",
+            tenant_id="tenant_demo",
+            user_id="user_demo",
+            agent_id=other.id,
+        )
+        db.add(owner)
+        db.add(other)
+        db.add(tool)
+        db.add(session)
+        db.flush()
+        ensure_private_resource_binding(db, "tenant_demo", owner.id, "tool", tool.id, "active")
+        db.commit()
+
+        result = AgentLoop(db)._execute_tool_call(
+            ChatTurnRequest(
+                tenant_id="tenant_demo",
+                session_id=session.id,
+                user_id="user_demo",
+                agent_id=other.id,
+                message="执行私有工具",
+            ),
+            session,
+            ToolCall(name=tool.name, arguments={}),
+        )
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.code == "NOT_ALLOWED"
+        event_types = [row.event_type for row in db.exec(select(AgentEvent)).all()]
+        assert event_types == ["tool_call_started", "tool_call_finished"]
+
+
 def test_chat_turn_rejects_disabled_selected_model_config() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
@@ -253,37 +431,6 @@ def test_chat_turn_rejects_disabled_selected_model_config() -> None:
             )
 
         assert exc_info.value.code == "disabled_model_config"
-
-
-def test_chat_turn_rejects_image_attachments_for_text_only_model() -> None:
-    with _test_session() as db:
-        request = ChatTurnRequest(
-            tenant_id="tenant_demo",
-            agent_id="agent_demo",
-            message="看下这张图",
-            attachments=[
-                ChatAttachmentRead(
-                    id="file_image",
-                    filename="demo.png",
-                    content_type="image/png",
-                    size=12,
-                    kind="image",
-                    data_url="data:image/png;base64,AAAA",
-                )
-            ],
-        )
-        model_config = ModelConfig(
-            id="model_text",
-            tenant_id="tenant_demo",
-            name="文本模型",
-            api_key_encrypted="",
-            model="qwen3-6-27b",
-        )
-
-        with pytest.raises(LLMError) as exc_info:
-            AgentLoop(db)._ensure_request_multimodal_supported(request, model_config)
-
-        assert str(exc_info.value) == MULTIMODAL_UNSUPPORTED_MESSAGE
 
 
 def test_agent_persona_prompt_includes_employee_identity_and_metadata() -> None:

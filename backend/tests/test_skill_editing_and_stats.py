@@ -589,7 +589,7 @@ def test_personal_created_skill_uses_current_admin_when_owner_missing() -> None:
         assert listed[0].metadata["created_by_username"] == "admin"
 
 
-def test_legacy_unversioned_stats_are_archived_to_oldest_version() -> None:
+def test_unversioned_stats_remain_aggregate_without_guessing_a_version() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True))
@@ -657,9 +657,9 @@ def test_legacy_unversioned_stats_are_archived_to_oldest_version() -> None:
 
     assert stats[content.skill_id]["call_count"] == 1
     assert stats[content.skill_id]["negative_feedback_count"] == 1
-    assert versions_by_version["1.0.0"].call_count == 1
-    assert versions_by_version["1.0.0"].negative_feedback_count == 1
-    assert versions_by_version["1.0.0"].negative_rate == 1.0
+    assert versions_by_version["1.0.0"].call_count == 0
+    assert versions_by_version["1.0.0"].negative_feedback_count == 0
+    assert versions_by_version["1.0.0"].negative_rate == 0.0
     assert versions_by_version["1.1.0"].call_count == 0
     assert versions_by_version["1.1.0"].negative_feedback_count == 0
     assert versions_by_version["1.1.0"].negative_rate == 0.0
@@ -668,7 +668,7 @@ def test_legacy_unversioned_stats_are_archived_to_oldest_version() -> None:
     assert payload.negative_rate == 0.0
 
 
-def test_legacy_unversioned_stats_fall_back_to_current_version_when_no_version_snapshots() -> None:
+def test_unversioned_stats_do_not_fall_back_to_current_version() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         content = _skill_card()
@@ -705,11 +705,14 @@ def test_legacy_unversioned_stats_fall_back_to_current_version_when_no_version_s
         current_skill = db.exec(
             select(Skill).where(Skill.tenant_id == "tenant_demo", Skill.skill_id == content.skill_id)
         ).one()
-        payload = skill_read(current_skill, _skill_stats(db, "tenant_demo"))
+        stats = _skill_stats(db, "tenant_demo")
+        payload = skill_read(current_skill, stats)
 
-    assert payload.call_count == 1
-    assert payload.negative_feedback_count == 1
-    assert payload.negative_rate == 1.0
+    assert stats[content.skill_id]["call_count"] == 1
+    assert stats[content.skill_id]["negative_feedback_count"] == 1
+    assert payload.call_count == 0
+    assert payload.negative_feedback_count == 0
+    assert payload.negative_rate == 0.0
 
 
 def test_rollback_skill_version_restores_content_without_copying_stats() -> None:
@@ -964,7 +967,7 @@ def test_message_feedback_attribution_uses_router_skill_hint_for_legacy_step_eve
                 session_id="session_1",
                 event_type="router_decision_created",
                 payload_json={
-                    "decision": "continue_current_skill",
+                    "decision": "continue_active",
                     "target_skill_id": "purchase",
                     "target_node_id": "create_order",
                 },

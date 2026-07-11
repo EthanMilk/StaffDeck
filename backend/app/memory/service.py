@@ -353,8 +353,6 @@ def memory_rows_for_read(rows: list[MemoryRecord]) -> list[MemoryRecord]:
     visible: list[MemoryRecord] = []
     seen_keys: set[tuple[str, str, str | None, str]] = set()
     for row in rows:
-        if _is_legacy_transcript_summary(row):
-            continue
         dedupe_key = (row.user_id, row.kind, memory_agent_id(row), _read_dedupe_key(row))
         if dedupe_key in seen_keys:
             continue
@@ -430,8 +428,6 @@ def _normalize_memory_key(value: Any, kind: str, content: str) -> str:
         normalized = re.sub(r"[^a-zA-Z0-9_]+", "_", value.strip().lower()).strip("_")
         if normalized:
             return normalized[:80]
-    if kind == "profile" and content.startswith("用户姓名/称呼："):
-        return PROFILE_NAME_KEY
     digest = hashlib.md5(f"{kind}:{content}".encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
     return f"{kind}_{digest}"
 
@@ -446,9 +442,7 @@ def _normalize_importance(value: Any) -> float:
 
 def _memory_matches_key(record: MemoryRecord, key: str) -> bool:
     metadata = record.metadata_json or {}
-    if metadata.get("key") == key:
-        return True
-    return key == PROFILE_NAME_KEY and record.kind == "profile" and record.content.startswith("用户姓名/称呼：")
+    return metadata.get("key") == key
 
 
 def _read_dedupe_key(record: MemoryRecord) -> str:
@@ -456,20 +450,9 @@ def _read_dedupe_key(record: MemoryRecord) -> str:
     key = metadata.get("key")
     if isinstance(key, str) and key.strip():
         return key.strip()
-    if record.kind == "profile" and record.content.startswith("用户姓名/称呼："):
-        return PROFILE_NAME_KEY
     if record.kind == "summary":
         return "summary"
     return record.id
-
-
-def _is_legacy_transcript_summary(record: MemoryRecord) -> bool:
-    if record.kind != "summary":
-        return False
-    metadata = record.metadata_json or {}
-    if metadata.get("source") == MEMORY_SOURCE:
-        return False
-    return "用户本轮诉求：" in record.content or "最近处理结果：" in record.content
 
 
 def _recent_messages_with_reply(recent_messages: list[dict[str, str]], reply: str) -> list[dict[str, str]]:

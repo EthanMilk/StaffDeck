@@ -22,7 +22,7 @@ def test_memory_capture_uses_model_updates_and_deduplicates_profile_name(monkeyp
                     "operation": "upsert",
                     "kind": "profile",
                     "key": "preferred_name",
-                    "content": "用户姓名/称呼：xyq",
+                        "content": "xyq",
                     "importance": 0.95,
                     "reason": "用户更新了称呼。",
                 }
@@ -41,9 +41,9 @@ def test_memory_capture_uses_model_updates_and_deduplicates_profile_name(monkeyp
                 username="user_demo",
                 session_id="old_session",
                 kind="profile",
-                content="用户姓名/称呼：hm我想买一个东西",
-                importance=0.95,
-                metadata_json={"source": "profile_extractor"},
+                    content="hm",
+                    importance=0.95,
+                    metadata_json={"source": "profile_extractor", "key": "preferred_name"},
             )
         )
         db.commit()
@@ -64,11 +64,11 @@ def test_memory_capture_uses_model_updates_and_deduplicates_profile_name(monkeyp
     profile_rows = [row for row in rows if row.kind == "profile"]
     summary_rows = [row for row in rows if row.kind == "summary"]
     assert len(profile_rows) == 1
-    assert profile_rows[0].content == "用户姓名/称呼：xyq"
+    assert profile_rows[0].content == "xyq"
     assert profile_rows[0].metadata_json["key"] == "preferred_name"
     assert summary_rows == []
     assert saved
-    assert captured_payload["existing_memories"][0]["content"] == "用户姓名/称呼：hm我想买一个东西"
+    assert captured_payload["existing_memories"][0]["content"] == "hm"
 
 
 def test_memory_capture_ignores_summary_updates(monkeypatch) -> None:
@@ -151,21 +151,21 @@ def test_memory_recall_excludes_summary_history() -> None:
     assert rows[0].content == "用户偏好客服回复简洁。"
 
 
-def test_memory_rows_for_read_hides_legacy_duplicate_profile_and_raw_summary() -> None:
+def test_memory_rows_for_read_deduplicates_by_structured_key_without_text_filtering() -> None:
     rows = [
         MemoryRecord(
             tenant_id="tenant_demo",
             user_id="user_demo",
             kind="profile",
-            content="用户姓名/称呼：hm",
-            metadata_json={"source": "profile_extractor"},
+            content="hm",
+            metadata_json={"source": "profile_extractor", "key": "preferred_name"},
         ),
         MemoryRecord(
             tenant_id="tenant_demo",
             user_id="user_demo",
             kind="profile",
-            content="用户姓名/称呼：hm我想买一个东西",
-            metadata_json={"source": "profile_extractor"},
+            content="another value",
+            metadata_json={"source": "profile_extractor", "key": "preferred_name"},
         ),
         MemoryRecord(
             tenant_id="tenant_demo",
@@ -178,7 +178,10 @@ def test_memory_rows_for_read_hides_legacy_duplicate_profile_and_raw_summary() -
 
     visible = memory_rows_for_read(rows)
 
-    assert [row.content for row in visible] == ["用户姓名/称呼：hm"]
+    assert [row.content for row in visible] == [
+        "hm",
+        "用户长期摘要\n- 用户本轮诉求：我要买东西；最近处理结果：请问数量",
+    ]
 
 
 def test_clear_my_memories_scopes_to_current_user_and_agent() -> None:

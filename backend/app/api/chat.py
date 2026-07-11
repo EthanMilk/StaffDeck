@@ -28,6 +28,7 @@ from app.db.models import (
     KnowledgeConcept,
     Message,
     MessageFeedback,
+    ScheduledTaskRun,
     Skill,
     SkillFeedback,
     User,
@@ -122,7 +123,7 @@ class HumanHandoffReplyRequest(BaseModel):
     reply: str
 
 
-def session_read(row: ChatSession) -> ChatSessionRead:
+def session_read(row: ChatSession, *, is_scheduled: bool = False) -> ChatSessionRead:
     return ChatSessionRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -134,6 +135,7 @@ def session_read(row: ChatSession) -> ChatSessionRead:
         status=row.status,
         summary=row.summary,
         last_agent_question=row.last_agent_question,
+        is_scheduled=is_scheduled,
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
@@ -1624,7 +1626,18 @@ def list_chat_sessions(
         .order_by(ChatSession.updated_at.desc())
     ).all()
     _cleanup_stale_completed_sessions(db, tenant_id, rows)
-    return [session_read(row) for row in rows]
+    scheduled_session_ids = {
+        session_id
+        for session_id in db.exec(
+            select(ScheduledTaskRun.session_id).where(
+                ScheduledTaskRun.tenant_id == tenant_id,
+                ScheduledTaskRun.user_id == current_user.id,
+                ScheduledTaskRun.session_id.is_not(None),
+            )
+        ).all()
+        if session_id
+    }
+    return [session_read(row, is_scheduled=row.id in scheduled_session_ids) for row in rows]
 
 
 @router.put("/sessions/{session_id}", response_model=ChatSessionRead)
@@ -1641,7 +1654,14 @@ def rename_chat_session(
     db.add(row)
     db.commit()
     db.refresh(row)
-    return session_read(row)
+    is_scheduled = db.exec(
+        select(ScheduledTaskRun.id).where(
+            ScheduledTaskRun.tenant_id == request.tenant_id,
+            ScheduledTaskRun.user_id == current_user.id,
+            ScheduledTaskRun.session_id == row.id,
+        )
+    ).first() is not None
+    return session_read(row, is_scheduled=is_scheduled)
 
 
 @router.delete("/sessions/{session_id}")
@@ -2209,7 +2229,7 @@ def _skill_id_from_event(event: AgentEvent) -> str | None:
 
 def _skill_context_from_event(event: AgentEvent, skill_hint: str | None = None) -> dict[str, str | None] | None:
     payload = event.payload_json or {}
-    if event.event_type in {"skill_started", "skill_suspended", "skill_resumed", "skill_step_changed"}:
+    if event.event_type in {"skill_started", "skill_resumed", "skill_step_changed"}:
         skill_id = str(payload.get("to_skill_id") or payload.get("from_skill_id") or skill_hint or "") or None
         if not skill_id:
             return None
@@ -2418,7 +2438,7 @@ def _build_turn_traces(
     skill_names: dict[str, str],
 ) -> list[dict]:
     if not events:
-        return _fallback_knowledge_citation_traces(messages)
+        return []
 
     user_messages_by_id = {message.id: message for message in messages if message.role == "user"}
     traces: list[dict] = []
@@ -2471,7 +2491,6 @@ def _build_turn_traces(
         if event.event_type == "assistant_message_created":
             if not current.get("completed_at"):
                 current["completed_at"] = event.created_at.isoformat()
-            _ensure_knowledge_query_line(current["lines"], current.get("_user_message_content"))
             _complete_trace_lines(current["lines"])
             if active_turn_id == target_turn_id:
                 active_turn_id = None
@@ -2485,7 +2504,6 @@ def _build_turn_traces(
     fallback_time = events[-1].created_at if events else None
     open_turn_id = active_turn_id
     for current in traces:
-        _ensure_knowledge_query_line(current["lines"], current.get("_user_message_content"))
         if open_turn_id and current.get("turn_id") == open_turn_id and not current.get("completed_at"):
             continue
         _finish_trace_if_needed(current, fallback_time)
@@ -2533,117 +2551,59 @@ def _with_scheduled_draft_message_traces(traces: list[dict], messages: list[Mess
     return next_traces
 
 
-def _fallback_knowledge_citation_traces(messages: list[Message]) -> list[dict]:
-    traces: list[dict] = []
-    current_user: Message | None = None
-
-    for message in messages:
-        if message.role == "user":
-            current_user = message
-            continue
-        if message.role != "assistant":
-            continue
-        metadata = message.metadata_json if isinstance(message.metadata_json, dict) else {}
-        citations = metadata.get("knowledge_citations") if isinstance(metadata, dict) else None
-        if not isinstance(citations, list) or not citations:
-            continue
-
-        citation_titles = [
-            str(item.get("title") or item.get("source_title") or item.get("concept_id") or "").strip()
-            for item in citations
-            if isinstance(item, dict)
-        ]
-        citation_titles = [title for title in citation_titles if title]
-        citation_summary = "、".join(citation_titles[:3])
-        if len(citation_titles) > 3:
-            citation_summary = f"{citation_summary} 等"
-
-        traces.append(
-            {
-                "turn_id": current_user.id if current_user else message.id,
-                "user_message_id": current_user.id if current_user else None,
-                "started_at": (current_user.created_at if current_user else message.created_at).isoformat(),
-                "completed_at": message.created_at.isoformat(),
-                "lines": [
-                    {
-                        "id": "thinking",
-                        "kind": "thinking",
-                        "text": "执行记录",
-                        "state": "completed",
-                    },
-                    {
-                        "id": "knowledge_intent",
-                        "kind": "decision",
-                        "text": "识别为业务资料问答",
-                        "detail": "回答需要引用业务资料库，进入知识检索链路。",
-                        "state": "completed",
-                    },
-                    {
-                        "id": "knowledge_query",
-                        "kind": "knowledge",
-                        "phase": "query",
-                        "text": "查询业务资料",
-                        "detail": current_user.content if current_user else None,
-                        "state": "completed",
-                    },
-                    {
-                        "id": "knowledge_retrieval",
-                        "kind": "knowledge",
-                        "phase": "result",
-                        "text": "读取业务资料",
-                        "detail": (
-                            f"命中 {len(citations)} 条知识引用"
-                            + (f"：{citation_summary}" if citation_summary else "")
-                        ),
-                        "state": "completed",
-                    },
-                    {
-                        "id": "knowledge_answer",
-                        "kind": "decision",
-                        "text": "生成带引用回答",
-                        "detail": "已将知识引用附加到回复下方，可点击查看来源、章节和证据片段。",
-                        "state": "completed",
-                    },
-                ],
-            }
-        )
-
-    return traces
-
-
-def _ensure_knowledge_query_line(lines: list[dict], user_message: object | None = None) -> None:
-    has_query = any(line.get("kind") == "knowledge" and line.get("phase") == "query" for line in lines)
-    read_index = next(
-        (
-            index
-            for index, line in enumerate(lines)
-            if line.get("kind") == "knowledge" and line.get("phase") == "result"
-        ),
-        None,
-    )
-    if has_query or read_index is None:
-        return
-    detail = str(user_message or "").strip()
-    lines.insert(
-        read_index,
-        {
-            "id": "knowledge_query_synthetic",
-            "kind": "knowledge",
-            "phase": "query",
-            "text": "查询业务资料",
-            "detail": detail or None,
-            "state": "completed",
-        },
-    )
-
-
 def _event_trace_lines(event: AgentEvent, skill_names: dict[str, str], skill_hint: str | None = None) -> list[dict]:
     line = _event_trace_line(event, skill_names, skill_hint)
     if not line:
         return []
-    if isinstance(line, list):
-        return line
-    return [line]
+    lines = line if isinstance(line, list) else [line]
+    for item in lines:
+        item.setdefault("icon", _event_trace_icon(event, item))
+    return lines
+
+
+def _event_trace_icon(event: AgentEvent, line: dict) -> str:
+    event_type = event.event_type
+    payload = event.payload_json or {}
+    phase = str(payload.get("phase") or "").strip()
+    if event_type in {"router_decision_created", "general_skill_intent_checked"}:
+        return "judge"
+    if event_type == "stream_status" and phase in {"routing", "scheduled_task_intent"}:
+        return "judge"
+    if event_type == "general_skill_trace":
+        if phase in {
+            "plan_created",
+            "attempt_started",
+            "running_code",
+            "stdout_chunk",
+            "stderr_chunk",
+            "code_finished",
+            "code_timeout",
+            "plan_failed",
+        }:
+            return "generated"
+        if phase.startswith("reflection_") or phase == "repair_planning":
+            return "loading"
+        return "advance"
+    if event_type in {
+        "agent_loop_continued",
+        "agent_loop_completed",
+        "reflection_decision_created",
+        "reflection_decision",
+        "reflection_skipped",
+        "reflection_retry_started",
+        "stream_cancelled",
+        "stream_interrupted",
+        "error_occurred",
+    }:
+        return "loading"
+    kind = str(line.get("kind") or "")
+    if kind == "tool":
+        return "tool"
+    if kind == "code":
+        return "generated"
+    if kind == "thinking":
+        return "loading"
+    return "advance"
 
 
 def _event_trace_line(
@@ -2758,6 +2718,7 @@ def _event_trace_line(
             "stderr_chunk",
             "code_finished",
             "code_timeout",
+            "plan_failed",
         }
         return {
             "id": f"general_skill_trace_{event.id}",
@@ -2854,70 +2815,29 @@ def _event_trace_line(
             "detail": detail or None,
             "state": "completed",
         }
-    if event.event_type in {"skill_started", "skill_suspended", "skill_resumed", "skill_step_changed"}:
+    if event.event_type in {"skill_started", "skill_resumed", "skill_step_changed"}:
         to_skill_id = str(payload.get("to_skill_id") or "")
         from_skill_id = str(payload.get("from_skill_id") or "")
         skill_id = to_skill_id or from_skill_id or (skill_hint or "")
         if not skill_id:
             return None
-        decision = str(payload.get("decision") or "")
-        is_interrupt_switch = (
-            decision in {"answer_related_question_then_resume", "answer_chitchat_then_resume"}
-            and from_skill_id
-            and to_skill_id
-            and from_skill_id != to_skill_id
-        )
         label = {
             "skill_started": "选择SOP",
-            "skill_suspended": "切换SOP",
             "skill_resumed": "恢复SOP",
             "skill_step_changed": "推进SOP",
         }[event.event_type]
-        if is_interrupt_switch:
-            label = "切换SOP"
         detail_parts = []
         if from_skill_id and from_skill_id != to_skill_id:
             detail_parts.append(f"from {skill_names.get(from_skill_id, from_skill_id)}")
         if payload.get("to_step_id"):
             detail_parts.append(f"step {payload['to_step_id']}")
-        line = {
+        return {
             "id": f"skill_{event.id}",
             "kind": "skill",
             "text": f"{label} {skill_names.get(skill_id, skill_id)}",
             "detail": " · ".join(detail_parts) or None,
             "state": "completed",
         }
-        if event.event_type != "skill_suspended" and not is_interrupt_switch:
-            return line
-        stack_lines = []
-        for index, frame in enumerate(payload.get("skill_stack") or []):
-            if not isinstance(frame, dict):
-                continue
-            suspended_skill_id = str(frame.get("skill_id") or "")
-            if not suspended_skill_id or suspended_skill_id == skill_id:
-                continue
-            suspended_step_id = str(frame.get("step_id") or "").strip()
-            stack_lines.append(
-                {
-                    "id": f"skill_{event.id}_suspended_{index}",
-                    "kind": "skill",
-                    "text": f"挂起SOP {skill_names.get(suspended_skill_id, suspended_skill_id)}",
-                    "detail": f"当前步骤 {suspended_step_id}" if suspended_step_id else None,
-                    "state": "completed",
-                }
-            )
-        if not stack_lines and from_skill_id and from_skill_id != skill_id:
-            from_step_id = str(payload.get("from_step_id") or "").strip()
-            stack_lines.append(
-                {
-                    "id": f"skill_{event.id}_suspended_from",
-                    "kind": "skill",
-                    "text": f"挂起SOP {skill_names.get(from_skill_id, from_skill_id)}",
-                    "detail": f"当前步骤 {from_step_id}" if from_step_id else None,
-                    "state": "completed",
-                }
-            )
-        return [*stack_lines, line]
     if event.event_type == "skill_completed":
         skill_id = str(payload.get("skill_id") or "")
         return {

@@ -55,7 +55,7 @@ import {
   canManageEmployeeAgent,
   openGalleryAgentId,
   openGalleryImportSourceOptions,
-  resourceCreatorNameOrAdmin,
+  resourceCreatorName,
   visibleEmployeeAgents,
 } from '../employee';
 import { useClientPagination } from '../hooks/useClientPagination';
@@ -226,7 +226,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
         row.description || '',
         row.bucket || '',
         row.url,
-        resourceCreatorNameOrAdmin(row),
+        resourceCreatorName(row),
       ].some((value) => value.toLowerCase().includes(text));
     });
   }, [bucketFilter, searchText, visibleRows]);
@@ -313,7 +313,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
       }
       setImportTargetAgentId(nextTargetAgentId);
       const firstSource = mode === 'plaza'
-        ? openGalleryAgentId(agentRows, TENANT_ID)
+        ? openGalleryAgentId(agentRows)
         : visibleEmployeeAgents(agentRows, currentUser, { activeOnly: true, excludeAgentId: nextTargetAgentId })[0]?.id || '';
       setImportSourceAgentId(firstSource);
       setImportSelectedToolIds([]);
@@ -485,8 +485,8 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
       title: '创建者',
       width: 120,
       render: (row) => (
-        <span className="block truncate text-[#858b9c]" title={resourceCreatorNameOrAdmin(row)}>
-          {resourceCreatorNameOrAdmin(row)}
+        <span className="block truncate text-[#858b9c]" title={resourceCreatorName(row)}>
+          {resourceCreatorName(row) || '-'}
         </span>
       ),
     },
@@ -603,7 +603,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
             {row.display_name || row.name}
           </strong>
           <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">{row.name}</span>
-          <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">创建者：{resourceCreatorNameOrAdmin(row)}</span>
+          <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">创建者：{resourceCreatorName(row) || '-'}</span>
         </div>
         {renderActions(row)}
       </div>
@@ -821,7 +821,7 @@ export default function ToolsPage({ currentUser, onLogout }: ToolPageProps = {})
         targetId={importTargetAgentId}
         sourcePlaceholder={importMode === 'plaza' ? '选择开放广场' : '选择复制来源'}
         sources={importMode === 'plaza'
-          ? openGalleryImportSourceOptions(agents, '开放广场', TENANT_ID)
+          ? openGalleryImportSourceOptions(agents, '开放广场')
           : visibleEmployeeAgents(agents, currentUser, { activeOnly: true, excludeAgentId: importTargetAgentId })
             .map((item) => ({ value: item.id, label: item.name }))}
         sourceId={importSourceAgentId}

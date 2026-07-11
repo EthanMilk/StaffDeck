@@ -28,6 +28,7 @@ from app.db.models import (
     utc_now,
 )
 from app.knowledge.schema import KnowledgeChunkUpdateRequest, KnowledgeDocumentUpdateRequest, KnowledgeSearchRequest, KnowledgeSearchResponse
+from app.knowledge.okf import search_concepts
 from app.knowledge.service import IngestPayload, KnowledgeService
 from app.skills.skill_schema import SkillCard
 
@@ -297,7 +298,7 @@ def test_knowledge_ingest_stale_cancel_request_finalizes_without_worker() -> Non
         assert db.get(KnowledgeDocument, document.id) is None
 
 
-def test_knowledge_search_preserves_fallback_bucket_rank_order() -> None:
+def test_knowledge_search_without_model_uses_relevance_rank_order() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
@@ -376,7 +377,55 @@ def test_knowledge_search_preserves_fallback_bucket_rank_order() -> None:
             )
         )
 
-        assert [bucket.id for bucket in response.selected_buckets][:2] == ["kbucket_frontend", "kbucket_citation"]
+        assert [bucket.id for bucket in response.selected_buckets] == ["kbucket_frontend"]
+
+
+def test_model_driven_document_route_does_not_fall_back_to_lexical_matching(monkeypatch) -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(KnowledgeBase(id="kb_demo", tenant_id="tenant_demo", name="默认知识库"))
+        db.add(
+            KnowledgeDocument(
+                id="kdoc_frontend",
+                tenant_id="tenant_demo",
+                knowledge_base_id="kb_demo",
+                filename="frontend.md",
+                file_type="md",
+                title="前端规范资料",
+                status="ready",
+                metadata_json={"document_card": {"title": "前端规范资料", "summary": "前端编码规范。"}},
+            )
+        )
+        db.commit()
+        monkeypatch.setattr(KnowledgeService, "_select_documents_with_llm", lambda *args, **kwargs: [])
+
+        response = KnowledgeService(db).search(
+            KnowledgeSearchRequest(
+                tenant_id="tenant_demo",
+                knowledge_base_ids=["kb_demo"],
+                query="前端规范有哪些？",
+                mode="chat",
+            ),
+            ModelConfig(id="model_route", tenant_id="tenant_demo", name="Route", model="route"),
+        )
+
+        assert response.selected_documents == []
+        assert any(item.get("phase") == "document_route_no_match" for item in response.route_trace)
+        assert all("fallback" not in str(item.get("phase") or "") for item in response.route_trace)
+
+
+def test_okf_search_does_not_require_manually_curated_business_terms() -> None:
+    concept = KnowledgeConcept(
+        tenant_id="tenant_demo",
+        knowledge_base_id="kb_demo",
+        concept_id="sources/internal-document",
+        concept_type="Source Document",
+        title="内部文档说明",
+        description="介绍可用文档及其适用范围。",
+        content_md="# 内部文档说明\n\n这份文档记录服务流程。",
+    )
+
+    assert search_concepts("文档", [concept]) == [concept]
 
 
 def test_knowledge_search_api_uses_selected_model_config(monkeypatch) -> None:

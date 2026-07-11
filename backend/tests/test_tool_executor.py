@@ -3,9 +3,11 @@ from pathlib import Path
 
 import httpx
 
+from app.agents.branching import ensure_private_resource_binding
 from app.tools.tool_executor import ToolExecutor
 from app.tools.tool_schema import ToolCall
-from app.db.models import Tenant, Tool
+from app.db.models import AgentProfile, MCPServer, Tenant, Tool
+from app.security.internal_service import INTERNAL_SERVICE_HEADER, internal_service_token
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -22,9 +24,66 @@ def test_resolve_secret_header(monkeypatch):
     assert headers["Authorization"] == "Bearer token-123"
 
 
+def test_internal_mock_request_adds_service_token_only_for_configured_origin() -> None:
+    executor = object.__new__(ToolExecutor)
+    executor.settings = type(
+        "Settings",
+        (),
+        {"normalized_tool_base_url": "http://127.0.0.1:5173"},
+    )()
+
+    internal = executor._request_headers(
+        "http://127.0.0.1:5173/api/mock/order/query",
+        {"Content-Type": "application/json"},
+    )
+    external = executor._request_headers(
+        "https://example.test/api/mock/order/query",
+        {"Content-Type": "application/json"},
+    )
+
+    assert internal[INTERNAL_SERVICE_HEADER] == internal_service_token()
+    assert INTERNAL_SERVICE_HEADER not in external
+
+
+def test_execute_rejects_tool_not_bound_to_current_employee() -> None:
+    with _test_session() as db:
+        db.add(Tenant(id="tenant_demo", name="Demo"))
+        owner = AgentProfile(id="agent_owner", tenant_id="tenant_demo", name="员工 A")
+        other = AgentProfile(id="agent_other", tenant_id="tenant_demo", name="员工 B")
+        tool = Tool(
+            id="tool_private",
+            tenant_id="tenant_demo",
+            name="private.lookup",
+            method="POST",
+            url="https://example.test/private",
+            enabled=True,
+        )
+        db.add(owner)
+        db.add(other)
+        db.add(tool)
+        db.flush()
+        ensure_private_resource_binding(db, "tenant_demo", owner.id, "tool", tool.id, "active")
+        db.commit()
+
+        result = ToolExecutor(db).execute(
+            tenant_id="tenant_demo",
+            tool_call=ToolCall(name=tool.name, arguments={}),
+            agent_id=other.id,
+        )
+
+        assert result.success is False
+        assert result.error is not None
+        assert result.error.code == "NOT_ALLOWED"
+
+
 def test_execute_builtin_mcp_tool_success() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
+        db.add(
+            MCPServer(
+                id="server_builtin", tenant_id="tenant_demo", name="builtin", transport="builtin"
+            )
+        )
         db.add(
             Tool(
                 tenant_id="tenant_demo",
@@ -33,7 +92,8 @@ def test_execute_builtin_mcp_tool_success() -> None:
                 tool_type="mcp",
                 method="POST",
                 url="mcp://builtin.demo/echo",
-                config_json={"server": "builtin.demo", "tool": "echo"},
+                mcp_server_id="server_builtin",
+                config_json={"tool": "echo"},
                 input_schema={"type": "object"},
                 output_schema={"type": "object"},
                 enabled=True,
@@ -54,6 +114,11 @@ def test_execute_builtin_mcp_tool_unknown_config_returns_error() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         db.add(
+            MCPServer(
+                id="server_builtin", tenant_id="tenant_demo", name="builtin", transport="builtin"
+            )
+        )
+        db.add(
             Tool(
                 tenant_id="tenant_demo",
                 name="mcp.bad",
@@ -61,7 +126,8 @@ def test_execute_builtin_mcp_tool_unknown_config_returns_error() -> None:
                 tool_type="mcp",
                 method="POST",
                 url="mcp://builtin.demo/missing",
-                config_json={"server": "builtin.demo", "tool": "missing"},
+                mcp_server_id="server_builtin",
+                config_json={"tool": "missing"},
                 enabled=True,
             )
         )
@@ -81,6 +147,16 @@ def test_execute_stdio_mcp_tool_success() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         db.add(
+            MCPServer(
+                id="server_stdio",
+                tenant_id="tenant_demo",
+                name="stdio",
+                transport="stdio",
+                command=sys.executable,
+                args_json=[str(_mock_mcp_server_path())],
+            )
+        )
+        db.add(
             Tool(
                 tenant_id="tenant_demo",
                 name="mcp.real_echo",
@@ -88,12 +164,8 @@ def test_execute_stdio_mcp_tool_success() -> None:
                 tool_type="mcp",
                 method="POST",
                 url="mcp://stdio/mock/echo",
-                config_json={
-                    "transport": "stdio",
-                    "command": sys.executable,
-                    "args": [str(_mock_mcp_server_path())],
-                    "tool": "echo",
-                },
+                mcp_server_id="server_stdio",
+                config_json={"tool": "echo"},
                 input_schema={"type": "object"},
                 output_schema={"type": "object"},
                 enabled=True,
@@ -114,6 +186,16 @@ def test_execute_stdio_mcp_tool_error_is_stable() -> None:
     with _test_session() as db:
         db.add(Tenant(id="tenant_demo", name="Demo"))
         db.add(
+            MCPServer(
+                id="server_stdio",
+                tenant_id="tenant_demo",
+                name="stdio",
+                transport="stdio",
+                command=sys.executable,
+                args_json=[str(_mock_mcp_server_path())],
+            )
+        )
+        db.add(
             Tool(
                 tenant_id="tenant_demo",
                 name="mcp.real_sum",
@@ -121,12 +203,8 @@ def test_execute_stdio_mcp_tool_error_is_stable() -> None:
                 tool_type="mcp",
                 method="POST",
                 url="mcp://stdio/mock/sum",
-                config_json={
-                    "transport": "stdio",
-                    "command": sys.executable,
-                    "args": [str(_mock_mcp_server_path())],
-                    "tool": "sum",
-                },
+                mcp_server_id="server_stdio",
+                config_json={"tool": "sum"},
                 enabled=True,
             )
         )

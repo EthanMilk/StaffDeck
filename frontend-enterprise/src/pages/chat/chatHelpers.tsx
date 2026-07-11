@@ -75,7 +75,7 @@ export function persistSessionReadTimes(userId: string, values: Record<string, s
 }
 
 export function isScheduledSession(session: ChatSession): boolean {
-  return (session.title || '').startsWith('定时任务：');
+  return session.is_scheduled === true;
 }
 
 export function sessionHasUnreadReply(
@@ -101,7 +101,7 @@ export function isDraftConversationKey(id: string): boolean {
 }
 
 export function isMissingChatSessionError(error: unknown): boolean {
-  return error instanceof ApiError && error.status === 404 && error.message === 'Session not found';
+  return error instanceof ApiError && error.status === 404;
 }
 
 export function modelStorageKey(tenantId: string): string {
@@ -426,16 +426,11 @@ export function traceSummaryIconName(_summary: { state: TraceLine['state'] }): C
 }
 
 export function traceLineIconName(line: TraceLine): CotTraceIconName {
-  const primaryText = line.text || '';
-  const text = `${primaryText} ${line.detail || ''}`;
-  if (/判断意图|意图识别|识别意图|router|routing/i.test(primaryText)) return 'judge';
-  if (/重新分析|重新生成|重新校验|重新尝试|重新规划|反思|重试|修复|repair|retry|review/i.test(primaryText)) return 'loading';
-  if (/通用技能/.test(text)) return 'advance';
-  if (line.kind === 'tool' || /工具|调用/.test(primaryText)) return 'tool';
-  if (line.kind === 'code' || line.code || line.output || /生成代码|代码生成|已生成|执行代码|运行代码|Bash|Python|脚本/i.test(primaryText)) return 'generated';
-  if (line.kind === 'skill' || /推进|下一步|下一节点|继续|流转|路由|步骤|技能|SOP/i.test(text)) return 'advance';
-  if (line.kind === 'knowledge') return 'advance';
-  if (line.kind === 'thinking' || /思考|加载|处理中/.test(text)) return 'loading';
+  if (line.icon) return line.icon;
+  if (line.kind === 'decision') return 'judge';
+  if (line.kind === 'tool') return 'tool';
+  if (line.kind === 'code') return 'generated';
+  if (line.kind === 'thinking') return 'loading';
   return 'advance';
 }
 
@@ -945,9 +940,9 @@ const KNOWLEDGE_TRACE_PHASES = new Set([
   'okf_route',
   'okf_only',
   'document_route',
-  'document_route_fallback',
+  'document_route_lexical',
   'bucket_route',
-  'bucket_route_fallback',
+  'bucket_route_lexical',
   'section_expand',
   'read_chunks',
   'evidence_pack',
@@ -967,7 +962,7 @@ export function knowledgeTraceText(data: Record<string, unknown>): string {
       ? data.text
       : '';
   if (!raw) return '检索知识库';
-  return raw.replace(/知识/g, '知识库');
+  return raw;
 }
 
 export function knowledgeTraceDetail(data: Record<string, unknown>): string | undefined {
@@ -1100,6 +1095,7 @@ export function streamErrorTraceLine(data: Record<string, unknown>, eventName: s
     text: streamErrorText(data, eventName),
     detail: streamErrorDetail(data),
     state: 'failed',
+    icon: 'loading',
   };
 }
 
@@ -1118,6 +1114,7 @@ export function routerDecisionTraceLine(data: Record<string, unknown>): TraceLin
     text: intent ? `判断意图 ${intent}` : decision ? `判断意图 ${decision}` : '判断意图',
     detail: detail || undefined,
     state: 'completed',
+    icon: 'judge',
   };
 }
 
@@ -1141,6 +1138,7 @@ export function stepResultTraceLine(data: Record<string, unknown>): TraceLine {
       text: `决定调用工具 ${toolName}`,
       detail: detail || undefined,
       state: 'running',
+      icon: 'tool',
     };
   }
   if (knowledgeQueryText) {
@@ -1150,6 +1148,7 @@ export function stepResultTraceLine(data: Record<string, unknown>): TraceLine {
       text: '决定查询知识库',
       detail: detail || undefined,
       state: 'running',
+      icon: 'advance',
     };
   }
   return {
@@ -1158,14 +1157,12 @@ export function stepResultTraceLine(data: Record<string, unknown>): TraceLine {
     text: nextStepId ? '决定下一步' : '完成步骤判断',
     detail: detail || undefined,
     state: 'completed',
+    icon: 'advance',
   };
 }
 
 export function mergeTraceLine(existing: TraceLine, incoming: TraceLine): TraceLine {
-  const keepExistingText =
-    incoming.id === 'decision_router' &&
-    incoming.text === '判断意图' &&
-    existing.text !== '判断意图';
+  const keepExistingContent = incoming.provisional === true && existing.provisional !== true;
   const nextState =
     existing.state !== 'running' && incoming.state === 'running'
       ? existing.state
@@ -1173,14 +1170,15 @@ export function mergeTraceLine(existing: TraceLine, incoming: TraceLine): TraceL
   return {
     ...existing,
     ...incoming,
-    text: keepExistingText ? existing.text : incoming.text || existing.text,
-    detail: incoming.detail ?? existing.detail,
+    text: keepExistingContent ? existing.text : incoming.text || existing.text,
+    detail: keepExistingContent ? existing.detail : incoming.detail ?? existing.detail,
     code: incoming.code ?? existing.code,
     language: incoming.language ?? existing.language,
     output: incoming.output ?? existing.output,
     outputLanguage: incoming.outputLanguage ?? existing.outputLanguage,
     outputTitle: incoming.outputTitle ?? existing.outputTitle,
     state: nextState,
+    provisional: incoming.provisional === true && existing.provisional === true,
   };
 }
 
@@ -1290,24 +1288,14 @@ export function traceSummary(trace: TurnTrace, lines: TraceLine[]): { text: stri
 }
 
 export function traceDetails(lines: TraceLine[]): TraceLine[] {
-  const hiddenPlaceholders = new Set([
-    '正在思考',
-    '已完成思考',
-    '正在执行',
-    '执行记录',
-    '生成回复',
-    '正在生成回复',
-    '正在根据运行结果生成回复',
-  ]);
   const details = lines.filter((line) => {
+    if (line.placeholder) return false;
     if (line.kind === 'thinking' && line.state !== 'failed') return false;
-    if (/生成回复|组织回复|根据运行结果生成回复/.test(line.text) && !line.code && !line.output) return false;
-    if (hiddenPlaceholders.has(line.text) && !line.detail && !line.code && !line.output) return false;
     return true;
   });
   return details.length > 0
     ? details
-    : lines.filter((line) => !hiddenPlaceholders.has(line.text) || Boolean(line.detail || line.code || line.output));
+    : lines.filter((line) => !line.placeholder && (line.kind !== 'thinking' || line.state === 'failed'));
 }
 
 export function canRateMessage(item: ChatMessage): boolean {
@@ -1322,10 +1310,7 @@ export function canRateMessage(item: ChatMessage): boolean {
 }
 
 export function stripTrailingCitationSummary(content: string): string {
-  if (!content) return content;
-  return content
-    .replace(/(?:\n|\s){0,3}(?:参考资料|引用来源|资料来源)\s*[:：]\s*(?:\[\d+\]\s*)+$/u, '')
-    .trimEnd();
+  return content;
 }
 
 function citationLabelsInContent(content: string): Set<number> {
@@ -1365,16 +1350,13 @@ export function knowledgeCitations(item: ChatMessage, content: string): Knowledg
     if (!usedLabels.has(labelNumber)) return;
     const identity = (
       citation.title || citation.section_path || citation.summary || citation.excerpt || citation.source_path || citation.concept_id || citation.id
-    )
-      .replace(/\/\s*evidence\s*\d+/i, '')
-      .split(/在第\s*\d+\s*章第\s*\d+\s*节/)[0]
-      .split('。')[0];
+    );
     const key = normalizeMessageText(identity).toLowerCase();
     if (!key || seen.has(key)) return;
     seen.add(key);
     result.push({ ...citation, label: `[${labelNumber}]` });
   });
-  return result.slice(0, 4).sort((a, b) => citationLabelNumber(a, 0) - citationLabelNumber(b, 0));
+  return result.sort((a, b) => citationLabelNumber(a, 0) - citationLabelNumber(b, 0));
 }
 
 export function scheduledDraftForMessage(item: ChatMessage): ScheduledTaskDraftRead | null {
@@ -1407,24 +1389,18 @@ export function citationKindLabel(citation: KnowledgeCitation): string {
 
 export function citationDisplayTitle(citation: KnowledgeCitation): string {
   const raw = citation.title || citation.section_path || citation.source_path || citation.concept_id || '知识引用';
-  const title = raw
-    .replace(/\/\s*evidence\s*\d+/i, '')
-    .split('用于统一')[0]
-    .split('。服务人员')[0]
-    .trim();
-  return title || raw;
+  return raw.trim() || '知识引用';
 }
 
 export function citationSourceLabel(citation: KnowledgeCitation): string {
   const raw = citation.source_path || '';
   if (!raw) return '';
-  return raw.replace(/\/\s*evidence\s*\d+/i, '').split(' / ')[0].trim() || raw;
+  return raw.trim();
 }
 
 export function citationSectionLabel(citation: KnowledgeCitation): string {
   const raw = citation.section_path || citation.title || '';
-  if (!raw) return '';
-  return citationDisplayTitle({ ...citation, title: raw });
+  return raw.trim();
 }
 
 // ---------------------------------------------------------------------------

@@ -34,7 +34,11 @@ from app.db.models import (
     User,
 )
 from app.general_skills.schema import GeneralSkillImportRequest
-from app.security.permissions import ensure_agent_scope_manager, ensure_tenant_admin, require_agent_scope_viewer
+from app.security.permissions import (
+    ensure_agent_scope_manager,
+    ensure_tenant_admin,
+    require_agent_scope_viewer,
+)
 from app.tools.tool_schema import ToolCreateRequest, ToolUpdateRequest
 
 
@@ -84,14 +88,18 @@ def test_only_creator_or_admin_can_update_and_delete_agent() -> None:
 def test_non_admin_cannot_manage_overall_agent() -> None:
     with _test_session() as db:
         owner, other, admin = _seed_users(db)
-        overall = AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True)
+        overall = AgentProfile(
+            id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True
+        )
         db.add(overall)
         db.commit()
 
         with pytest.raises(HTTPException) as update_error:
             update_agent(
                 overall.id,
-                AgentProfileUpdateRequest(tenant_id="tenant_demo", description="普通用户不能改整体员工"),
+                AgentProfileUpdateRequest(
+                    tenant_id="tenant_demo", description="普通用户不能改整体员工"
+                ),
                 db=db,
                 current_user=owner,
             )
@@ -99,7 +107,9 @@ def test_non_admin_cannot_manage_overall_agent() -> None:
 
         updated = update_agent(
             overall.id,
-            AgentProfileUpdateRequest(tenant_id="tenant_demo", description="管理员可以维护整体员工"),
+            AgentProfileUpdateRequest(
+                tenant_id="tenant_demo", description="管理员可以维护整体员工"
+            ),
             db=db,
             current_user=admin,
         )
@@ -116,7 +126,14 @@ def test_resource_binding_requires_agent_manager() -> None:
             is_overall=False,
             metadata_json={"owner_user_id": owner.id, "owner_username": owner.username},
         )
-        tool = Tool(id="tool_weather", tenant_id="tenant_demo", name="weather", display_name="天气查询", method="POST", url="/weather")
+        tool = Tool(
+            id="tool_weather",
+            tenant_id="tenant_demo",
+            name="weather",
+            display_name="天气查询",
+            method="POST",
+            url="/weather",
+        )
         db.add(agent)
         db.add(tool)
         db.commit()
@@ -136,7 +153,9 @@ def test_resource_binding_requires_agent_manager() -> None:
 def test_list_agents_filters_to_visible_agents_for_non_admin() -> None:
     with _test_session() as db:
         owner, other, admin = _seed_users(db)
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体", is_overall=True))
+        db.add(
+            AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体", is_overall=True)
+        )
         db.add(
             AgentProfile(
                 id="agent_owned",
@@ -218,8 +237,14 @@ def test_gallery_agent_is_visible_but_not_manageable_by_non_owner() -> None:
             ensure_agent_scope_manager(db, "tenant_demo", gallery_agent.id, owner)
         assert manage_error.value.status_code == 403
 
-        assert ensure_agent_scope_manager(db, "tenant_demo", gallery_agent.id, other).id == gallery_agent.id
-        assert ensure_agent_scope_manager(db, "tenant_demo", gallery_agent.id, admin).id == gallery_agent.id
+        assert (
+            ensure_agent_scope_manager(db, "tenant_demo", gallery_agent.id, other).id
+            == gallery_agent.id
+        )
+        assert (
+            ensure_agent_scope_manager(db, "tenant_demo", gallery_agent.id, admin).id
+            == gallery_agent.id
+        )
 
         with pytest.raises(HTTPException) as create_error:
             create_tool(
@@ -340,25 +365,42 @@ def test_chat_agents_exclude_unused_gallery_agents_until_current_user_marks_used
 
         enterprise_rows = list_agents("tenant_demo", db=db, current_user=owner)
         assert {row.id for row in enterprise_rows} == {"agent_owned", "agent_gallery"}
-        assert {row.id for row in list_chat_agents("tenant_demo", current_user=owner, db=db)} == {"agent_owned"}
-        assert {row.id for row in list_chat_agents("tenant_demo", current_user=admin, db=db)} == {"agent_owned", "agent_private"}
+        assert {row.id for row in list_chat_agents("tenant_demo", current_user=owner, db=db)} == {
+            "agent_owned"
+        }
+        assert {row.id for row in list_chat_agents("tenant_demo", current_user=admin, db=db)} == {
+            "agent_owned",
+            "agent_private",
+        }
 
         used = use_chat_agent(gallery.id, tenant_id="tenant_demo", current_user=owner, db=db)
         assert used.id == gallery.id
         assert used.metadata["used_by_current_user"] is True
         used_again = use_chat_agent(gallery.id, tenant_id="tenant_demo", current_user=owner, db=db)
         assert used_again.id == gallery.id
-        assert db.exec(
-            select(ChatSession).where(ChatSession.user_id == owner.id, ChatSession.agent_id == gallery.id)
-        ).first() is None
+        assert (
+            db.exec(
+                select(ChatSession).where(
+                    ChatSession.user_id == owner.id, ChatSession.agent_id == gallery.id
+                )
+            ).first()
+            is None
+        )
         usage_rows = db.exec(
-            select(AgentUsage).where(AgentUsage.user_id == owner.id, AgentUsage.agent_id == gallery.id)
+            select(AgentUsage).where(
+                AgentUsage.user_id == owner.id, AgentUsage.agent_id == gallery.id
+            )
         ).all()
         assert len(usage_rows) == 1
 
         chat_rows = list_chat_agents("tenant_demo", current_user=owner, db=db)
         assert {row.id for row in chat_rows} == {"agent_owned", "agent_gallery"}
-        assert next(row for row in chat_rows if row.id == "agent_gallery").metadata["used_by_current_user"] is True
+        assert (
+            next(row for row in chat_rows if row.id == "agent_gallery").metadata[
+                "used_by_current_user"
+            ]
+            is True
+        )
 
 
 def test_create_agent_records_creator_and_blocks_non_admin_overall() -> None:
@@ -437,14 +479,18 @@ def test_create_agent_records_creator_and_blocks_non_admin_overall() -> None:
 
         with pytest.raises(HTTPException) as create_error:
             create_agent(
-                AgentProfileCreateRequest(tenant_id="tenant_demo", name="普通用户整体", is_overall=True),
+                AgentProfileCreateRequest(
+                    tenant_id="tenant_demo", name="普通用户整体", is_overall=True
+                ),
                 db=db,
                 current_user=owner,
             )
         assert create_error.value.status_code == 403
 
         overall = create_agent(
-            AgentProfileCreateRequest(tenant_id="tenant_demo", name="管理员整体", is_overall=True, source_mode="blank"),
+            AgentProfileCreateRequest(
+                tenant_id="tenant_demo", name="管理员整体", is_overall=True, source_mode="blank"
+            ),
             db=db,
             current_user=admin,
         )
@@ -454,7 +500,11 @@ def test_create_agent_records_creator_and_blocks_non_admin_overall() -> None:
 def test_private_tool_edit_does_not_mutate_open_gallery_tool() -> None:
     with _test_session() as db:
         owner, _other, _admin = _seed_users(db)
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True
+            )
+        )
         agent = AgentProfile(
             id="agent_owned",
             tenant_id="tenant_demo",
@@ -538,6 +588,14 @@ def test_private_tool_edit_does_not_mutate_open_gallery_tool() -> None:
 def test_tool_name_cannot_be_modified_after_create() -> None:
     with _test_session() as db:
         _owner, _other, admin = _seed_users(db)
+        db.add(
+            AgentProfile(
+                id="agent_overall",
+                tenant_id="tenant_demo",
+                name="开放广场",
+                is_overall=True,
+            )
+        )
         tool = Tool(
             id="tool_weather",
             tenant_id="tenant_demo",
@@ -547,6 +605,8 @@ def test_tool_name_cannot_be_modified_after_create() -> None:
             url="/api/weather",
         )
         db.add(tool)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "tool", tool.id, "active")
         db.commit()
 
         with pytest.raises(HTTPException) as exc_info:
@@ -570,7 +630,11 @@ def test_tool_name_cannot_be_modified_after_create() -> None:
 def test_private_general_skill_edit_does_not_mutate_open_gallery_skill() -> None:
     with _test_session() as db:
         owner, _other, _admin = _seed_users(db)
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True
+            )
+        )
         agent = AgentProfile(
             id="agent_owned",
             tenant_id="tenant_demo",
@@ -591,7 +655,9 @@ def test_private_general_skill_edit_does_not_mutate_open_gallery_skill() -> None
         db.add(open_skill)
         db.flush()
         ensure_open_gallery_binding(db, "tenant_demo", "general_skill", open_skill.id, "active")
-        ensure_private_resource_binding(db, "tenant_demo", agent.id, "general_skill", open_skill.id, "active")
+        ensure_private_resource_binding(
+            db, "tenant_demo", agent.id, "general_skill", open_skill.id, "active"
+        )
         db.commit()
 
         updated = import_general_skill(
@@ -614,15 +680,18 @@ def test_private_general_skill_edit_does_not_mutate_open_gallery_skill() -> None
         assert updated.name == "员工天气技能"
         assert open_skill.name == "天气技能"
         assert open_skill.description == "开放广场版本"
-        assert db.exec(
-            select(AgentResourceBinding).where(
-                AgentResourceBinding.tenant_id == "tenant_demo",
-                AgentResourceBinding.agent_id == agent.id,
-                AgentResourceBinding.resource_type == "general_skill",
-                AgentResourceBinding.resource_id == updated.id,
-                AgentResourceBinding.status == "active",
-            )
-        ).first() is not None
+        assert (
+            db.exec(
+                select(AgentResourceBinding).where(
+                    AgentResourceBinding.tenant_id == "tenant_demo",
+                    AgentResourceBinding.agent_id == agent.id,
+                    AgentResourceBinding.resource_type == "general_skill",
+                    AgentResourceBinding.resource_id == updated.id,
+                    AgentResourceBinding.status == "active",
+                )
+            ).first()
+            is not None
+        )
 
         with pytest.raises(HTTPException) as rename_error:
             import_general_skill(
@@ -643,8 +712,20 @@ def test_private_general_skill_edit_does_not_mutate_open_gallery_skill() -> None
 
 def _seed_users(db: Session) -> tuple[User, User, User]:
     db.add(Tenant(id="tenant_demo", name="Demo"))
-    owner = User(id="user_owner", tenant_id="tenant_demo", username="owner", display_name="Owner", password_hash="x")
-    other = User(id="user_other", tenant_id="tenant_demo", username="other", display_name="Other", password_hash="x")
+    owner = User(
+        id="user_owner",
+        tenant_id="tenant_demo",
+        username="owner",
+        display_name="Owner",
+        password_hash="x",
+    )
+    other = User(
+        id="user_other",
+        tenant_id="tenant_demo",
+        username="other",
+        display_name="Other",
+        password_hash="x",
+    )
     admin = User(
         id="user_admin",
         tenant_id="tenant_demo",

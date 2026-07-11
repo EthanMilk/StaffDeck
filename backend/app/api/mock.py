@@ -11,8 +11,13 @@ from sqlmodel import Session
 
 from app.db import get_session
 from app.db.models import MockOrder, utc_now
+from app.security.internal_service import require_internal_service
 
-router = APIRouter(prefix="/api/mock", tags=["mock"])
+router = APIRouter(
+    prefix="/api/mock",
+    tags=["mock"],
+    dependencies=[Depends(require_internal_service)],
+)
 
 PRODUCT_CATALOG = {
     "SKU-001": {

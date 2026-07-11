@@ -8,17 +8,13 @@ from sqlmodel import Session, select
 from app import paths
 from app.agents.branching import (
     copy_open_gallery_tools_to_agent,
-    get_overall_agent,
-    open_gallery_metadata,
-    system_creator_metadata,
+    copy_overall_scope_to_agent,
+    ensure_open_gallery_binding,
 )
 from app.config import get_settings
 from app.db.models import (
     AgentProfile,
-    AgentResourceBinding,
     GeneralSkill,
-    KnowledgeBase,
-    KnowledgeBaseVersion,
     MCPServer,
     ModelConfig,
     PersonaConfig,
@@ -46,7 +42,14 @@ REFUND_SKILL = {
     "description": "处理用户退款、退货、取消订单等诉求。",
     "trigger_intents": ["退款", "退货", "取消订单", "不想要了"],
     "user_utterance_examples": ["我想退货", "这个不要了", "买错了能退吗", "给我退钱"],
-    "goal": ["确认用户退款诉求", "收集订单号", "确认处理对象", "查询订单状态", "说明退款政策", "引导用户继续处理或转人工"],
+    "goal": [
+        "确认用户退款诉求",
+        "收集订单号",
+        "确认处理对象",
+        "查询订单状态",
+        "说明退款政策",
+        "引导用户继续处理或转人工",
+    ],
     "required_info": ["order_id", "refund_reason"],
     "slot_filling_policy": {
         "enabled": True,
@@ -83,7 +86,12 @@ REFUND_SKILL = {
             "name": "查询退款资格",
             "instruction": "将本步骤作为目标而不是固定话术；仅当 order_id 已存在且 order_confirmed=true 时调用 order.query；根据订单查询结果说明是否可能支持退款/退货，不要承诺一定成功；如还缺原因则继续收集，已满足时给出明确下一步。",
             "expected_user_info": [],
-            "allowed_actions": ["continue_flow", "call_tool:order.query", "answer_user", "handoff_human"],
+            "allowed_actions": [
+                "continue_flow",
+                "call_tool:order.query",
+                "answer_user",
+                "handoff_human",
+            ],
         },
         {
             "node_id": "collect_refund_reason",
@@ -159,7 +167,13 @@ PURCHASE_SKILL = {
     "description": "引导用户完成商品购买流程，包括收集用户信息、确认商品、生成订单并反馈结果。",
     "trigger_intents": ["购买商品", "下单", "买东西", "购买", "place_order"],
     "user_utterance_examples": ["我想买这个商品", "帮我下单", "我要购买 A1", "我要买一个a1"],
-    "goal": ["获取用户身份信息", "确认购买的商品及数量", "确认下单意愿", "生成有效订单", "向用户反馈订单号及状态"],
+    "goal": [
+        "获取用户身份信息",
+        "确认购买的商品及数量",
+        "确认下单意愿",
+        "生成有效订单",
+        "向用户反馈订单号及状态",
+    ],
     "required_info": ["user_name", "product_id", "quantity"],
     "slot_filling_policy": {
         "enabled": True,
@@ -198,7 +212,11 @@ PURCHASE_SKILL = {
                 "如果工具需要 user_id 且只有 user_name，可将 user_name 作为 user_id。"
             ),
             "expected_user_info": ["product_id", "quantity", "purchase_confirmed"],
-            "allowed_actions": ["continue_flow", "call_tool:product.purchase", "call_tool:order.add"],
+            "allowed_actions": [
+                "continue_flow",
+                "call_tool:product.purchase",
+                "call_tool:order.add",
+            ],
         },
         {
             "node_id": "create_order",
@@ -305,7 +323,12 @@ GRAPH_VISUAL_DEMO_SKILL = {
         "我要验证一个包含分支和工具的流程",
         "这个流程需要先查价格再确认",
     ],
-    "goal": ["识别用户要验证的处理路径", "按条件进入工具或知识分支", "必要时确认", "给出最终结果或转人工"],
+    "goal": [
+        "识别用户要验证的处理路径",
+        "按条件进入工具或知识分支",
+        "必要时确认",
+        "给出最终结果或转人工",
+    ],
     "required_info": ["request_type"],
     "slot_filling_policy": {
         "enabled": True,
@@ -455,7 +478,11 @@ GRAPH_VISUAL_DEMO_SKILL = {
         "chitchat": "简短回应后继续引导用户完成验证。",
         "user_wants_human": "直接转人工。",
     },
-    "response_rules": ["不要编造工具结果。", "涉及知识依据时必须基于检索结果回复。", ADAPTIVE_FLOW_RULE],
+    "response_rules": [
+        "不要编造工具结果。",
+        "涉及知识依据时必须基于检索结果回复。",
+        ADAPTIVE_FLOW_RULE,
+    ],
 }
 
 ORDER_QUERY_TOOL = {
@@ -464,7 +491,7 @@ ORDER_QUERY_TOOL = {
     "description": "根据订单号查询订单状态、签收天数和是否可能支持退款。",
     "bucket": "订单工具",
     "method": "POST",
-    "url": "http://localhost:8000/api/mock/order/query",
+    "url": "/api/mock/order/query",
     "headers_json": {},
     "auth_json": {},
     "input_schema": {
@@ -493,7 +520,7 @@ ORDER_ARCHIVE_QUERY_TOOL = {
     "description": "备用订单查询工具；当 order.query 主订单中心未命中、found=false、miss_reason 或历史订单场景时，用同一 order_id 查询归档订单。",
     "bucket": "订单工具",
     "method": "POST",
-    "url": "http://localhost:8000/api/mock/order/archive-query",
+    "url": "/api/mock/order/archive-query",
     "headers_json": {},
     "auth_json": {},
     "input_schema": {
@@ -523,7 +550,7 @@ PRODUCT_PURCHASE_TOOL = {
     "description": "模拟用户购买商品，返回支付后的订单与购买记录。",
     "bucket": "商品工具",
     "method": "POST",
-    "url": "http://localhost:8000/api/mock/product/purchase",
+    "url": "/api/mock/product/purchase",
     "headers_json": {},
     "auth_json": {},
     "input_schema": {
@@ -563,7 +590,7 @@ ORDER_ADD_TOOL = {
     "description": "模拟新增一笔订单，返回订单号、商品、金额和订单状态。",
     "bucket": "订单工具",
     "method": "POST",
-    "url": "http://localhost:8000/api/mock/order/add",
+    "url": "/api/mock/order/add",
     "headers_json": {},
     "auth_json": {},
     "input_schema": {
@@ -603,12 +630,17 @@ PRODUCT_PRICE_QUERY_TOOL = {
     "description": "根据商品名称查询商品价格、品牌、规格和更新时间，用于商品比价。",
     "bucket": "商品工具",
     "method": "POST",
-    "url": "http://localhost:8000/api/mock/product/price-query",
+    "url": "/api/mock/product/price-query",
     "headers_json": {},
     "auth_json": {},
     "input_schema": {
         "type": "object",
-        "properties": {"product_name": {"type": "string", "description": "商品名称或商品别名，如 A1、A3、iPhone 15"}},
+        "properties": {
+            "product_name": {
+                "type": "string",
+                "description": "商品名称或商品别名，如 A1、A3、iPhone 15",
+            }
+        },
         "required": ["product_name"],
     },
     "output_schema": {
@@ -671,7 +703,7 @@ MCP_STDIO_DEMO_SERVER = {
     "transport": "stdio",
     "url": None,
     "headers_json": {},
-    "command": None,   # 由 _seed_mcp_servers 运行时惰性注入（见下）
+    "command": None,  # 由 _seed_mcp_servers 运行时惰性注入（见下）
     "args_json": [str(MOCK_MCP_STDIO_SERVER)],
     "env_json": {},
     "cwd": None,
@@ -693,7 +725,13 @@ MCP_SERVER_TOOLS = {
             "description": "内置 MCP demo echo 工具，回显文本并返回长度。",
             "input_schema": {
                 "type": "object",
-                "properties": {"text": {"type": "string", "description": "要回显的文本", "example": "hello mcp"}},
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "要回显的文本",
+                        "example": "hello mcp",
+                    }
+                },
                 "required": ["text"],
             },
             "output_schema": {
@@ -710,7 +748,9 @@ MCP_SERVER_TOOLS = {
             "description": "stdio MCP mock server 的商品查询工具。",
             "input_schema": {
                 "type": "object",
-                "properties": {"product_id": {"type": "string", "description": "商品 ID，例如 A1 或 A3"}},
+                "properties": {
+                    "product_id": {"type": "string", "description": "商品 ID，例如 A1 或 A3"}
+                },
                 "required": ["product_id"],
             },
             "output_schema": {
@@ -818,8 +858,7 @@ def seed_demo_data(session: Session) -> None:
             )
         )
 
-    # 管理员账号：_is_admin_user 认 "admin" 为管理员，能看到「模型配置」「账号管理」等系统入口。
-    # 桌面/单机版默认以此账号登录（admin / admin）。
+    # 桌面/单机版默认管理员账号（admin / admin）。权限只读取数据库 role 字段。
     admin_user = session.exec(
         select(User).where(User.tenant_id == "tenant_demo", User.username == "admin")
     ).first()
@@ -830,9 +869,14 @@ def seed_demo_data(session: Session) -> None:
                 tenant_id="tenant_demo",
                 username="admin",
                 display_name="Administrator",
+                role="admin",
                 password_hash=hash_password("admin"),
             )
         )
+    elif admin_user.role != "admin":
+        admin_user.role = "admin"
+        admin_user.updated_at = utc_now()
+        session.add(admin_user)
 
     for raw_content in (
         REFUND_SKILL,
@@ -876,25 +920,31 @@ def seed_demo_data(session: Session) -> None:
             tool.description = tool_config.get("description") or tool.description
             tool.method = tool_config.get("method") or tool.method
             tool.url = tool_config.get("url") or tool.url
-            tool.tool_type = tool_config.get("tool_type") or getattr(tool, "tool_type", None) or "http"
+            tool.tool_type = (
+                tool_config.get("tool_type") or getattr(tool, "tool_type", None) or "http"
+            )
             tool.headers_json = tool_config.get("headers_json") or tool.headers_json
             tool.auth_json = tool_config.get("auth_json") or tool.auth_json
             tool.config_json = tool_config.get("config_json") or tool.config_json
             tool.input_schema = tool_config.get("input_schema") or tool.input_schema
             tool.output_schema = tool_config.get("output_schema") or tool.output_schema
-            tool.allowed_skills_json = tool_config.get("allowed_skills_json") or tool.allowed_skills_json
+            tool.allowed_skills_json = (
+                tool_config.get("allowed_skills_json") or tool.allowed_skills_json
+            )
             tool.enabled = bool(tool_config.get("enabled", tool.enabled))
             tool.updated_at = utc_now()
             session.add(tool)
 
     _seed_mcp_servers(session)
-    _backfill_demo_agent_tools(session)
     _seed_weather_general_skill(session)
     session.flush()
-    _backfill_system_creator_metadata(session)
+    _publish_seeded_system_resources(session)
 
     default_model = session.exec(
-        select(ModelConfig).where(ModelConfig.tenant_id == "tenant_demo", ModelConfig.is_default == True)  # noqa: E712
+        select(ModelConfig).where(
+            ModelConfig.tenant_id == "tenant_demo",
+            ModelConfig.is_default == True,  # noqa: E712
+        )
     ).first()
     if not default_model and settings.demo_model_api_key:
         session.add(
@@ -915,132 +965,95 @@ def seed_demo_data(session: Session) -> None:
     session.commit()
 
 
-def _backfill_system_creator_metadata(session: Session) -> None:
+def _publish_seeded_system_resources(session: Session) -> None:
     tenant_id = "tenant_demo"
-    for agent in session.exec(select(AgentProfile).where(AgentProfile.tenant_id == tenant_id)).all():
-        agent.metadata_json = system_creator_metadata(agent.metadata_json or {})
+    creator_metadata = _system_seed_metadata()
+
+    for agent_id, is_default in (
+        (f"agent_{tenant_id}_overall", False),
+        (f"agent_{tenant_id}_default", True),
+    ):
+        agent = session.get(AgentProfile, agent_id)
+        if not agent:
+            continue
+        agent.metadata_json = _system_seed_metadata(
+            {**(agent.metadata_json or {}), **({"is_default_employee": True} if is_default else {})}
+        )
         session.add(agent)
 
-    for model in (GeneralSkill, KnowledgeBase, KnowledgeBaseVersion):
-        for row in session.exec(select(model).where(model.tenant_id == tenant_id)).all():
-            row.metadata_json = system_creator_metadata(row.metadata_json or {})
-            session.add(row)
-
-    for binding in session.exec(
-        select(AgentResourceBinding).where(AgentResourceBinding.tenant_id == tenant_id)
+    seeded_skill_ids = {
+        str(content["skill_id"])
+        for content in (
+            REFUND_SKILL,
+            EXCHANGE_SKILL,
+            PURCHASE_SKILL,
+            PRICE_COMPARE_SKILL,
+            GRAPH_VISUAL_DEMO_SKILL,
+        )
+    }
+    for skill in session.exec(
+        select(Skill).where(Skill.tenant_id == tenant_id, Skill.skill_id.in_(seeded_skill_ids))
     ).all():
-        binding.metadata_json = system_creator_metadata(binding.metadata_json or {})
-        session.add(binding)
+        ensure_open_gallery_binding(
+            session,
+            tenant_id,
+            "skill",
+            skill.id,
+            "active" if skill.status == "published" else "inactive",
+            metadata_json=creator_metadata,
+        )
 
-    overall = get_overall_agent(session, tenant_id)
-    if not overall:
-        return
-    for resource_type, model in (
-        ("skill", Skill),
-        ("general_skill", GeneralSkill),
-        ("knowledge_base", KnowledgeBase),
-        ("tool", Tool),
-    ):
-        for resource in session.exec(select(model).where(model.tenant_id == tenant_id)).all():
-            _ensure_overall_resource_creator_binding(session, tenant_id, overall.id, resource_type, resource)
+    seeded_tool_names = {str(config["name"]) for config in DEMO_TOOLS}
+    for tool in session.exec(
+        select(Tool).where(Tool.tenant_id == tenant_id, Tool.name.in_(seeded_tool_names))
+    ).all():
+        ensure_open_gallery_binding(
+            session,
+            tenant_id,
+            "tool",
+            tool.id,
+            "active" if tool.enabled else "inactive",
+            metadata_json=creator_metadata,
+        )
 
-
-def _ensure_overall_resource_creator_binding(
-    session: Session,
-    tenant_id: str,
-    overall_agent_id: str,
-    resource_type: str,
-    resource: object,
-) -> None:
-    resource_id = getattr(resource, "id", "")
-    if not resource_id:
-        return
-    existing = session.exec(
-        select(AgentResourceBinding).where(
-            AgentResourceBinding.tenant_id == tenant_id,
-            AgentResourceBinding.agent_id == overall_agent_id,
-            AgentResourceBinding.resource_type == resource_type,
-            AgentResourceBinding.resource_id == resource_id,
+    weather = session.exec(
+        select(GeneralSkill).where(
+            GeneralSkill.tenant_id == tenant_id, GeneralSkill.slug == "weather-zh"
         )
     ).first()
-    if existing:
-        existing.metadata_json = open_gallery_metadata(existing.metadata_json or {})
-        existing.updated_at = utc_now()
-        session.add(existing)
-        return
-    if not _resource_can_have_overall_binding(session, tenant_id, resource_type, resource):
-        return
-    session.add(
-        AgentResourceBinding(
-            tenant_id=tenant_id,
-            agent_id=overall_agent_id,
-            resource_type=resource_type,
-            resource_id=resource_id,
-            status=_resource_binding_status(resource),
-            metadata_json=open_gallery_metadata(),
+    if weather:
+        weather.metadata_json = _system_seed_metadata(weather.metadata_json or {})
+        session.add(weather)
+        ensure_open_gallery_binding(
+            session,
+            tenant_id,
+            "general_skill",
+            weather.id,
+            "active" if weather.status == "published" else "inactive",
+            metadata_json=creator_metadata,
         )
+
+    default_agent = session.get(AgentProfile, f"agent_{tenant_id}_default")
+    if default_agent:
+        copy_overall_scope_to_agent(session, tenant_id, default_agent)
+        copy_open_gallery_tools_to_agent(session, tenant_id, default_agent)
+
+
+def _system_seed_metadata(extra: dict[str, object] | None = None) -> dict[str, object]:
+    metadata = dict(extra or {})
+    metadata.update(
+        {
+            "owner_user_id": "admin",
+            "owner_username": "admin",
+            "owner_display_name": "Administrator",
+            "created_by_user_id": "admin",
+            "created_by_username": "admin",
+            "created_by": "admin",
+            "created_by_display_name": "Administrator",
+            "creator_name": "admin",
+        }
     )
-
-
-def _resource_can_have_overall_binding(
-    session: Session,
-    tenant_id: str,
-    resource_type: str,
-    resource: object,
-) -> bool:
-    status = str(getattr(resource, "status", "") or "").strip()
-    if status == "deleted":
-        return False
-    metadata = dict(getattr(resource, "metadata_json", None) or {})
-    if _private_metadata(metadata):
-        return False
-    resource_id = getattr(resource, "id", "")
-    private_bindings = session.exec(
-        select(AgentResourceBinding).where(
-            AgentResourceBinding.tenant_id == tenant_id,
-            AgentResourceBinding.resource_type == resource_type,
-            AgentResourceBinding.resource_id == resource_id,
-        )
-    ).all()
-    return not any(_private_metadata(binding.metadata_json or {}) for binding in private_bindings)
-
-
-def _private_metadata(metadata: dict[str, object]) -> bool:
-    return (
-        metadata.get("scope") == "agent_private"
-        or metadata.get("visibility") == "agent_private"
-        or metadata.get("created_from_agent") is True
-        or metadata.get("created_from_upload") is True
-    )
-
-
-def _resource_binding_status(resource: object) -> str:
-    status = str(getattr(resource, "status", "") or "").strip()
-    enabled = getattr(resource, "enabled", None)
-    if enabled is False or status in {"draft", "inactive", "archived"}:
-        return "inactive"
-    return "active"
-
-
-def _backfill_demo_agent_tools(session: Session) -> None:
-    agents = session.exec(
-        select(AgentProfile).where(
-            AgentProfile.tenant_id == "tenant_demo",
-            AgentProfile.is_overall == False,  # noqa: E712
-            AgentProfile.status == "active",
-        )
-    ).all()
-    for agent in agents:
-        existing_tool_binding = session.exec(
-            select(AgentResourceBinding).where(
-                AgentResourceBinding.tenant_id == "tenant_demo",
-                AgentResourceBinding.agent_id == agent.id,
-                AgentResourceBinding.resource_type == "tool",
-            )
-        ).first()
-        if existing_tool_binding:
-            continue
-        copy_open_gallery_tools_to_agent(session, "tenant_demo", agent)
+    return metadata
 
 
 def _tool_config_with_base_url(tool_config: dict, base_url: str) -> dict:
@@ -1053,9 +1066,6 @@ def _tool_url_with_base(url: str, base_url: str) -> str:
     stripped = url.strip()
     if stripped.startswith("/"):
         return f"{base_url}{stripped}"
-    legacy_base = "http://localhost:8000"
-    if stripped.startswith(f"{legacy_base}/"):
-        return f"{base_url}{stripped[len(legacy_base):]}"
     return stripped
 
 
@@ -1081,16 +1091,25 @@ def _seed_weather_general_skill(session: Session) -> None:
     ).first()
     if existing:
         needs_package_backfill = package_files and not (existing.skill_files_json or [])
-        if existing.skill_markdown != markdown or existing.status != "published" or needs_package_backfill:
+        if (
+            existing.skill_markdown != markdown
+            or existing.status != "published"
+            or needs_package_backfill
+        ):
             existing.name = existing.name or "中国城市天气"
             existing.description = existing.description or "中国城市天气查询工具"
             existing.homepage = existing.homepage or "https://www.weather.com.cn/"
             existing.skill_markdown = markdown
             if package_files:
                 existing.skill_files_json = package_files
-                existing.metadata_json = existing.metadata_json or {"source": "maomao-weather-1.0.2"}
+                existing.metadata_json = existing.metadata_json or {
+                    "source": "maomao-weather-1.0.2"
+                }
             existing.status = "published"
-            existing.permissions_json = existing.permissions_json or {"network": True, "python": True}
+            existing.permissions_json = existing.permissions_json or {
+                "network": True,
+                "python": True,
+            }
             existing.runtime_config_json = existing.runtime_config_json or {
                 "runtime": "bash",
                 "timeout_seconds": 12,
@@ -1109,7 +1128,10 @@ def _seed_weather_general_skill(session: Session) -> None:
             metadata_json={"source": "maomao-weather-1.0.2"} if package_files else {},
             status="published",
             permissions_json={"network": True, "python": True},
-            runtime_config_json={"runtime": "bash" if package_files else "python", "timeout_seconds": 12},
+            runtime_config_json={
+                "runtime": "bash" if package_files else "python",
+                "timeout_seconds": 12,
+            },
         )
     )
 
@@ -1195,7 +1217,9 @@ def _sync_demo_skill_if_stale(existing: Skill, desired: dict) -> None:
             content[graph_key] = desired[graph_key]
             changed = True
 
-    if desired.get("required_info") and content.get("required_info") != desired.get("required_info"):
+    if desired.get("required_info") and content.get("required_info") != desired.get(
+        "required_info"
+    ):
         content["required_info"] = desired["required_info"]
         changed = True
 
@@ -1212,7 +1236,9 @@ def _sync_demo_skill_if_stale(existing: Skill, desired: dict) -> None:
             content["slot_filling_policy"] = merged_policy
             changed = True
     if desired.get("response_rules"):
-        merged_rules = _append_missing_rules(content.get("response_rules"), desired["response_rules"])
+        merged_rules = _append_missing_rules(
+            content.get("response_rules"), desired["response_rules"]
+        )
         if content.get("response_rules") != merged_rules:
             content["response_rules"] = merged_rules
             changed = True
@@ -1254,11 +1280,7 @@ def _skill_content_graph(content: dict) -> dict:
 def _merge_slot_filling_policy(current: object, desired: dict) -> dict:
     current_policy = dict(current) if isinstance(current, dict) else {}
     merged = {**current_policy, **desired}
-    target_info = {
-        str(item)
-        for item in current_policy.get("target_info", [])
-        if str(item).strip()
-    }
+    target_info = {str(item) for item in current_policy.get("target_info", []) if str(item).strip()}
     target_info.update(str(item) for item in desired.get("target_info", []) if str(item).strip())
     merged["target_info"] = sorted(target_info)
     return merged

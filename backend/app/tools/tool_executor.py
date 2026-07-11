@@ -3,15 +3,18 @@ from __future__ import annotations
 import os
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from sqlmodel import Session, select
 
+from app.agents.branching import visible_tool_rows
 from app.config import get_settings
 from app.db.models import MCPServer, Tool
 from app.tools.http_request import prepare_get_request
 from app.tools.mcp_client import MCPClientError, execute_mcp_tool
 from app.tools.tool_schema import ToolCall, ToolError, ToolResult
+from app.security.internal_service import INTERNAL_SERVICE_HEADER, internal_service_token
 
 
 SECRET_PATTERN = re.compile(r"\$\{secret\.([A-Z0-9_]+)\}")
@@ -27,6 +30,7 @@ class ToolExecutor:
         tenant_id: str,
         tool_call: ToolCall,
         active_skill_id: str | None = None,
+        agent_id: str | None = None,
     ) -> ToolResult:
         with self.db.no_autoflush:
             tool = self.db.exec(
@@ -36,15 +40,29 @@ class ToolExecutor:
             return self._error(tool_call.name, "NOT_FOUND", "工具不存在或未配置。")
         if not tool.enabled:
             return self._error(tool.name, "DISABLED", "工具当前未启用。")
-        if active_skill_id and tool.allowed_skills_json and active_skill_id not in tool.allowed_skills_json:
+        if agent_id and tool.id not in {
+            row.id
+            for row in visible_tool_rows(self.db, tenant_id, agent_id, include_inactive=False)
+        }:
+            return self._error(tool.name, "NOT_ALLOWED", "当前员工未启用该工具。")
+        if (
+            active_skill_id
+            and tool.allowed_skills_json
+            and active_skill_id not in tool.allowed_skills_json
+        ):
             return self._error(tool.name, "NOT_ALLOWED", "当前技能不允许调用该工具。")
 
         if (tool.tool_type or "http") == "mcp":
             return self._execute_mcp_tool(tool, tool_call.arguments)
         if (tool.tool_type or "http") != "http":
-            return self._error(tool.name, "UNSUPPORTED_TOOL_TYPE", f"不支持的工具类型：{tool.tool_type}")
+            return self._error(
+                tool.name, "UNSUPPORTED_TOOL_TYPE", f"不支持的工具类型：{tool.tool_type}"
+            )
 
-        headers = self._resolve_headers(tool.headers_json or {}, tool.auth_json or {})
+        headers = self._request_headers(
+            tool.url,
+            self._resolve_headers(tool.headers_json or {}, tool.auth_json or {}),
+        )
         try:
             with httpx.Client(timeout=self.settings.tool_timeout_seconds) as client:
                 if tool.method.upper() == "GET":
@@ -57,7 +75,12 @@ class ToolExecutor:
                         tool.method.upper(), tool.url, headers=headers, json=tool_call.arguments
                     )
                 response.raise_for_status()
-                return ToolResult(tool_name=tool.name, success=True, data=self._response_data(response), error=None)
+                return ToolResult(
+                    tool_name=tool.name,
+                    success=True,
+                    data=self._response_data(response),
+                    error=None,
+                )
         except httpx.TimeoutException:
             return self._error(tool.name, "TIMEOUT", "工具调用超时。")
         except httpx.HTTPStatusError as exc:
@@ -85,20 +108,17 @@ class ToolExecutor:
             return self._error(tool.name, "MCP_EXECUTION_ERROR", str(exc))
 
     def _resolve_mcp_config(self, tool: Tool) -> tuple[dict[str, Any], str | None]:
-        """解析 MCP 工具的连接配置。
-
-        新模型：工具通过 mcp_server_id 关联到 MCPServer，连接配置从
-        server 读取，config_json 里只放 {"tool": <leaf name>}。
-        旧模型：config_json 自带完整连接配置（兼容历史数据）。
-        """
+        """Resolve an MCP tool through its persisted MCP server relation."""
         tool_config = tool.config_json or {}
-        tool_name = str(tool_config.get("tool") or tool_config.get("tool_name") or "").strip() or None
-        if tool.mcp_server_id:
-            server = self.db.get(MCPServer, tool.mcp_server_id)
-            if server is None:
-                raise MCPClientError("MCP 工具关联的 Server 不存在或已删除。")
-            return self._server_client_config(server), tool_name
-        return dict(tool_config), tool_name
+        tool_name = (
+            str(tool_config.get("tool") or tool_config.get("tool_name") or "").strip() or None
+        )
+        if not tool.mcp_server_id:
+            raise MCPClientError("MCP 工具未关联 Server。")
+        server = self.db.get(MCPServer, tool.mcp_server_id)
+        if server is None:
+            raise MCPClientError("MCP 工具关联的 Server 不存在或已删除。")
+        return self._server_client_config(server), tool_name
 
     def _server_client_config(self, server: MCPServer) -> dict[str, Any]:
         transport = server.transport or "streamable_http"
@@ -130,6 +150,30 @@ class ToolExecutor:
             resolved["Authorization"] = f"Bearer {self._resolve_secret(str(auth['token']))}"
         return resolved
 
+    def _request_headers(self, url: str, headers: dict[str, str]) -> dict[str, str]:
+        if not self._is_internal_mock_url(url):
+            return headers
+        resolved = dict(headers)
+        resolved[INTERNAL_SERVICE_HEADER] = internal_service_token()
+        return resolved
+
+    def _is_internal_mock_url(self, url: str) -> bool:
+        target = urlsplit(url)
+        if not target.path.startswith("/api/mock/"):
+            return False
+        if not target.scheme and not target.netloc:
+            return True
+        configured = urlsplit(self.settings.normalized_tool_base_url)
+        return (
+            target.scheme.lower(),
+            target.hostname,
+            target.port or _default_port(target.scheme),
+        ) == (
+            configured.scheme.lower(),
+            configured.hostname,
+            configured.port or _default_port(configured.scheme),
+        )
+
     def _resolve_secret(self, value: str) -> str:
         def repl(match: re.Match[str]) -> str:
             return os.getenv(match.group(1), "")
@@ -137,4 +181,13 @@ class ToolExecutor:
         return SECRET_PATTERN.sub(repl, value)
 
     def _error(self, tool_name: str, code: str, message: str) -> ToolResult:
-        return ToolResult(tool_name=tool_name, success=False, data=None, error=ToolError(code=code, message=message))
+        return ToolResult(
+            tool_name=tool_name,
+            success=False,
+            data=None,
+            error=ToolError(code=code, message=message),
+        )
+
+
+def _default_port(scheme: str) -> int | None:
+    return 443 if scheme.lower() == "https" else 80 if scheme.lower() == "http" else None

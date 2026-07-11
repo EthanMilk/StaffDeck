@@ -20,7 +20,7 @@ import {
 import type { HTMLAttributes, ReactNode } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { api, TENANT_ID } from '../api/client';
+import { api, ApiError, TENANT_ID } from '../api/client';
 import { isEnterpriseAdmin, type EnterpriseAuthUser } from '../auth';
 import AppHeader from '@/components/AppHeader';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
@@ -70,7 +70,7 @@ import {
   canManageEmployeeAgent,
   openGalleryAgentId,
   openGalleryImportSourceOptions,
-  resourceCreatorNameOrAdmin,
+  resourceCreatorName,
   visibleEmployeeAgents,
 } from '../employee';
 import { useClientPagination } from '../hooks/useClientPagination';
@@ -242,7 +242,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
         item.description,
         item.status,
         item.version,
-        resourceCreatorNameOrAdmin(item),
+        resourceCreatorName(item),
         item.branch_sync_state,
         item.document_count,
         item.bucket_count,
@@ -445,7 +445,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
       setOkfLintIssues([]);
     } catch (error) {
       setOkfConcepts([]);
-      if (error instanceof Error && error.message.includes('Knowledge base version not visible')) {
+      if (error instanceof ApiError && error.status === 404) {
         setOkfLintIssues([]);
         return;
       }
@@ -508,7 +508,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
       setAgents(agentRows);
       setImportMode(mode);
       const firstSource = mode === 'plaza'
-        ? openGalleryAgentId(agentRows, TENANT_ID)
+        ? openGalleryAgentId(agentRows)
         : visibleEmployeeAgents(agentRows, currentUser, { activeOnly: true, excludeAgentId: agentId })[0]?.id || '';
       setImportSourceAgentId(firstSource);
       setImportSelectedKnowledgeBaseIds([]);
@@ -980,8 +980,8 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
       title: '创建者',
       width: 120,
       render: (row) => (
-        <span className="block truncate text-[#858b9c]" title={resourceCreatorNameOrAdmin(row)}>
-          {resourceCreatorNameOrAdmin(row)}
+        <span className="block truncate text-[#858b9c]" title={resourceCreatorName(row)}>
+          {resourceCreatorName(row) || '-'}
         </span>
       ),
     },
@@ -1022,7 +1022,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
         <div className="min-w-0">
           <strong className="block truncate text-[14px] font-semibold text-[#18181a]">{item.name}</strong>
           <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">{item.description || '未填写描述'}</span>
-          <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">创建者：{resourceCreatorNameOrAdmin(item)}</span>
+          <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">创建者：{resourceCreatorName(item) || '-'}</span>
         </div>
         <span onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
           {renderKnowledgeBaseActions(item)}
@@ -1221,7 +1221,7 @@ export default function KnowledgeManagePage({ currentUser, onLogout }: Knowledge
         title={importMode === 'plaza' ? '从广场复制知识库' : '从数字员工复制知识库'}
         sourcePlaceholder={importMode === 'plaza' ? '选择开放广场' : '选择来源员工'}
         sources={importMode === 'plaza'
-          ? openGalleryImportSourceOptions(agents, '开放广场', TENANT_ID)
+          ? openGalleryImportSourceOptions(agents, '开放广场')
           : visibleEmployeeAgents(agents, currentUser, { activeOnly: true, excludeAgentId: agentId })
             .map((item) => ({ value: item.id, label: item.name }))}
         sourceId={importSourceAgentId}
@@ -2880,11 +2880,11 @@ function DiscoveryColumn({
 function routePhaseLabel(phase: string) {
   const map: Record<string, string> = {
     document_route: '选择知识库文档',
-    document_route_fallback: '文档路由兜底',
+    document_route_lexical: '按相关性选择知识库文档',
     okf_concept_route: '选择知识图谱',
     okf_only: '仅命中知识图谱',
     bucket_route: '展开内部索引',
-    bucket_route_fallback: '内部索引路由兜底',
+    bucket_route_lexical: '按相关性选择内部索引',
     section_expand: '读取来源',
     read_chunks: '读取引用来源',
     evidence_pack: '整理引用来源包',

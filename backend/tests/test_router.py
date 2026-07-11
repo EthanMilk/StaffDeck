@@ -1,9 +1,11 @@
+import pytest
+
 from app.core.router import Router
 from app.db.models import ChatSession, Skill
-from app.llm import LLMClient
+from app.llm import LLMClient, LLMError
 
 
-def test_router_payload_exposes_step_details_and_allows_compound_interrupt(monkeypatch):
+def test_router_payload_exposes_step_details_and_accepts_canonical_answer_only(monkeypatch):
     captured = {}
 
     def fake_init(self, model_config):  # noqa: ANN001
@@ -21,13 +23,12 @@ def test_router_payload_exposes_step_details_and_allows_compound_interrupt(monke
         assert "不要输出纯 clarify" in system_prompt
         assert "应放入 slot_hints" in system_prompt
         return {
-            "decision": "answer_related_question_then_resume",
+            "decision": "answer_only",
             "target_skill_id": "price_compare",
             "target_step_id": "collect_products",
             "confidence": 0.92,
             "user_intent": "购买前比价",
-            "reason": "用户同时补充购买信息并提出购买前比价，应先回答比价再恢复购买流程。",
-            "should_resume_after_answer": True,
+            "reason": "用户提出临时问题，本轮仅回答，不隐式切换或恢复任务。",
             "clarification_question": "",
         }
 
@@ -45,14 +46,16 @@ def test_router_payload_exposes_step_details_and_allows_compound_interrupt(monke
         ),
         [_purchase_skill(), _price_compare_skill()],
         model_config=None,  # type: ignore[arg-type]
-        memory_context=[{"kind": "profile", "content": "用户姓名/称呼：hm"}],
+        memory_context=[{"kind": "profile", "content": "hm", "metadata": {"key": "preferred_name"}}],
     )
 
-    assert decision.decision == "answer_related_question_then_resume"
+    assert decision.decision == "answer_only"
     assert decision.target_skill_id == "price_compare"
     assert decision.target_step_id == "collect_products"
     assert captured["payload"]["current_session"]["active_skill_id"] == "purchase"
-    assert captured["payload"]["memory_context"] == [{"kind": "profile", "content": "用户姓名/称呼：hm"}]
+    assert captured["payload"]["memory_context"] == [
+        {"kind": "profile", "content": "hm", "metadata": {"key": "preferred_name"}}
+    ]
 
 
 def test_router_accepts_ordered_pending_tasks(monkeypatch):
@@ -63,17 +66,16 @@ def test_router_accepts_ordered_pending_tasks(monkeypatch):
         assert "pending_tasks" in system_prompt
         assert payload["current_session"]["active_skill_id"] == "refund"
         return {
-            "decision": "continue_current_skill",
+            "decision": "continue_active",
             "target_skill_id": "refund",
             "target_step_id": "confirm_refund_order",
             "confidence": 0.93,
             "user_intent": "确认当前退货，并在完成后购买 A3",
             "reason": "用户先确认当前退货，再提出后续购买任务。",
-            "should_resume_after_answer": False,
             "clarification_question": "",
             "pending_tasks": [
                 {
-                    "decision": "start_skill",
+                    "decision": "start_new_task",
                     "target_skill_id": "purchase",
                     "target_step_id": "",
                     "confidence": 0.9,
@@ -101,7 +103,7 @@ def test_router_accepts_ordered_pending_tasks(monkeypatch):
         model_config=None,  # type: ignore[arg-type]
     )
 
-    assert decision.decision == "continue_current_skill"
+    assert decision.decision == "continue_active"
     assert decision.target_skill_id == "refund"
     assert decision.pending_tasks[0].target_skill_id == "purchase"
     assert decision.pending_tasks[0].target_step_id == "collect_user_name"
@@ -216,7 +218,7 @@ def test_task_scheduler_can_continue_price_compare_after_purchase_completion(mon
     assert decision.selected_task_ids == ["task_price_compare_a1_a3"]
 
 
-def test_router_coerces_answer_alias_before_schema_validation(monkeypatch):
+def test_router_rejects_noncanonical_answer_alias(monkeypatch):
     def fake_init(self, model_config):  # noqa: ANN001
         return None
 
@@ -231,17 +233,16 @@ def test_router_coerces_answer_alias_before_schema_validation(monkeypatch):
     monkeypatch.setattr(LLMClient, "__init__", fake_init)
     monkeypatch.setattr(LLMClient, "generate_json", fake_generate_json)
 
-    decision = Router().decide(
-        "你好啊",
-        ChatSession(id="session_test", tenant_id="tenant_demo"),
-        [_purchase_skill()],
-        model_config=None,  # type: ignore[arg-type]
-    )
+    with pytest.raises(LLMError, match="invalid JSON schema"):
+        Router().decide(
+            "你好啊",
+            ChatSession(id="session_test", tenant_id="tenant_demo"),
+            [_purchase_skill()],
+            model_config=None,  # type: ignore[arg-type]
+        )
 
-    assert decision.decision == "answer_only"
 
-
-def test_router_downgrades_unknown_decision_to_clarify(monkeypatch):
+def test_router_rejects_unknown_decision_instead_of_guessing_intent(monkeypatch):
     def fake_init(self, model_config):  # noqa: ANN001
         return None
 
@@ -255,15 +256,13 @@ def test_router_downgrades_unknown_decision_to_clarify(monkeypatch):
     monkeypatch.setattr(LLMClient, "__init__", fake_init)
     monkeypatch.setattr(LLMClient, "generate_json", fake_generate_json)
 
-    decision = Router().decide(
-        "你好啊",
-        ChatSession(id="session_test", tenant_id="tenant_demo"),
-        [_purchase_skill()],
-        model_config=None,  # type: ignore[arg-type]
-    )
-
-    assert decision.decision == "clarify"
-    assert decision.clarification_question
+    with pytest.raises(LLMError, match="invalid JSON schema"):
+        Router().decide(
+            "你好啊",
+            ChatSession(id="session_test", tenant_id="tenant_demo"),
+            [_purchase_skill()],
+            model_config=None,  # type: ignore[arg-type]
+        )
 
 
 def test_router_removes_hallucinated_target_skill_from_non_matching_flow(monkeypatch):
@@ -303,7 +302,7 @@ def test_router_strips_generated_message_content_slots(monkeypatch):
     def fake_generate_json(self, system_prompt, payload):  # noqa: ANN001
         assert "禁止填写 `message_content`" in system_prompt
         return {
-            "decision": "continue_current_skill",
+            "decision": "continue_active",
             "target_skill_id": "purchase",
             "target_step_id": "collect_user_name",
             "confidence": 0.91,
@@ -311,7 +310,7 @@ def test_router_strips_generated_message_content_slots(monkeypatch):
             "slot_hints": {"message_content": "模型改写后的整段输入", "product_id": "A1"},
             "pending_tasks": [
                 {
-                    "decision": "start_skill",
+                    "decision": "start_new_task",
                     "target_skill_id": "purchase",
                     "target_step_id": "collect_user_name",
                     "slot_hints": {"message_content": "后续任务改写", "quantity": 1},
@@ -319,7 +318,7 @@ def test_router_strips_generated_message_content_slots(monkeypatch):
             ],
             "created_tasks": [
                 {
-                    "decision": "start_skill",
+                    "decision": "start_new_task",
                     "target_skill_id": "purchase",
                     "target_step_id": "collect_user_name",
                     "slot_hints": {"message_content": "新建任务改写", "user_name": "hm"},

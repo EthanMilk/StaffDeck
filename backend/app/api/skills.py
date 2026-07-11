@@ -25,7 +25,6 @@ from app.agents.branching import (
     project_skill_with_branch,
     require_overall_agent,
     rollback_branch,
-    system_creator_metadata,
     update_branch_skill,
     user_creator_metadata,
     visible_skill_rows,
@@ -118,7 +117,7 @@ def skill_read(
         branch_sync_state=branch_meta.get("sync_state"),
         branch_base_version=branch_meta.get("base_version"),
         branch_head_version=branch_meta.get("head_version"),
-        metadata=system_creator_metadata(branch_meta.get("metadata") or {}),
+        metadata=dict(branch_meta.get("metadata") or {}),
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
@@ -257,7 +256,9 @@ def create_skill(
     return skill_read(row, stats, _recent_skill_stats(db, request.tenant_id, stats))
 
 
-@router.get("/{skill_id}", response_model=SkillRead, dependencies=[Depends(require_agent_scope_viewer)])
+@router.get(
+    "/{skill_id}", response_model=SkillRead, dependencies=[Depends(require_agent_scope_viewer)]
+)
 def get_skill(
     skill_id: str,
     tenant_id: str = Query(...),
@@ -381,6 +382,8 @@ def archive_skill(
     row.status = "archived"
     row.updated_at = utc_now()
     db.add(row)
+    db.flush()
+    ensure_open_gallery_binding(db, tenant_id, "skill", row.id, "inactive")
     db.commit()
     db.refresh(row)
     _upsert_skill_version(db, row)
@@ -469,7 +472,9 @@ def delete_skill(
     for feedback in feedback_rows:
         db.delete(feedback)
     version_rows = db.exec(
-        select(SkillVersion).where(SkillVersion.tenant_id == tenant_id, SkillVersion.skill_id == skill_id)
+        select(SkillVersion).where(
+            SkillVersion.tenant_id == tenant_id, SkillVersion.skill_id == skill_id
+        )
     ).all()
     for version_row in version_rows:
         db.delete(version_row)
@@ -528,7 +533,11 @@ def get_skill_version(
     agent = get_agent(db, tenant_id, agent_id)
     if agent and not agent.is_overall:
         row = next(
-            (item for item in branch_versions(db, tenant_id, agent.id, skill_id) if item.version == version),
+            (
+                item
+                for item in branch_versions(db, tenant_id, agent.id, skill_id)
+                if item.version == version
+            ),
             None,
         )
         if not row:
@@ -647,7 +656,9 @@ def rewrite_skill_stream(
     current_user: User = Depends(get_current_user),
 ) -> StreamingResponse:
     if request.current_skill.skill_id != skill_id:
-        raise HTTPException(status_code=400, detail="Path skill_id must match current_skill.skill_id")
+        raise HTTPException(
+            status_code=400, detail="Path skill_id must match current_skill.skill_id"
+        )
     ensure_current_user_tenant(request.tenant_id, current_user)
     job_id = _start_rewrite_stream_job(skill_id, request, current_user)
     return StreamingResponse(_stream_skill_job(job_id), media_type="text/event-stream")
@@ -669,7 +680,9 @@ def create_rewrite_job(
     current_user: User = Depends(get_current_user),
 ) -> dict[str, str]:
     if request.current_skill.skill_id != skill_id:
-        raise HTTPException(status_code=400, detail="Path skill_id must match current_skill.skill_id")
+        raise HTTPException(
+            status_code=400, detail="Path skill_id must match current_skill.skill_id"
+        )
     ensure_current_user_tenant(request.tenant_id, current_user)
     return {"job_id": _start_rewrite_stream_job(skill_id, request, current_user)}
 
@@ -720,7 +733,9 @@ def rewrite_skill(
     current_user: User = Depends(get_current_user),
 ) -> SkillRewriteResponse:
     if request.current_skill.skill_id != skill_id:
-        raise HTTPException(status_code=400, detail="Path skill_id must match current_skill.skill_id")
+        raise HTTPException(
+            status_code=400, detail="Path skill_id must match current_skill.skill_id"
+        )
     ensure_current_user_tenant(request.tenant_id, current_user)
     ensure_tenant(db, request.tenant_id)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
@@ -751,9 +766,13 @@ def _start_distill_stream_job(request: SkillDistillRequest, current_user: User) 
     return job.id
 
 
-def _start_rewrite_stream_job(skill_id: str, request: SkillRewriteRequest, current_user: User) -> str:
+def _start_rewrite_stream_job(
+    skill_id: str, request: SkillRewriteRequest, current_user: User
+) -> str:
     job = stream_jobs.create("skill.rewrite", request.tenant_id, current_user.id)
-    stream_jobs.append(job.id, "job_started", {"job_id": job.id, "name": job.name, "skill_id": skill_id})
+    stream_jobs.append(
+        job.id, "job_started", {"job_id": job.id, "name": job.name, "skill_id": skill_id}
+    )
     enqueue_async_job(
         "skill.rewrite_stream",
         _run_rewrite_stream_job,
@@ -848,7 +867,9 @@ def _get_default_model(db: Session, tenant_id: str) -> ModelConfig:
     return model_config
 
 
-def _get_request_model(db: Session, tenant_id: str, model_config_id: str | None = None) -> ModelConfig:
+def _get_request_model(
+    db: Session, tenant_id: str, model_config_id: str | None = None
+) -> ModelConfig:
     if not model_config_id:
         return _get_default_model(db, tenant_id)
     model_config = db.get(ModelConfig, model_config_id)
@@ -881,7 +902,9 @@ def _with_available_tools(db: Session, request: SkillDistillRequest) -> SkillDis
     return request.model_copy(update={"available_tools": available_tools})
 
 
-def _with_available_tools_for_rewrite(db: Session, request: SkillRewriteRequest) -> SkillRewriteRequest:
+def _with_available_tools_for_rewrite(
+    db: Session, request: SkillRewriteRequest
+) -> SkillRewriteRequest:
     tools = db.exec(
         select(Tool).where(Tool.tenant_id == request.tenant_id, Tool.enabled == True)  # noqa: E712
     ).all()
@@ -967,11 +990,10 @@ def _extract_docx_text(data: bytes) -> str:
 
 def _skill_stats(db: Session, tenant_id: str) -> dict[str, dict[str, float | int]]:
     stats: dict[str, dict[str, float | int]] = {}
-    legacy_versions = _legacy_stats_versions(db, tenant_id)
     events = db.exec(
         select(AgentEvent).where(
             AgentEvent.tenant_id == tenant_id,
-            AgentEvent.event_type.in_(["skill_started", "skill_suspended", "skill_resumed"]),  # type: ignore[attr-defined]
+            AgentEvent.event_type.in_(["skill_started", "skill_resumed"]),  # type: ignore[attr-defined]
         )
     ).all()
     for event in events:
@@ -980,17 +1002,14 @@ def _skill_stats(db: Session, tenant_id: str) -> dict[str, dict[str, float | int
         if not skill_id:
             continue
         skill_version = (
-            str(payload.get("to_skill_version") or payload.get("skill_version") or "")
-            or legacy_versions.get(skill_id)
+            str(payload.get("to_skill_version") or payload.get("skill_version") or "") or None
         )
         _increment_call(stats, skill_id, skill_version)
 
-    feedback_rows = db.exec(
-        select(SkillFeedback).where(SkillFeedback.tenant_id == tenant_id)
-    ).all()
+    feedback_rows = db.exec(select(SkillFeedback).where(SkillFeedback.tenant_id == tenant_id)).all()
     flow_feedback: dict[tuple[str, str | None, str, str], set[str]] = {}
     for feedback in feedback_rows:
-        skill_version = feedback.skill_version or legacy_versions.get(feedback.skill_id)
+        skill_version = feedback.skill_version
         flow_key = (feedback.skill_id, skill_version, feedback.session_id, feedback.user_id)
         flow_feedback.setdefault(flow_key, set()).add(feedback.rating)
 
@@ -1013,7 +1032,9 @@ def _skill_stats(db: Session, tenant_id: str) -> dict[str, dict[str, float | int
     return stats
 
 
-def _increment_call(stats: dict[str, dict[str, float | int]], skill_id: str, version: str | None) -> None:
+def _increment_call(
+    stats: dict[str, dict[str, float | int]], skill_id: str, version: str | None
+) -> None:
     entries = [stats.setdefault(skill_id, _empty_stats())]
     if version:
         entries.append(stats.setdefault(_stats_key(skill_id, version), _empty_stats()))
@@ -1025,7 +1046,9 @@ def _stats_key(skill_id: str, version: str) -> str:
     return f"{skill_id}@{version}"
 
 
-def _stats_for(stats: dict[str, dict[str, float | int]], skill_id: str, version: str) -> dict[str, float | int]:
+def _stats_for(
+    stats: dict[str, dict[str, float | int]], skill_id: str, version: str
+) -> dict[str, float | int]:
     return stats.get(_stats_key(skill_id, version), {})
 
 
@@ -1038,7 +1061,9 @@ def _recent_skill_stats(
     version_rows = db.exec(
         select(SkillVersion)
         .where(SkillVersion.tenant_id == tenant_id)
-        .order_by(SkillVersion.skill_id.asc(), SkillVersion.created_at.desc(), SkillVersion.version.desc())
+        .order_by(
+            SkillVersion.skill_id.asc(), SkillVersion.created_at.desc(), SkillVersion.version.desc()
+        )
     ).all()
     for row in version_rows:
         versions = recent_versions.setdefault(row.skill_id, [])
@@ -1071,22 +1096,6 @@ def _recent_skill_stats(
         entry["negative_rate"] = round(negative / calls, 4) if calls else 0.0
         recent_stats[skill_id] = entry
     return recent_stats
-
-
-def _legacy_stats_versions(db: Session, tenant_id: str) -> dict[str, str]:
-    versions: dict[str, str] = {}
-    version_rows = db.exec(
-        select(SkillVersion)
-        .where(SkillVersion.tenant_id == tenant_id)
-        .order_by(SkillVersion.created_at.asc(), SkillVersion.version.asc())
-    ).all()
-    for row in version_rows:
-        versions.setdefault(row.skill_id, row.version)
-
-    skill_rows = db.exec(select(Skill).where(Skill.tenant_id == tenant_id)).all()
-    for row in skill_rows:
-        versions.setdefault(row.skill_id, row.version)
-    return versions
 
 
 def _upsert_skill_version(db: Session, row: Skill) -> SkillVersion:

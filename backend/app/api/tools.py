@@ -15,8 +15,8 @@ from app.agents.branching import (
     is_open_gallery_resource,
     require_overall_agent,
     resource_binding_metadata,
-    system_creator_metadata,
     user_creator_metadata,
+    visible_tool_rows,
 )
 from app.config import get_settings
 from app.db import get_session
@@ -77,7 +77,7 @@ def tool_read(row: Tool, metadata: dict[str, Any] | None = None) -> ToolRead:
         allowed_skills=row.allowed_skills_json or [],
         mcp_server_id=row.mcp_server_id,
         enabled=row.enabled,
-        metadata=system_creator_metadata(metadata or {}),
+        metadata=dict(metadata or {}),
         created_at=row.created_at.isoformat(),
         updated_at=row.updated_at.isoformat(),
     )
@@ -96,7 +96,11 @@ def list_tools(
     return [tool_read(row, metadata_by_id.get(row.id)) for row in rows]
 
 
-@router.get("/buckets", response_model=list[ToolBucketRead], dependencies=[Depends(require_agent_scope_viewer)])
+@router.get(
+    "/buckets",
+    response_model=list[ToolBucketRead],
+    dependencies=[Depends(require_agent_scope_viewer)],
+)
 def list_tool_buckets(
     tenant_id: str = Query(...),
     agent_id: str | None = Query(default=None),
@@ -107,7 +111,9 @@ def list_tool_buckets(
     grouped: dict[str, ToolBucketRead] = {}
     for row in rows:
         bucket = row.bucket or "未分桶"
-        item = grouped.setdefault(bucket, ToolBucketRead(bucket=bucket, total=0, enabled_count=0, disabled_count=0))
+        item = grouped.setdefault(
+            bucket, ToolBucketRead(bucket=bucket, total=0, enabled_count=0, disabled_count=0)
+        )
         item.total += 1
         if row.enabled:
             item.enabled_count += 1
@@ -217,9 +223,13 @@ def probe_tool(
         with httpx.Client(timeout=get_settings().tool_timeout_seconds) as client:
             if request.method.upper() == "GET":
                 request_url, request_kwargs = prepare_get_request(url, request.sample_arguments)
-                response = client.request(request.method.upper(), request_url, headers=headers, **request_kwargs)
+                response = client.request(
+                    request.method.upper(), request_url, headers=headers, **request_kwargs
+                )
             else:
-                response = client.request(request.method.upper(), url, headers=headers, json=request.sample_arguments)
+                response = client.request(
+                    request.method.upper(), url, headers=headers, json=request.sample_arguments
+                )
     except httpx.TimeoutException:
         return ToolProbeResponse(
             success=False,
@@ -240,11 +250,15 @@ def probe_tool(
         inferred_output_schema=_infer_json_schema(data_preview) if success else {},
         error=None
         if success
-        else ToolError(code="HTTP_ERROR", message=f"工具探测返回异常状态码：{response.status_code}"),
+        else ToolError(
+            code="HTTP_ERROR", message=f"工具探测返回异常状态码：{response.status_code}"
+        ),
     )
 
 
-@router.get("/{tool_id}", response_model=ToolRead, dependencies=[Depends(require_agent_scope_viewer)])
+@router.get(
+    "/{tool_id}", response_model=ToolRead, dependencies=[Depends(require_agent_scope_viewer)]
+)
 def get_tool(
     tool_id: str,
     tenant_id: str = Query(...),
@@ -371,7 +385,11 @@ def test_tool(
     ensure_current_user_tenant(request.tenant_id, current_user)
     row = _get_tool(db, request.tenant_id, tool_id)
     _ensure_tool_visible(db, request.tenant_id, row, agent_id)
-    return ToolExecutor(db).execute(request.tenant_id, ToolCall(name=row.name, arguments=request.arguments))
+    return ToolExecutor(db).execute(
+        request.tenant_id,
+        ToolCall(name=row.name, arguments=request.arguments),
+        agent_id=agent_id,
+    )
 
 
 def _get_tool(db: Session, tenant_id: str, tool_id: str) -> Tool:
@@ -391,35 +409,10 @@ def _visible_tool_rows(
     agent = get_agent(db, tenant_id, agent_id)
     if agent_id and not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    if agent and not agent.is_overall:
-        bindings = db.exec(
-            select(AgentResourceBinding)
-            .where(
-                AgentResourceBinding.tenant_id == tenant_id,
-                AgentResourceBinding.agent_id == agent.id,
-                AgentResourceBinding.resource_type == "tool",
-                AgentResourceBinding.status != "deleted",
-            )
-            .order_by(AgentResourceBinding.updated_at.desc())
-        ).all()
-        ids = [binding.resource_id for binding in bindings]
-        if not ids:
-            return []
-        stmt = select(Tool).where(Tool.tenant_id == tenant_id, Tool.id.in_(ids))
-    else:
-        stmt = select(Tool).where(Tool.tenant_id == tenant_id)
+    rows = visible_tool_rows(db, tenant_id, agent_id, include_inactive=True)
     if bucket and bucket != "__all__":
-        stmt = stmt.where(Tool.bucket == bucket)
-    rows = list(db.exec(stmt.order_by(Tool.bucket, Tool.name)).all())
-    if agent and not agent.is_overall:
-        binding_by_id = {binding.resource_id: binding for binding in bindings}
-        return [
-            row
-            for row in rows
-            if (binding := binding_by_id.get(row.id))
-            and is_bound_resource_visible_for_agent(db, tenant_id, "tool", row, binding)
-        ]
-    return [row for row in rows if is_open_gallery_resource(db, tenant_id, "tool", row)]
+        return [row for row in rows if row.bucket == bucket]
+    return rows
 
 
 def _ensure_tool_visible(db: Session, tenant_id: str, row: Tool, agent_id: str | None) -> None:
@@ -428,13 +421,17 @@ def _ensure_tool_visible(db: Session, tenant_id: str, row: Tool, agent_id: str |
         raise HTTPException(status_code=404, detail="Agent not found")
     if agent and not agent.is_overall:
         binding = _tool_binding(db, tenant_id, agent.id, row.id)
-        if not binding or not is_bound_resource_visible_for_agent(db, tenant_id, "tool", row, binding):
+        if not binding or not is_bound_resource_visible_for_agent(
+            db, tenant_id, "tool", row, binding
+        ):
             raise HTTPException(status_code=404, detail="Tool not visible to this agent")
-    if agent and agent.is_overall and not is_open_gallery_resource(db, tenant_id, "tool", row):
+    if (not agent or agent.is_overall) and not is_open_gallery_resource(db, tenant_id, "tool", row):
         raise HTTPException(status_code=404, detail="Tool not visible in open gallery")
 
 
-def _tool_binding(db: Session, tenant_id: str, agent_id: str, tool_id: str) -> AgentResourceBinding | None:
+def _tool_binding(
+    db: Session, tenant_id: str, agent_id: str, tool_id: str
+) -> AgentResourceBinding | None:
     return db.exec(
         select(AgentResourceBinding).where(
             AgentResourceBinding.tenant_id == tenant_id,
@@ -446,7 +443,9 @@ def _tool_binding(db: Session, tenant_id: str, agent_id: str, tool_id: str) -> A
     ).first()
 
 
-def _ensure_private_tool_for_agent(db: Session, tenant_id: str, agent: AgentProfile, row: Tool) -> Tool:
+def _ensure_private_tool_for_agent(
+    db: Session, tenant_id: str, agent: AgentProfile, row: Tool
+) -> Tool:
     if not is_open_gallery_resource(db, tenant_id, "tool", row):
         return row
     now = utc_now()
@@ -541,6 +540,7 @@ def _infer_json_schema(value: Any) -> dict[str, Any]:
 # MCP Servers（工具集）
 # --------------------------------------------------------------------------- #
 
+
 def _server_connection(row: MCPServer) -> MCPServerConnection:
     return MCPServerConnection(
         transport=row.transport,  # type: ignore[arg-type]
@@ -573,9 +573,7 @@ def _connection_to_client_config(connection: MCPServerConnection) -> dict[str, A
 
 
 def mcp_server_read(row: MCPServer, db: Session) -> MCPServerRead:
-    tool_count = len(
-        db.exec(select(Tool.id).where(Tool.mcp_server_id == row.id)).all()
-    )
+    tool_count = len(db.exec(select(Tool.id).where(Tool.mcp_server_id == row.id)).all())
     return MCPServerRead(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -592,8 +590,12 @@ def mcp_server_read(row: MCPServer, db: Session) -> MCPServerRead:
     )
 
 
-@mcp_router.get("", response_model=list[MCPServerRead], dependencies=[Depends(require_tenant_admin)])
-def list_mcp_servers(tenant_id: str = Query(...), db: Session = Depends(get_session)) -> list[MCPServerRead]:
+@mcp_router.get(
+    "", response_model=list[MCPServerRead], dependencies=[Depends(require_tenant_admin)]
+)
+def list_mcp_servers(
+    tenant_id: str = Query(...), db: Session = Depends(get_session)
+) -> list[MCPServerRead]:
     ensure_tenant(db, tenant_id)
     rows = db.exec(
         select(MCPServer).where(MCPServer.tenant_id == tenant_id).order_by(MCPServer.name)
@@ -610,10 +612,14 @@ def create_mcp_server(
     ensure_tenant(db, request.tenant_id)
     ensure_open_gallery_admin(request.tenant_id, current_user)
     existing = db.exec(
-        select(MCPServer).where(MCPServer.tenant_id == request.tenant_id, MCPServer.name == request.name)
+        select(MCPServer).where(
+            MCPServer.tenant_id == request.tenant_id, MCPServer.name == request.name
+        )
     ).first()
     if existing:
-        raise HTTPException(status_code=409, detail="MCP server name already exists for this tenant")
+        raise HTTPException(
+            status_code=409, detail="MCP server name already exists for this tenant"
+        )
     conn = request.connection
     row = MCPServer(
         tenant_id=request.tenant_id,
@@ -636,8 +642,12 @@ def create_mcp_server(
     return mcp_server_read(row, db)
 
 
-@mcp_router.get("/{server_id}", response_model=MCPServerRead, dependencies=[Depends(require_tenant_admin)])
-def get_mcp_server(server_id: str, tenant_id: str = Query(...), db: Session = Depends(get_session)) -> MCPServerRead:
+@mcp_router.get(
+    "/{server_id}", response_model=MCPServerRead, dependencies=[Depends(require_tenant_admin)]
+)
+def get_mcp_server(
+    server_id: str, tenant_id: str = Query(...), db: Session = Depends(get_session)
+) -> MCPServerRead:
     row = _get_mcp_server(db, tenant_id, server_id)
     return mcp_server_read(row, db)
 

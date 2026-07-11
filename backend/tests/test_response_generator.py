@@ -56,7 +56,7 @@ def test_tool_result_reply_is_model_driven(monkeypatch):
         message="设备坏了",
         session=ChatSession(id="session_test", tenant_id="tenant_demo"),
         skill=None,
-        router_decision=RouterDecision(decision="continue_current_skill"),
+        router_decision=RouterDecision(decision="continue_active"),
         step_result=StepAgentResult(),
         tool_result=ToolResult(
             tool_name="ticket.create",
@@ -79,7 +79,7 @@ def test_failed_tool_result_returns_explicit_failure_without_model_call(monkeypa
         message="查一下订单",
         session=ChatSession(id="session_test", tenant_id="tenant_demo"),
         skill=None,
-        router_decision=RouterDecision(decision="continue_current_skill"),
+        router_decision=RouterDecision(decision="continue_active"),
         step_result=StepAgentResult(),
         tool_result=ToolResult(
             tool_name="order.query",
@@ -112,7 +112,7 @@ def test_model_failure_returns_explicit_reason(monkeypatch):
         model_config=None,  # type: ignore[arg-type]
     )
 
-    assert reply == "模型调用失败（LLM_ERROR）：upstream timeout。模型服务调用已超时；请检查服务负载、网络延迟和超时配置后重试。"
+    assert reply == "模型调用失败（LLM_ERROR）：upstream timeout。请检查模型配置、API Key、网络或模型服务状态后重试。"
 
 
 def test_pending_reply_without_tool_result_uses_model_reply(monkeypatch):
@@ -133,7 +133,7 @@ def test_pending_reply_without_tool_result_uses_model_reply(monkeypatch):
             last_agent_question="请问您想购买多少件？",
         ),
         skill=None,
-        router_decision=RouterDecision(decision="continue_current_skill"),
+        router_decision=RouterDecision(decision="continue_active"),
         step_result=StepAgentResult(reply="请补充完成当前步骤所需的信息。"),
         tool_result=None,
         model_config=None,  # type: ignore[arg-type]
@@ -160,7 +160,7 @@ def test_pending_step_reply_without_tool_result_does_not_fall_back_to_last_quest
             last_agent_question="请提供您的订单号。",
         ),
         skill=None,
-        router_decision=RouterDecision(decision="continue_current_skill"),
+        router_decision=RouterDecision(decision="continue_active"),
         step_result=StepAgentResult(reply="正在为您提交，请稍候。"),
         tool_result=None,
         model_config=None,  # type: ignore[arg-type]
@@ -196,7 +196,7 @@ def test_pending_phrase_in_confirmation_question_is_not_rejected(monkeypatch):
             slots_json={"user_name": "哈", "product_id": "A1", "quantity": 1},
             pending_tasks_json=[
                 {
-                    "decision": "start_skill",
+                    "decision": "start_new_task",
                     "target_skill_id": "skill_purchase_001",
                     "target_step_id": "collect_user_name",
                     "slot_hints": {"product_id": "iphone15", "quantity": 1},
@@ -204,7 +204,7 @@ def test_pending_phrase_in_confirmation_question_is_not_rejected(monkeypatch):
             ],
         ),
         skill=None,
-        router_decision=RouterDecision(decision="continue_current_skill"),
+        router_decision=RouterDecision(decision="continue_active"),
         step_result=StepAgentResult(reply=step_reply, next_step_id="confirm_purchase"),
         tool_result=None,
         model_config=None,  # type: ignore[arg-type]
@@ -244,7 +244,7 @@ def test_response_payload_does_not_include_stale_last_question(monkeypatch):
             last_agent_question=stale_price_reply,
         ),
         skill=None,
-        router_decision=RouterDecision(decision="continue_current_skill"),
+        router_decision=RouterDecision(decision="continue_active"),
         step_result=StepAgentResult(reply=refund_reply, is_step_completed=True),
         tool_result=None,
         model_config=None,  # type: ignore[arg-type]
@@ -279,7 +279,7 @@ def test_stream_payload_does_not_include_stale_last_question(monkeypatch):
                 last_agent_question=stale_price_reply,
             ),
             skill=None,
-            router_decision=RouterDecision(decision="continue_current_skill"),
+            router_decision=RouterDecision(decision="continue_active"),
             step_result=StepAgentResult(reply=refund_reply, is_step_completed=True),
             tool_result=None,
             model_config=None,  # type: ignore[arg-type]
@@ -316,7 +316,7 @@ def test_stream_reply_with_tool_result_is_model_driven(monkeypatch):
                 last_agent_question=stale_price_reply,
             ),
             skill=None,
-            router_decision=RouterDecision(decision="continue_current_skill"),
+            router_decision=RouterDecision(decision="continue_active"),
             step_result=StepAgentResult(reply=refund_reply, is_step_completed=True),
             tool_result=ToolResult(
                 tool_name="order.refund",
@@ -342,7 +342,7 @@ def test_stream_failed_tool_result_returns_explicit_failure_without_model_call(m
             message="查一下订单",
             session=ChatSession(id="session_test", tenant_id="tenant_demo"),
             skill=None,
-            router_decision=RouterDecision(decision="continue_current_skill"),
+            router_decision=RouterDecision(decision="continue_active"),
             step_result=StepAgentResult(),
             tool_result=ToolResult(
                 tool_name="order.query",
@@ -379,7 +379,7 @@ def test_stream_model_failure_returns_explicit_reason(monkeypatch):
         )
     )
 
-    assert "".join(chunks) == "模型调用失败（LLM_ERROR）：connection refused。无法连接模型服务；请检查服务地址、网络连通性和模型服务进程状态。"
+    assert "".join(chunks) == "模型调用失败（LLM_ERROR）：connection refused。请检查模型配置、API Key、网络或模型服务状态后重试。"
 
 
 def test_stream_pending_reply_without_tool_result_is_model_driven(monkeypatch):
@@ -402,7 +402,7 @@ def test_stream_pending_reply_without_tool_result_is_model_driven(monkeypatch):
                 last_agent_question="请问您想购买多少件？",
             ),
             skill=None,
-            router_decision=RouterDecision(decision="continue_current_skill"),
+            router_decision=RouterDecision(decision="continue_active"),
             step_result=StepAgentResult(reply="请补充完成当前步骤所需的信息。"),
             tool_result=None,
             model_config=None,  # type: ignore[arg-type]
@@ -483,7 +483,7 @@ def test_completed_step_reply_is_model_driven(monkeypatch):
                 ],
             },
         ),
-        router_decision=RouterDecision(decision="continue_current_skill"),
+        router_decision=RouterDecision(decision="continue_active"),
         step_result=StepAgentResult(
             reply="已记录退货原因，正在为您提交退货申请，请稍候。",
             is_step_completed=True,

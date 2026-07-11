@@ -122,10 +122,11 @@ def test_handoff_requires_structured_step_declaration():
 
     assert loop._step_declares_human_handoff({"allowed_actions": ["answer_user", "handoff_human"]})
     assert loop._step_declares_human_handoff({"type": "handoff"})
-    assert loop._step_declares_human_handoff({"handoff": {"enabled": True}})
 
     assert not loop._step_declares_human_handoff({"description": "用户要求转人工时请转人工"})
     assert not loop._step_declares_human_handoff({"name": "转人工确认"})
+    assert not loop._step_declares_human_handoff({"allowed_actions": ["manual_handoff"]})
+    assert not loop._step_declares_human_handoff({"handoff": {"enabled": True}})
     assert not loop._step_declares_human_handoff({"allowed_actions": ["answer_user", "continue_flow"]})
 
 
@@ -219,7 +220,7 @@ def test_handoff_finalize_creates_pending_request_for_declared_step():
         "tenant_demo",
         session,
         _handoff_skill(),
-        RouterDecision(decision="continue_current_skill"),
+        RouterDecision(decision="continue_active"),
         StepAgentResult(reply="需要人工复核订单 A001", handoff=True),
         None,
     )

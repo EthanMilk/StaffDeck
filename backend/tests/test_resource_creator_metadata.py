@@ -7,9 +7,9 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.general_skills import import_general_skill
-from app.api.knowledge_bases import create_knowledge_base
+from app.api.knowledge_bases import create_knowledge_base, update_knowledge_base
 from app.api.skills import create_skill
-from app.api.tools import create_tool
+from app.api.tools import create_tool, update_tool
 from app.db.models import (
     AgentProfile,
     AgentResourceBinding,
@@ -19,9 +19,9 @@ from app.db.models import (
     User,
 )
 from app.general_skills.schema import GeneralSkillImportRequest
-from app.knowledge.schema import KnowledgeBaseCreateRequest
+from app.knowledge.schema import KnowledgeBaseCreateRequest, KnowledgeBaseUpdateRequest
 from app.skills.skill_schema import SkillCard, SkillCreateRequest
-from app.tools.tool_schema import ToolCreateRequest
+from app.tools.tool_schema import ToolCreateRequest, ToolUpdateRequest
 
 
 def test_user_created_resource_metadata_is_bound_to_current_user() -> None:
@@ -89,6 +89,62 @@ def test_user_created_resource_metadata_is_bound_to_current_user() -> None:
         general_binding = _binding(db, agent.id, "general_skill", general_skill.id)
         assert general_binding.metadata_json["creator_name"] == "alice"
 
+        editor = User(
+            id="user_editor",
+            tenant_id="tenant_demo",
+            username="editor",
+            display_name="Editor",
+            password_hash="test",
+            role="admin",
+        )
+        db.add(editor)
+        db.commit()
+
+        updated_knowledge = update_knowledge_base(
+            knowledge.id,
+            KnowledgeBaseUpdateRequest(
+                tenant_id="tenant_demo",
+                metadata={"topic": "updated"},
+            ),
+            agent_id=agent.id,
+            db=db,
+            current_user=editor,
+        )
+        assert updated_knowledge.metadata["creator_name"] == "alice"
+        assert updated_knowledge.metadata["topic"] == "updated"
+
+        updated_tool = update_tool(
+            tool.id,
+            ToolUpdateRequest(
+                tenant_id="tenant_demo",
+                name="user.weather",
+                display_name="更新后的用户天气",
+                url="https://example.com/weather",
+            ),
+            agent_id=agent.id,
+            db=db,
+            current_user=editor,
+        )
+        assert updated_tool.metadata["creator_name"] == "alice"
+
+        updated_general_skill = import_general_skill(
+            GeneralSkillImportRequest(
+                tenant_id="tenant_demo",
+                agent_id=agent.id,
+                name="更新后的用户通用技能",
+                slug="user-general-skill",
+                original_slug="user-general-skill",
+                markdown="# 更新后的用户通用技能\n\n用于测试 creator metadata。",
+            ),
+            db=db,
+            current_user=editor,
+        )
+        assert updated_general_skill.metadata["creator_name"] == "alice"
+        assert (
+            _binding(db, agent.id, "general_skill", general_skill.id).metadata_json["creator_name"]
+            == "alice"
+        )
+
 
 def _seed_user_and_agent(db: Session) -> User:
     user = User(
@@ -130,7 +186,7 @@ def _skill_card() -> SkillCard:
                 "type": "response",
                 "name": "回复",
                 "instruction": "回复用户",
-                "allowed_actions": ["respond"],
+                "allowed_actions": ["answer_user"],
             }
         ],
         start_node_id="start",

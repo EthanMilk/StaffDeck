@@ -31,7 +31,6 @@ from app.db.models import (
 DEFAULT_AGENT_ROLES = ("default", "router", "step", "response", "general_skill")
 OPEN_GALLERY_SCOPE = "open_gallery"
 AGENT_PRIVATE_SCOPE = "agent_private"
-SYSTEM_CREATOR_NAME = "admin"
 STANDARD_CREATOR_METADATA_KEYS = (
     "creator_name",
     "created_by",
@@ -49,74 +48,15 @@ CREATOR_METADATA_KEYS = STANDARD_CREATOR_METADATA_KEYS + CREATOR_SOURCE_METADATA
 
 
 def _valid_creator_value(value: Any) -> bool:
-    if not isinstance(value, str):
-        return False
-    normalized = value.strip()
-    return bool(normalized) and normalized != "系统" and normalized.lower() != "system"
+    return isinstance(value, str) and bool(value.strip())
 
 
-def _metadata_creator_value(metadata: dict[str, Any]) -> str:
-    owner_username = metadata.get("owner_username")
-    if _valid_creator_value(owner_username):
-        return owner_username.strip()
-    for key in (
-        "created_by_username",
-        "created_by",
-        "creator_name",
-        "gallery_published_by",
-    ):
-        value = metadata.get(key)
-        if _valid_creator_value(value) and value.strip() != SYSTEM_CREATOR_NAME:
-            return value.strip()
-    for key in (
-        "created_by_username",
-        "created_by",
-        "owner_username",
-        "creator_name",
-        "gallery_published_by",
-        "created_by_display_name",
-        "owner_display_name",
-        "created_by_user_id",
-        "owner_user_id",
-    ):
-        value = metadata.get(key)
-        if _valid_creator_value(value):
-            return value.strip()
-    return SYSTEM_CREATOR_NAME
-
-
-def system_creator_metadata(extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    metadata = dict(extra or {})
-    owner_username = metadata.get("owner_username")
-    owner_creator = owner_username.strip() if _valid_creator_value(owner_username) else ""
-    creator = owner_creator or _metadata_creator_value(metadata)
-    should_replace_default = creator != SYSTEM_CREATOR_NAME
-    should_replace_owner = bool(owner_creator)
-    if not _valid_creator_value(metadata.get("creator_name")) or (
-        should_replace_default and metadata.get("creator_name") == SYSTEM_CREATOR_NAME
-    ) or (should_replace_owner and metadata.get("creator_name") != creator):
-        metadata["creator_name"] = creator
-    if not _valid_creator_value(metadata.get("created_by")) or (
-        should_replace_default and metadata.get("created_by") == SYSTEM_CREATOR_NAME
-    ) or (should_replace_owner and metadata.get("created_by") != creator):
-        metadata["created_by"] = creator
-    if not _valid_creator_value(metadata.get("created_by_username")) or (
-        should_replace_default and metadata.get("created_by_username") == SYSTEM_CREATOR_NAME
-    ) or (should_replace_owner and metadata.get("created_by_username") != creator):
-        metadata["created_by_username"] = creator
-    if not _valid_creator_value(metadata.get("created_by_user_id")):
-        metadata["created_by_user_id"] = (
-            metadata.get("owner_user_id")
-            if _valid_creator_value(metadata.get("owner_user_id"))
-            else creator
-        )
-    return metadata
-
-
-def user_creator_metadata(user: object | None, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+def user_creator_metadata(
+    user: object | None, extra: dict[str, Any] | None = None
+) -> dict[str, Any]:
     metadata = dict(extra or {})
     if user is None:
-        return system_creator_metadata(metadata)
+        return metadata
     user_id = getattr(user, "id", None)
     username = getattr(user, "username", None)
     display_name = getattr(user, "display_name", None) or username
@@ -133,7 +73,21 @@ def user_creator_metadata(user: object | None, extra: dict[str, Any] | None = No
         normalized_display_name = str(display_name).strip()
         metadata["owner_display_name"] = normalized_display_name
         metadata["created_by_display_name"] = normalized_display_name
-    return system_creator_metadata(metadata)
+    return metadata
+
+
+def metadata_preserving_creator(
+    existing: dict[str, Any] | None,
+    replacement: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Replace editable metadata without changing the original creator."""
+    metadata = dict(replacement or {})
+    current = dict(existing or {})
+    for key in CREATOR_METADATA_KEYS:
+        value = current.get(key)
+        if _valid_creator_value(value):
+            metadata[key] = value
+    return metadata
 
 
 def get_overall_agent(db: Session, tenant_id: str) -> AgentProfile | None:
@@ -167,13 +121,7 @@ def _agent_creator_metadata(agent: AgentProfile | None) -> dict[str, Any]:
         for key, value in source.items()
         if key in CREATOR_METADATA_KEYS and _valid_creator_value(value)
     }
-    if not metadata and not agent.is_overall and _valid_creator_value(agent.name):
-        metadata = {
-            "creator_name": agent.name,
-            "created_by": agent.name,
-            "created_by_username": agent.name,
-        }
-    return system_creator_metadata(metadata) if metadata else {}
+    return metadata
 
 
 def _agent_private_metadata_for(
@@ -197,11 +145,13 @@ def require_overall_agent(db: Session, tenant_id: str, agent_id: str | None) -> 
     if not is_overall_agent(db, tenant_id, agent_id):
         from fastapi import HTTPException
 
-        raise HTTPException(status_code=403, detail="Only the overall agent can delete global resources")
+        raise HTTPException(
+            status_code=403, detail="Only the overall agent can delete global resources"
+        )
 
 
 def open_gallery_metadata(extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    metadata = system_creator_metadata(extra)
+    metadata = dict(extra or {})
     metadata["scope"] = OPEN_GALLERY_SCOPE
     metadata["visibility"] = OPEN_GALLERY_SCOPE
     metadata.pop("owner_agent_id", None)
@@ -211,7 +161,7 @@ def open_gallery_metadata(extra: dict[str, Any] | None = None) -> dict[str, Any]
 
 
 def agent_private_metadata(agent_id: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    metadata = system_creator_metadata(extra)
+    metadata = dict(extra or {})
     metadata["scope"] = AGENT_PRIVATE_SCOPE
     metadata["visibility"] = AGENT_PRIVATE_SCOPE
     metadata["owner_agent_id"] = agent_id
@@ -219,10 +169,14 @@ def agent_private_metadata(agent_id: str, extra: dict[str, Any] | None = None) -
     return metadata
 
 
-def mark_resource_open_gallery(resource: object, metadata_json: dict[str, Any] | None = None) -> None:
+def mark_resource_open_gallery(
+    resource: object, metadata_json: dict[str, Any] | None = None
+) -> None:
     if not hasattr(resource, "metadata_json"):
         return
-    metadata = open_gallery_metadata({**(getattr(resource, "metadata_json", None) or {}), **(metadata_json or {})})
+    metadata = open_gallery_metadata(
+        {**(getattr(resource, "metadata_json", None) or {}), **(metadata_json or {})}
+    )
     setattr(resource, "metadata_json", metadata)
 
 
@@ -233,7 +187,9 @@ def mark_resource_private_for_agent(
 ) -> None:
     if not hasattr(resource, "metadata_json"):
         return
-    metadata = agent_private_metadata(agent_id, {**(getattr(resource, "metadata_json", None) or {}), **(metadata_json or {})})
+    metadata = agent_private_metadata(
+        agent_id, {**(getattr(resource, "metadata_json", None) or {}), **(metadata_json or {})}
+    )
     setattr(resource, "metadata_json", metadata)
 
 
@@ -318,10 +274,12 @@ def resource_binding_metadata(
             AgentResourceBinding.status != "deleted",
         )
     ).all()
-    return {binding.resource_id: system_creator_metadata(binding.metadata_json or {}) for binding in bindings}
+    return {binding.resource_id: dict(binding.metadata_json or {}) for binding in bindings}
 
 
-def is_open_gallery_resource(db: Session, tenant_id: str, resource_type: str, resource: object) -> bool:
+def is_open_gallery_resource(
+    db: Session, tenant_id: str, resource_type: str, resource: object
+) -> bool:
     resource_id = getattr(resource, "id", None)
     if not resource_id or getattr(resource, "tenant_id", None) != tenant_id:
         return False
@@ -374,7 +332,7 @@ def project_skill_with_branch(
         "sync_state": branch.sync_state,
         "status": branch.status,
         "binding_status": binding_status,
-        "metadata": system_creator_metadata(branch.metadata_json or {}),
+        "metadata": dict(branch.metadata_json or {}),
     }
     projected = Skill(
         id=skill.id,
@@ -401,7 +359,9 @@ def visible_skill_rows(
 ) -> list[Skill]:
     agent = get_agent(db, tenant_id, agent_id)
     if not agent or agent.is_overall:
-        status_clause = Skill.status != "deleted" if include_inactive else Skill.status == "published"
+        status_clause = (
+            Skill.status != "deleted" if include_inactive else Skill.status == "published"
+        )
         rows = list(
             db.exec(
                 select(Skill)
@@ -409,10 +369,16 @@ def visible_skill_rows(
                 .order_by(Skill.updated_at.desc())
             ).all()
         )
-        metadata_by_id = resource_binding_metadata(db, tenant_id, agent.id if agent else None, "skill")
-        visible_rows = [row for row in rows if is_open_gallery_resource(db, tenant_id, "skill", row)]
+        metadata_by_id = resource_binding_metadata(
+            db, tenant_id, agent.id if agent else None, "skill"
+        )
+        visible_rows = [
+            row for row in rows if is_open_gallery_resource(db, tenant_id, "skill", row)
+        ]
         for row in visible_rows:
-            object.__setattr__(row, "agent_branch_meta", {"metadata": metadata_by_id.get(row.id, {})})
+            object.__setattr__(
+                row, "agent_branch_meta", {"metadata": metadata_by_id.get(row.id, {})}
+            )
         return visible_rows
     rows: list[Skill] = []
     bindings = db.exec(
@@ -439,11 +405,19 @@ def visible_skill_rows(
     return sorted(rows, key=lambda item: item.updated_at, reverse=True)
 
 
-def visible_published_skills(db: Session, tenant_id: str, agent_id: str | None = None) -> list[Skill]:
-    return [skill for skill in visible_skill_rows(db, tenant_id, agent_id) if skill.status == "published"]
+def visible_published_skills(
+    db: Session, tenant_id: str, agent_id: str | None = None
+) -> list[Skill]:
+    return [
+        skill
+        for skill in visible_skill_rows(db, tenant_id, agent_id)
+        if skill.status == "published"
+    ]
 
 
-def visible_skill(db: Session, tenant_id: str, skill_id: str, agent_id: str | None = None) -> Skill | None:
+def visible_skill(
+    db: Session, tenant_id: str, skill_id: str, agent_id: str | None = None
+) -> Skill | None:
     skill = db.exec(
         select(Skill).where(Skill.tenant_id == tenant_id, Skill.skill_id == skill_id)
     ).first()
@@ -455,8 +429,12 @@ def visible_skill(db: Session, tenant_id: str, skill_id: str, agent_id: str | No
             return None
         if not is_open_gallery_resource(db, tenant_id, "skill", skill):
             return None
-        metadata_by_id = resource_binding_metadata(db, tenant_id, agent.id if agent else None, "skill")
-        object.__setattr__(skill, "agent_branch_meta", {"metadata": metadata_by_id.get(skill.id, {})})
+        metadata_by_id = resource_binding_metadata(
+            db, tenant_id, agent.id if agent else None, "skill"
+        )
+        object.__setattr__(
+            skill, "agent_branch_meta", {"metadata": metadata_by_id.get(skill.id, {})}
+        )
         return skill
     binding = db.exec(
         select(AgentResourceBinding).where(
@@ -475,6 +453,51 @@ def visible_skill(db: Session, tenant_id: str, skill_id: str, agent_id: str | No
     if branch.status != "active":
         return None
     return project_skill_with_branch(skill, branch)
+
+
+def visible_tool_rows(
+    db: Session,
+    tenant_id: str,
+    agent_id: str | None = None,
+    include_inactive: bool = True,
+) -> list[Tool]:
+    agent = get_agent(db, tenant_id, agent_id)
+    if agent_id and not agent:
+        return []
+    if not agent or agent.is_overall:
+        rows = db.exec(
+            select(Tool).where(Tool.tenant_id == tenant_id).order_by(Tool.bucket, Tool.name)
+        ).all()
+        return [
+            row
+            for row in rows
+            if is_open_gallery_resource(db, tenant_id, "tool", row)
+            and (include_inactive or row.enabled)
+        ]
+
+    bindings = db.exec(
+        select(AgentResourceBinding)
+        .where(
+            AgentResourceBinding.tenant_id == tenant_id,
+            AgentResourceBinding.agent_id == agent.id,
+            AgentResourceBinding.resource_type == "tool",
+            AgentResourceBinding.status != "deleted",
+        )
+        .order_by(AgentResourceBinding.updated_at.desc())
+    ).all()
+    visible: list[Tool] = []
+    for binding in bindings:
+        if not include_inactive and binding.status != "active":
+            continue
+        row = db.get(Tool, binding.resource_id)
+        if not row or row.tenant_id != tenant_id:
+            continue
+        if not is_bound_resource_visible_for_agent(db, tenant_id, "tool", row, binding):
+            continue
+        if not include_inactive and not row.enabled:
+            continue
+        visible.append(row)
+    return sorted(visible, key=lambda row: (row.bucket, row.name))
 
 
 def ensure_agent_skill_branch(
@@ -541,11 +564,15 @@ def update_branch_skill(
     return branch
 
 
-def sync_branch_from_overall(db: Session, tenant_id: str, agent_id: str, skill: Skill) -> AgentSkillBranch:
+def sync_branch_from_overall(
+    db: Session, tenant_id: str, agent_id: str, skill: Skill
+) -> AgentSkillBranch:
     if skill.status != "published" or not is_open_gallery_resource(db, tenant_id, "skill", skill):
         from fastapi import HTTPException
 
-        raise HTTPException(status_code=400, detail="Disabled skill cannot be learned from the open gallery")
+        raise HTTPException(
+            status_code=400, detail="Disabled skill cannot be learned from the open gallery"
+        )
     branch = ensure_agent_skill_branch(db, tenant_id, agent_id, skill)
     branch.base_version = skill.version
     branch.head_version = skill.version
@@ -598,7 +625,9 @@ def promote_branch_to_overall(db: Session, tenant_id: str, branch: AgentSkillBra
     return skill
 
 
-def rollback_branch(db: Session, tenant_id: str, agent_id: str, skill_id: str, version: str) -> AgentSkillBranch:
+def rollback_branch(
+    db: Session, tenant_id: str, agent_id: str, skill_id: str, version: str
+) -> AgentSkillBranch:
     branch = db.exec(
         select(AgentSkillBranch).where(
             AgentSkillBranch.tenant_id == tenant_id,
@@ -630,7 +659,9 @@ def rollback_branch(db: Session, tenant_id: str, agent_id: str, skill_id: str, v
     return branch
 
 
-def branch_versions(db: Session, tenant_id: str, agent_id: str, skill_id: str) -> list[AgentSkillBranchVersion]:
+def branch_versions(
+    db: Session, tenant_id: str, agent_id: str, skill_id: str
+) -> list[AgentSkillBranchVersion]:
     return list(
         db.exec(
             select(AgentSkillBranchVersion)
@@ -661,16 +692,29 @@ def visible_knowledge_base_versions(
 ) -> dict[str, KnowledgeBaseVersion]:
     agent = get_agent(db, tenant_id, agent_id)
     if not agent or agent.is_overall:
-        status_clause = KnowledgeBase.status != "deleted" if include_inactive else KnowledgeBase.status == "active"
+        status_clause = (
+            KnowledgeBase.status != "deleted"
+            if include_inactive
+            else KnowledgeBase.status == "active"
+        )
         rows = db.exec(
             select(KnowledgeBase).where(
                 KnowledgeBase.tenant_id == tenant_id,
                 status_clause,
             )
         ).all()
-        rows = [row for row in rows if is_open_gallery_resource(db, tenant_id, "knowledge_base", row)]
-        return {row.id: ensure_knowledge_base_version(db, row, _current_knowledge_version(row)) for row in rows}
-    branch_status_clause = AgentKnowledgeBranch.status != "deleted" if include_inactive else AgentKnowledgeBranch.status == "active"
+        rows = [
+            row for row in rows if is_open_gallery_resource(db, tenant_id, "knowledge_base", row)
+        ]
+        return {
+            row.id: ensure_knowledge_base_version(db, row, _current_knowledge_version(row))
+            for row in rows
+        }
+    branch_status_clause = (
+        AgentKnowledgeBranch.status != "deleted"
+        if include_inactive
+        else AgentKnowledgeBranch.status == "active"
+    )
     branches = db.exec(
         select(AgentKnowledgeBranch).where(
             AgentKnowledgeBranch.tenant_id == tenant_id,
@@ -693,7 +737,9 @@ def visible_knowledge_base_versions(
                 AgentResourceBinding.resource_id == kb.id,
             )
         ).first()
-        if not binding or not is_bound_resource_visible_for_agent(db, tenant_id, "knowledge_base", kb, binding):
+        if not binding or not is_bound_resource_visible_for_agent(
+            db, tenant_id, "knowledge_base", kb, binding
+        ):
             continue
         if not include_inactive and binding.status != "active":
             continue
@@ -709,11 +755,15 @@ def visible_knowledge_base_version_ids(
 ) -> list[str]:
     return [
         row.id
-        for row in visible_knowledge_base_versions(db, tenant_id, agent_id, include_inactive).values()
+        for row in visible_knowledge_base_versions(
+            db, tenant_id, agent_id, include_inactive
+        ).values()
     ]
 
 
-def ensure_knowledge_base_version(db: Session, kb: KnowledgeBase, version: str | None = None) -> KnowledgeBaseVersion:
+def ensure_knowledge_base_version(
+    db: Session, kb: KnowledgeBase, version: str | None = None
+) -> KnowledgeBaseVersion:
     normalized_version = version or _current_knowledge_version(kb)
     row = db.exec(
         select(KnowledgeBaseVersion).where(
@@ -778,7 +828,9 @@ def knowledge_version_for_upload(
     source_version = ensure_knowledge_base_version(db, kb, branch.head_version)
     next_version = _next_knowledge_branch_version(branch)
     target_version = ensure_knowledge_base_version(db, kb, next_version)
-    clone_knowledge_version_assets(db, tenant_id, knowledge_base_id, source_version.id, target_version.id)
+    clone_knowledge_version_assets(
+        db, tenant_id, knowledge_base_id, source_version.id, target_version.id
+    )
     _apply_knowledge_version_metadata(db, tenant_id, agent, target_version, metadata_json)
     branch.head_version = next_version
     branch.sync_state = "diverged"
@@ -806,7 +858,9 @@ def ensure_agent_private_knowledge_branch(
     )
     current_version = _current_knowledge_version(knowledge_base)
     version = ensure_knowledge_base_version(db, knowledge_base, current_version)
-    _apply_knowledge_version_metadata(db, tenant_id, get_agent(db, tenant_id, agent_id), version, metadata_json)
+    _apply_knowledge_version_metadata(
+        db, tenant_id, get_agent(db, tenant_id, agent_id), version, metadata_json
+    )
     branch = _ensure_knowledge_branch(db, tenant_id, agent_id, knowledge_base)
     branch.base_version = current_version
     branch.head_version = current_version
@@ -826,7 +880,10 @@ def sync_knowledge_branch_from_overall(
     if kb.status != "active" or not is_open_gallery_resource(db, tenant_id, "knowledge_base", kb):
         from fastapi import HTTPException
 
-        raise HTTPException(status_code=400, detail="Disabled knowledge base cannot be learned from the open gallery")
+        raise HTTPException(
+            status_code=400,
+            detail="Disabled knowledge base cannot be learned from the open gallery",
+        )
     branch = _ensure_knowledge_branch(db, tenant_id, agent_id, kb)
     current_version = _current_knowledge_version(kb)
     ensure_knowledge_base_version(db, kb, current_version)
@@ -867,7 +924,9 @@ def promote_knowledge_branch_to_overall(
     _retag_knowledge_version(db, tenant_id, knowledge_base_id, source.id, target.id)
     kb.name = source.name
     kb.description = source.description
-    kb.metadata_json = open_gallery_metadata({**(kb.metadata_json or {}), "current_version": next_version})
+    kb.metadata_json = open_gallery_metadata(
+        {**(kb.metadata_json or {}), "current_version": next_version}
+    )
     kb.updated_at = utc_now()
     ensure_open_gallery_binding(db, tenant_id, "knowledge_base", kb.id, "active")
     branch.base_version = next_version
@@ -894,7 +953,9 @@ def rollback_knowledge_branch(
     return branch
 
 
-def model_for_agent(db: Session, tenant_id: str, agent_id: str | None, role: str = "default") -> ModelConfig | None:
+def model_for_agent(
+    db: Session, tenant_id: str, agent_id: str | None, role: str = "default"
+) -> ModelConfig | None:
     agent = get_agent(db, tenant_id, agent_id)
     roles: Iterable[str] = (role, "default") if role != "default" else ("default",)
     if agent:
@@ -926,10 +987,20 @@ def copy_overall_scope_to_agent(db: Session, tenant_id: str, agent: AgentProfile
     for skill in skills:
         if not is_open_gallery_resource(db, tenant_id, "skill", skill):
             continue
-        _ensure_binding(db, tenant_id, agent.id, "skill", skill.id, _binding_status_from_resource_status(skill.status))
+        _ensure_binding(
+            db,
+            tenant_id,
+            agent.id,
+            "skill",
+            skill.id,
+            _binding_status_from_resource_status(skill.status),
+            metadata_json=_agent_private_metadata_for(db, tenant_id, agent.id),
+        )
         ensure_agent_skill_branch(db, tenant_id, agent.id, skill)
     general_skills = db.exec(
-        select(GeneralSkill).where(GeneralSkill.tenant_id == tenant_id, GeneralSkill.status == "published")
+        select(GeneralSkill).where(
+            GeneralSkill.tenant_id == tenant_id, GeneralSkill.status == "published"
+        )
     ).all()
     for general_skill in general_skills:
         if not is_open_gallery_resource(db, tenant_id, "general_skill", general_skill):
@@ -941,6 +1012,7 @@ def copy_overall_scope_to_agent(db: Session, tenant_id: str, agent: AgentProfile
             "general_skill",
             general_skill.id,
             _binding_status_from_resource_status(general_skill.status),
+            metadata_json=_agent_private_metadata_for(db, tenant_id, agent.id),
         )
 
 
@@ -956,7 +1028,7 @@ def copy_open_gallery_tools_to_agent(db: Session, tenant_id: str, agent: AgentPr
             "tool",
             tool.id,
             "active" if tool.enabled else "inactive",
-            metadata_json=agent_private_metadata(agent.id),
+            metadata_json=_agent_private_metadata_for(db, tenant_id, agent.id),
         )
 
 
@@ -968,7 +1040,9 @@ def next_branch_version(version: str, requested_version: str | None = None) -> s
     return next_global_version(base)
 
 
-def next_unique_branch_version(db: Session, branch: AgentSkillBranch, requested_version: str | None = None) -> str:
+def next_unique_branch_version(
+    db: Session, branch: AgentSkillBranch, requested_version: str | None = None
+) -> str:
     candidate = next_branch_version(branch.head_version, requested_version)
     while db.exec(
         select(AgentSkillBranchVersion).where(
@@ -1070,7 +1144,14 @@ def _ensure_binding(
             return
         existing.status = status
         if metadata_json is not None:
-            existing.metadata_json = metadata_json
+            merged_metadata = {
+                **(existing.metadata_json or {}),
+                **metadata_json,
+            }
+            existing.metadata_json = metadata_preserving_creator(
+                existing.metadata_json,
+                merged_metadata,
+            )
         existing.updated_at = utc_now()
         db.add(existing)
         return
@@ -1086,7 +1167,9 @@ def _ensure_binding(
     )
 
 
-def _ensure_knowledge_branch(db: Session, tenant_id: str, agent_id: str, kb: KnowledgeBase) -> AgentKnowledgeBranch:
+def _ensure_knowledge_branch(
+    db: Session, tenant_id: str, agent_id: str, kb: KnowledgeBase
+) -> AgentKnowledgeBranch:
     branch = db.exec(
         select(AgentKnowledgeBranch).where(
             AgentKnowledgeBranch.tenant_id == tenant_id,
@@ -1140,7 +1223,13 @@ def _retag_knowledge_version(
     source_version_id: str,
     target_version_id: str,
 ) -> None:
-    tables = (KnowledgeDocument, KnowledgeBucket, KnowledgeChunk, KnowledgeConcept, KnowledgeDiscoverySuggestion)
+    tables = (
+        KnowledgeDocument,
+        KnowledgeBucket,
+        KnowledgeChunk,
+        KnowledgeConcept,
+        KnowledgeDiscoverySuggestion,
+    )
     for model in tables:
         rows = db.exec(
             select(model).where(
@@ -1278,7 +1367,9 @@ def clone_knowledge_version_assets(
                 title=suggestion.title,
                 status=suggestion.status,
                 payload_json=deepcopy(suggestion.payload_json or {}),
-                source_refs_json=_remap_source_refs(suggestion.source_refs_json or [], document_id_map),
+                source_refs_json=_remap_source_refs(
+                    suggestion.source_refs_json or [], document_id_map
+                ),
                 reason=suggestion.reason,
                 created_at=suggestion.created_at,
                 updated_at=utc_now(),
@@ -1373,7 +1464,9 @@ def clone_knowledge_version_assets(
         db.add(clone)
 
 
-def _remap_source_refs(source_refs: list[dict[str, Any]], document_id_map: dict[str, str]) -> list[dict[str, Any]]:
+def _remap_source_refs(
+    source_refs: list[dict[str, Any]], document_id_map: dict[str, str]
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for source_ref in source_refs:
         if not isinstance(source_ref, dict):

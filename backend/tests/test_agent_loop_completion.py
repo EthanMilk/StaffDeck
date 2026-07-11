@@ -67,7 +67,7 @@ def test_router_decision_only_hydrates_structured_profile_memory() -> None:
         session,
         decision,
         [_purchase_skill()],
-        [{"kind": "profile", "content": "用户姓名/称呼：hm", "metadata": {"key": "preferred_name"}}],
+        [{"kind": "profile", "content": "hm", "metadata": {"key": "preferred_name"}}],
     )
 
     assert hydrated["primary"] == {"user_name": "hm"}
@@ -105,7 +105,11 @@ class FakeToolExecutor:
         self.commits_seen_before_execute: int | None = None
 
     def execute(
-        self, tenant_id: str, tool_call: ToolCall, active_skill_id: str | None = None
+        self,
+        tenant_id: str,
+        tool_call: ToolCall,
+        active_skill_id: str | None = None,
+        agent_id: str | None = None,
     ) -> ToolResult:
         self.commits_seen_before_execute = self.db.commits
         return ToolResult(tool_name=tool_call.name, success=True, data={"ok": True})
@@ -173,7 +177,9 @@ def test_side_effect_tool_call_reuses_previous_successful_result() -> None:
     loop.db = db
     loop.events = FakeEvents()
     loop.tool_executor = executor
-    session = ChatSession(id="session_test", tenant_id="tenant_demo", active_skill_id="skill_leave_apply_001")
+    session = ChatSession(
+        id="session_test", tenant_id="tenant_demo", active_skill_id="skill_leave_apply_001"
+    )
 
     result = loop._execute_tool_call(
         _request("重试一下，如果办理失败需要提示我"),
@@ -444,7 +450,7 @@ def test_compound_turn_seeds_primary_and_created_tasks_for_scheduler() -> None:
         slots_json={"user_name": "hm"},
     )
     router_decision = RouterDecision(
-        decision="continue_current_skill",
+        decision="continue_active",
         target_skill_id="purchase",
         target_step_id="collect_user_name",
         confidence=0.91,
@@ -485,9 +491,19 @@ def test_compound_turn_seeds_primary_and_created_tasks_for_scheduler() -> None:
 
     assert session.active_skill_id is None
     assert session.active_step_id is None
-    assert [frame["skill_id"] for frame in session.pending_tasks_json] == ["purchase", "price_compare"]
-    assert session.pending_tasks_json[0]["slots"] == {"user_name": "hm", "product_id": "A1", "quantity": 1}
-    assert session.pending_tasks_json[1]["slots"] == {"product_name_1": "A1", "product_name_2": "A3"}
+    assert [frame["skill_id"] for frame in session.pending_tasks_json] == [
+        "purchase",
+        "price_compare",
+    ]
+    assert session.pending_tasks_json[0]["slots"] == {
+        "user_name": "hm",
+        "product_id": "A1",
+        "quantity": 1,
+    }
+    assert session.pending_tasks_json[1]["slots"] == {
+        "product_name_1": "A1",
+        "product_name_2": "A3",
+    }
 
 
 def test_start_new_task_preserves_existing_active_frame_for_scheduler() -> None:
@@ -533,8 +549,14 @@ def test_start_new_task_preserves_existing_active_frame_for_scheduler() -> None:
 
     assert session.active_skill_id is None
     assert session.active_step_id is None
-    assert [frame["skill_id"] for frame in session.pending_tasks_json] == ["price_compare", "purchase"]
-    assert session.pending_tasks_json[0]["slots"] == {"product_name_1": "A1", "product_name_2": "A3"}
+    assert [frame["skill_id"] for frame in session.pending_tasks_json] == [
+        "price_compare",
+        "purchase",
+    ]
+    assert session.pending_tasks_json[0]["slots"] == {
+        "product_name_1": "A1",
+        "product_name_2": "A3",
+    }
     assert session.pending_tasks_json[1]["slots"] == {"user_name": "hm"}
     assert session.pending_tasks_json[1]["source_message"] == "我想买一个A1,然后想跟A3比下价格"
 
@@ -566,8 +588,10 @@ def test_drop_unavailable_skill_state_removes_disabled_sop_frames() -> None:
     assert session.active_step_id is None
     assert session.slots_json == {}
     assert session.awaiting_input_json is None
-    assert session.pending_tasks_json == [{"task_id": "task_purchase", "target_skill_id": "purchase"}]
-    assert session.skill_stack_json == [{"task_id": "stack_purchase", "skill_id": "purchase"}]
+    assert session.pending_tasks_json == [
+        {"task_id": "task_purchase", "target_skill_id": "purchase"}
+    ]
+    assert session.skill_stack_json == []
     assert loop.events.records[-1][2] == "skill_state_pruned"
     assert loop.events.records[-1][3]["removed_skill_ids"] == ["archived_sop"]
 
@@ -580,8 +604,16 @@ def test_skill_state_payload_filters_disabled_sop_frames() -> None:
         active_skill_id="archived_sop",
         active_step_id="collect_info",
         pending_tasks_json=[
-            {"task_id": "task_archived", "target_skill_id": "archived_sop", "target_step_id": "collect_info"},
-            {"task_id": "task_purchase", "target_skill_id": "purchase", "target_step_id": "collect_user_name"},
+            {
+                "task_id": "task_archived",
+                "target_skill_id": "archived_sop",
+                "target_step_id": "collect_info",
+            },
+            {
+                "task_id": "task_purchase",
+                "target_skill_id": "purchase",
+                "target_step_id": "collect_user_name",
+            },
         ],
         skill_stack_json=[
             {"task_id": "stack_archived", "skill_id": "archived_sop", "step_id": "collect_info"},
@@ -594,12 +626,6 @@ def test_skill_state_payload_filters_disabled_sop_frames() -> None:
     assert payload["activeSkillId"] is None
     assert payload["activeStepId"] is None
     assert payload["currentSkills"] == [
-        {
-            "skillId": "purchase",
-            "name": "购买商品",
-            "stepId": "confirm_product",
-            "state": "suspended",
-        },
         {
             "skillId": "purchase",
             "name": "购买商品",
@@ -618,12 +644,15 @@ def test_pruned_disabled_sop_runtime_event_is_not_recorded() -> None:
         target_step_id="collect_info",
     )
 
-    assert loop._should_record_runtime_event_after_prune(
-        decision,
-        session,
-        [_purchase_skill()],
-        state_pruned=True,
-    ) is False
+    assert (
+        loop._should_record_runtime_event_after_prune(
+            decision,
+            session,
+            [_purchase_skill()],
+            state_pruned=True,
+        )
+        is False
+    )
 
 
 def test_finalize_turn_clears_stale_last_question_for_non_question_reply() -> None:
@@ -735,7 +764,9 @@ def test_merge_scheduled_reply_preserves_each_structured_execution_segment() -> 
         "- 数量：1\n\n"
         "请问确认下单吗？"
     )
-    purchase_confirmation = "好的，hm。已为您确认购买 A3 高阶商品 1 件，价格 239.0 元。请问确认下单吗？"
+    purchase_confirmation = (
+        "好的，hm。已为您确认购买 A3 高阶商品 1 件，价格 239.0 元。请问确认下单吗？"
+    )
 
     replies, replaced = loop._merge_scheduled_reply_segment([], refund_then_purchase)
     replies, replaced = loop._merge_scheduled_reply_segment(replies, purchase_confirmation)
@@ -824,9 +855,21 @@ def test_apply_step_result_queues_parallel_sibling_steps_and_merges() -> None:
     skill = _parallel_audit_skill(
         [
             {"source_node_id": "start", "next_node_id": "check_payee", "condition": "报文已获取"},
-            {"source_node_id": "start", "next_node_id": "check_sensitive", "condition": "报文已获取"},
-            {"source_node_id": "check_payee", "next_node_id": "report", "condition": "一致性检查完成"},
-            {"source_node_id": "check_sensitive", "next_node_id": "report", "condition": "敏感词检查完成"},
+            {
+                "source_node_id": "start",
+                "next_node_id": "check_sensitive",
+                "condition": "报文已获取",
+            },
+            {
+                "source_node_id": "check_payee",
+                "next_node_id": "report",
+                "condition": "一致性检查完成",
+            },
+            {
+                "source_node_id": "check_sensitive",
+                "next_node_id": "report",
+                "condition": "敏感词检查完成",
+            },
         ]
     )
     session = ChatSession(
@@ -1035,7 +1078,7 @@ def test_normal_chat_does_not_auto_continue_pending_after_stale_terminal_complet
     assert loop.events.records == []
 
 
-def test_stale_terminal_skill_is_removed_from_suspended_stack() -> None:
+def test_obsolete_suspended_stack_is_cleared() -> None:
     loop = object.__new__(AgentLoop)
     loop.runtime = SkillRuntime()
     loop.events = FakeEvents()
@@ -1057,8 +1100,7 @@ def test_stale_terminal_skill_is_removed_from_suspended_stack() -> None:
 
     assert session.active_skill_id == "visitor_badge"
     assert session.skill_stack_json == []
-    assert loop.events.records[0][2] == "skill_completed"
-    assert loop.events.records[0][3]["reason"] == "stale_suspended_terminal_state"
+    assert loop.events.records == []
 
 
 def test_intermediate_step_with_next_step_is_not_completed() -> None:
@@ -1122,7 +1164,9 @@ def test_successful_tool_call_advances_to_final_reply_step() -> None:
     assert loop.events.records[0][2] == "skill_step_changed"
 
 
-def test_answer_step_can_complete_even_if_distilled_order_has_later_satisfied_collect_step() -> None:
+def test_answer_step_can_complete_even_if_distilled_order_has_later_satisfied_collect_step() -> (
+    None
+):
     loop = object.__new__(AgentLoop)
     loop.events = FakeEvents()
     session = ChatSession(
@@ -1178,20 +1222,18 @@ def test_context_repair_does_not_auto_advance_satisfied_collect_step() -> None:
         _purchase_skill(),
         [_purchase_tool(), _order_add_tool()],
         _model_config(),
-        RouterDecision(decision="continue_current_skill", target_skill_id="purchase"),
+        RouterDecision(decision="continue_active", target_skill_id="purchase"),
     )
 
     assert session.active_step_id == "collect_user_name"
     assert loop.step_agent.calls == 1
     assert step_result.tool_call is None
     assert not any(
-        event_type == "skill_step_changed"
-        and payload.get("reason") == "expected_info_satisfied"
+        event_type == "skill_step_changed" and payload.get("reason") == "expected_info_satisfied"
         for _, _, event_type, payload in loop.events.records
     )
     assert not any(
-        event_type == "step_agent_result_repaired"
-        and payload.get("mode") == "schema_tool_call"
+        event_type == "step_agent_result_repaired" and payload.get("mode") == "schema_tool_call"
         for _, _, event_type, payload in loop.events.records
     )
 
@@ -1221,8 +1263,7 @@ def test_context_repair_does_not_infer_tool_when_router_is_clarifying() -> None:
 
     assert step_result.tool_call is None
     assert not any(
-        event_type == "step_agent_result_repaired"
-        and payload.get("mode") == "schema_tool_call"
+        event_type == "step_agent_result_repaired" and payload.get("mode") == "schema_tool_call"
         for _, _, event_type, payload in loop.events.records
     )
 
@@ -1240,7 +1281,9 @@ def test_model_slot_validation_retry_can_complete_missed_quantity() -> None:
             StepAgentResult(
                 reply="正在为您创建订单，请稍候。",
                 slot_updates={"quantity": 1},
-                tool_call=ToolCall(name="product.purchase", arguments={"product_id": "A1", "quantity": 1}),
+                tool_call=ToolCall(
+                    name="product.purchase", arguments={"product_id": "A1", "quantity": 1}
+                ),
             ),
         ]
     )
@@ -1258,7 +1301,7 @@ def test_model_slot_validation_retry_can_complete_missed_quantity() -> None:
         _purchase_skill(),
         [_purchase_tool()],
         _model_config(),
-        RouterDecision(decision="suspend_current_and_start_new_skill", target_skill_id="purchase"),
+        RouterDecision(decision="start_new_task", target_skill_id="purchase"),
     )
 
     assert loop.step_agent.calls == 2
@@ -1268,13 +1311,11 @@ def test_model_slot_validation_retry_can_complete_missed_quantity() -> None:
     assert step_result.tool_call is not None
     assert step_result.tool_call.name == "product.purchase"
     assert any(
-        event_type == "step_agent_result_repaired"
-        and payload.get("mode") == "slot_validation"
+        event_type == "step_agent_result_repaired" and payload.get("mode") == "slot_validation"
         for _, _, event_type, payload in loop.events.records
     )
     assert not any(
-        event_type == "skill_step_changed"
-        and payload.get("reason") == "expected_info_satisfied"
+        event_type == "skill_step_changed" and payload.get("reason") == "expected_info_satisfied"
         for _, _, event_type, payload in loop.events.records
     )
 
@@ -1359,15 +1400,14 @@ def test_model_slot_validation_retry_does_not_fill_without_model_progress() -> N
         _purchase_skill(),
         [_purchase_tool()],
         _model_config(),
-        RouterDecision(decision="continue_current_skill", target_skill_id="purchase"),
+        RouterDecision(decision="continue_active", target_skill_id="purchase"),
     )
 
     assert loop.step_agent.calls == 2
     assert "quantity" not in session.slots_json
     assert step_result.tool_call is None
     assert not any(
-        event_type == "step_agent_result_repaired"
-        and payload.get("mode") == "slot_validation"
+        event_type == "step_agent_result_repaired" and payload.get("mode") == "slot_validation"
         for _, _, event_type, payload in loop.events.records
     )
 
@@ -1406,7 +1446,7 @@ def test_start_new_task_slot_validation_accepts_reply_repair() -> None:
         memory_context=[
             {
                 "kind": "profile",
-                "content": "用户姓名/称呼：hm",
+                "content": "hm",
                 "metadata": {"key": "preferred_name"},
             }
         ],
@@ -1417,8 +1457,7 @@ def test_start_new_task_slot_validation_accepts_reply_repair() -> None:
     assert session.slots_json["user_name"] == "hm"
     assert step_result.reply == "好的，hm！请问您想购买什么商品？需要购买多少件？"
     assert any(
-        event_type == "step_agent_result_repaired"
-        and payload.get("mode") == "slot_validation"
+        event_type == "step_agent_result_repaired" and payload.get("mode") == "slot_validation"
         for _, _, event_type, payload in loop.events.records
     )
 
@@ -1715,7 +1754,7 @@ def _parallel_audit_skill(edges: list[dict[str, object]]) -> Skill:
                 },
                 {
                     "node_id": "approve",
-                    "type": "reply",
+                    "type": "response",
                     "name": "通过",
                     "instruction": "反馈通过。",
                     "expected_user_info": [],
@@ -1723,7 +1762,7 @@ def _parallel_audit_skill(edges: list[dict[str, object]]) -> Skill:
                 },
                 {
                     "node_id": "reject",
-                    "type": "reply",
+                    "type": "response",
                     "name": "拒绝",
                     "instruction": "反馈拒绝。",
                     "expected_user_info": [],
@@ -1731,7 +1770,7 @@ def _parallel_audit_skill(edges: list[dict[str, object]]) -> Skill:
                 },
                 {
                     "node_id": "report",
-                    "type": "reply",
+                    "type": "response",
                     "name": "生成报告",
                     "instruction": "汇总检查结果。",
                     "expected_user_info": [],
@@ -1862,14 +1901,22 @@ class _RecordingPriceToolExecutor:
         self.calls: list[ToolCall] = []
 
     def execute(
-        self, tenant_id: str, tool_call: ToolCall, active_skill_id: str | None = None
+        self,
+        tenant_id: str,
+        tool_call: ToolCall,
+        active_skill_id: str | None = None,
+        agent_id: str | None = None,
     ) -> ToolResult:
         self.calls.append(tool_call)
         product_name = str(tool_call.arguments.get("product_name") or "")
         return ToolResult(
             tool_name=tool_call.name,
             success=True,
-            data={"product_name": product_name, "found": True, "price": 129 if product_name == "A1" else 239},
+            data={
+                "product_name": product_name,
+                "found": True,
+                "price": 129 if product_name == "A1" else 239,
+            },
         )
 
 
@@ -1895,7 +1942,8 @@ def _graph_content(
     normalized_nodes = [
         {
             "node_id": str(node["node_id"]),
-            "type": node.get("type") or ("collect_info" if node.get("expected_user_info") else "response"),
+            "type": node.get("type")
+            or ("collect_info" if node.get("expected_user_info") else "response"),
             "name": str(node.get("name") or node["node_id"]),
             "instruction": str(node.get("instruction") or ""),
             "expected_user_info": list(node.get("expected_user_info") or []),
@@ -1949,7 +1997,7 @@ def _purchase_skill() -> Skill:
                     "node_id": "reply_result",
                     "name": "反馈订单",
                     "expected_user_info": [],
-                    "allowed_actions": ["reply"],
+                    "allowed_actions": ["answer_user"],
                 },
             ],
             required_info=["user_name", "product_id", "quantity"],
@@ -2094,7 +2142,7 @@ def _refund_skill_with_tool_collect_step() -> Skill:
                     "node_id": "reply_result",
                     "name": "反馈结果",
                     "expected_user_info": [],
-                    "allowed_actions": ["reply"],
+                    "allowed_actions": ["answer_user"],
                 },
             ],
             required_info=["order_id"],

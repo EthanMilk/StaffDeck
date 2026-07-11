@@ -77,7 +77,9 @@ def test_capability_selector_allows_general_skill_and_knowledge_together(monkeyp
         status="published",
     )
 
-    decision = GeneralSkillSelector().decide("结合天气和公司规范给出建议", [skill], SimpleNamespace())
+    decision = GeneralSkillSelector().decide(
+        "结合天气和公司规范给出建议", [skill], SimpleNamespace()
+    )
 
     assert decision.use_general_skill is True
     assert decision.selected_slug == "weather-zh"
@@ -147,13 +149,23 @@ def test_knowledge_keywords_do_not_bypass_structured_capability_selection() -> N
 
 
 def _admin_user() -> User:
-    return User(id="user_admin", tenant_id="tenant_demo", username="admin", role="admin", password_hash="test")
+    return User(
+        id="user_admin",
+        tenant_id="tenant_demo",
+        username="admin",
+        role="admin",
+        password_hash="test",
+    )
 
 
 def test_import_general_skill_uses_user_supplied_metadata() -> None:
     with _test_session() as db:
         _seed_minimal_tenant(db)
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
         db.commit()
 
         first = import_general_skill(
@@ -212,7 +224,11 @@ def test_import_general_skill_uses_user_supplied_metadata() -> None:
 def test_import_general_skill_without_original_slug_does_not_overwrite_existing() -> None:
     with _test_session() as db:
         _seed_minimal_tenant(db)
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
         db.commit()
 
         first = import_general_skill(
@@ -252,7 +268,11 @@ def test_import_general_skill_without_original_slug_does_not_overwrite_existing(
 def test_deleted_open_gallery_general_skill_binding_is_not_restored_by_ensure() -> None:
     with _test_session() as db:
         _seed_minimal_tenant(db)
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
         db.commit()
 
         imported = import_general_skill(
@@ -293,8 +313,16 @@ def test_deleted_open_gallery_general_skill_binding_is_not_restored_by_ensure() 
 def test_deleted_open_gallery_general_skill_is_hidden_from_agent_branch_binding() -> None:
     with _test_session() as db:
         _seed_minimal_tenant(db)
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
-        db.add(AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="研发员工", is_overall=False))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.add(
+            AgentProfile(
+                id="agent_branch", tenant_id="tenant_demo", name="研发员工", is_overall=False
+            )
+        )
         db.commit()
 
         imported = import_general_skill(
@@ -317,7 +345,9 @@ def test_deleted_open_gallery_general_skill_is_hidden_from_agent_branch_binding(
             )
         )
         db.commit()
-        assert [row.id for row in list_general_skills("tenant_demo", db, agent_id="agent_branch")] == [imported.id]
+        assert [
+            row.id for row in list_general_skills("tenant_demo", db, agent_id="agent_branch")
+        ] == [imported.id]
 
         deleted = delete_general_skill(
             imported.slug,
@@ -329,6 +359,7 @@ def test_deleted_open_gallery_general_skill_is_hidden_from_agent_branch_binding(
         assert deleted == {"status": "hidden", "slug": "weather-zh"}
 
         assert list_general_skills("tenant_demo", db, agent_id="agent_branch") == []
+        assert AgentLoop(db)._list_published_general_skills("tenant_demo", "agent_branch") == []
 
 
 def test_import_general_skill_folder_reads_skill_md_metadata() -> None:
@@ -354,7 +385,7 @@ def test_import_general_skill_folder_reads_skill_md_metadata() -> None:
                     },
                     {
                         "path": "weather-bundle/data/cities.json",
-                        "content": "{\"北京\": \"101010100\"}",
+                        "content": '{"北京": "101010100"}',
                     },
                 ],
             ),
@@ -379,7 +410,7 @@ def test_import_clawhub_skill_reads_zip_package_without_overwriting(monkeypatch)
             "---\nname: 天气包\nslug: weather-pack\n---\n\n# 天气包\n",
         )
         archive.writestr("skill-pack-main/weather/scripts/run.py", "print('ok')\n")
-        archive.writestr("skill-pack-main/weather/data/cities.json", "{\"北京\": \"101010100\"}")
+        archive.writestr("skill-pack-main/weather/data/cities.json", '{"北京": "101010100"}')
 
     def fake_download(url: str):  # noqa: ANN001
         assert url == "https://example.com/weather.zip"
@@ -390,19 +421,27 @@ def test_import_clawhub_skill_reads_zip_package_without_overwriting(monkeypatch)
     with _test_session() as db:
         _seed_minimal_tenant(db)
         first = import_clawhub_skill(
-            GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="https://example.com/weather.zip"),
+            GeneralSkillClawHubImportRequest(
+                tenant_id="tenant_demo", source="https://example.com/weather.zip"
+            ),
             db,
             _admin_user(),
         )
         second = import_clawhub_skill(
-            GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="https://example.com/weather.zip"),
+            GeneralSkillClawHubImportRequest(
+                tenant_id="tenant_demo", source="https://example.com/weather.zip"
+            ),
             db,
             _admin_user(),
         )
 
         assert first.slug == "weather-pack"
         assert second.slug == "weather-pack-2"
-        assert [file.path for file in first.skill_files] == ["SKILL.md", "scripts/run.py", "data/cities.json"]
+        assert [file.path for file in first.skill_files] == [
+            "SKILL.md",
+            "scripts/run.py",
+            "data/cities.json",
+        ]
         assert first.skill_markdown.startswith("---\nname: 天气包")
 
 
@@ -414,7 +453,7 @@ def test_import_general_skill_package_upload_keeps_full_zip_folder() -> None:
             "---\nname: Nuwa Skill\nslug: nuwa-skill\n---\n\n# Nuwa Skill\n",
         )
         archive.writestr("nuwa-skill-main/skill/scripts/run.py", "print('nuwa')\n")
-        archive.writestr("nuwa-skill-main/skill/assets/config.json", "{\"mode\":\"demo\"}")
+        archive.writestr("nuwa-skill-main/skill/assets/config.json", '{"mode":"demo"}')
 
     with _test_session() as db:
         _seed_minimal_tenant(db)
@@ -431,7 +470,11 @@ def test_import_general_skill_package_upload_keeps_full_zip_folder() -> None:
 
         assert row.slug == "nuwa-skill"
         assert row.name == "Nuwa Skill"
-        assert [file.path for file in row.skill_files] == ["SKILL.md", "scripts/run.py", "assets/config.json"]
+        assert [file.path for file in row.skill_files] == [
+            "SKILL.md",
+            "scripts/run.py",
+            "assets/config.json",
+        ]
         assert row.skill_markdown.startswith("---\nname: Nuwa Skill")
 
 
@@ -476,7 +519,10 @@ def test_import_clawhub_skill_reads_github_directory_package(monkeypatch) -> Non
                     "size": 24,
                 },
             ]
-        if url == "https://api.github.com/repos/example/skill-pack/contents/weather/scripts?ref=main":
+        if (
+            url
+            == "https://api.github.com/repos/example/skill-pack/contents/weather/scripts?ref=main"
+        ):
             return [
                 {
                     "type": "file",
@@ -491,7 +537,7 @@ def test_import_clawhub_skill_reads_github_directory_package(monkeypatch) -> Non
         content = {
             "https://raw.githubusercontent.com/example/skill-pack/main/weather/SKILL.md": "---\nname: 目录天气\nslug: weather-dir\n---\n\n# 天气\n",
             "https://raw.githubusercontent.com/example/skill-pack/main/weather/scripts/run.py": "print('ok')\n",
-            "https://raw.githubusercontent.com/example/skill-pack/main/weather/data/cities.json": "{\"北京\":\"101010100\"}",
+            "https://raw.githubusercontent.com/example/skill-pack/main/weather/data/cities.json": '{"北京":"101010100"}',
         }.get(url)
         if content is None:
             raise AssertionError(f"unexpected raw url: {url}")
@@ -512,7 +558,11 @@ def test_import_clawhub_skill_reads_github_directory_package(monkeypatch) -> Non
         )
 
         assert row.slug == "weather-dir"
-        assert [file.path for file in row.skill_files] == ["SKILL.md", "scripts/run.py", "data/cities.json"]
+        assert [file.path for file in row.skill_files] == [
+            "SKILL.md",
+            "scripts/run.py",
+            "data/cities.json",
+        ]
         assert row.skill_files[1].content == "print('ok')\n"
 
 
@@ -547,7 +597,9 @@ def test_import_clawhub_skill_follows_page_to_real_skill_package(monkeypatch) ->
     with _test_session() as db:
         _seed_minimal_tenant(db)
         row = import_clawhub_skill(
-            GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="https://clawhub.example/skills/weather"),
+            GeneralSkillClawHubImportRequest(
+                tenant_id="tenant_demo", source="https://clawhub.example/skills/weather"
+            ),
             db,
             _admin_user(),
         )
@@ -590,7 +642,11 @@ def test_import_clawhub_skill_uses_clawhub_download_api_for_page_url(monkeypatch
         assert row.name == "weather"
         assert row.slug == "maomao-weather"
         assert row.homepage == "https://clawhub.ai/maomaoshuo/maomao-weather"
-        assert [file.path for file in row.skill_files] == ["SKILL.md", "scripts/weather.py", "references/weather_details.md"]
+        assert [file.path for file in row.skill_files] == [
+            "SKILL.md",
+            "scripts/weather.py",
+            "references/weather_details.md",
+        ]
 
 
 def test_import_clawhub_skill_accepts_cli_slug(monkeypatch) -> None:
@@ -627,7 +683,9 @@ def test_import_clawhub_skill_rejects_plain_html_page(monkeypatch) -> None:
         _seed_minimal_tenant(db)
         try:
             import_clawhub_skill(
-                GeneralSkillClawHubImportRequest(tenant_id="tenant_demo", source="https://clawhub.example/skills/weather"),
+                GeneralSkillClawHubImportRequest(
+                    tenant_id="tenant_demo", source="https://clawhub.example/skills/weather"
+                ),
                 db,
                 _admin_user(),
             )
@@ -641,7 +699,9 @@ def test_import_clawhub_skill_rejects_plain_html_page(monkeypatch) -> None:
 def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
     captured_model_ids: list[str] = []
 
-    def fake_run(self, skill, query, model_config, user_id="enterprise_demo", max_attempts=5, event_sink=None):  # noqa: ANN001
+    def fake_run(
+        self, skill, query, model_config, user_id="enterprise_demo", max_attempts=5, event_sink=None
+    ):  # noqa: ANN001
         captured_model_ids.append(model_config.id)
         return {
             "skill_slug": skill.slug,
@@ -657,7 +717,11 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
 
     with _test_session() as db:
         _seed_minimal_tenant(db)
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="开放广场", is_overall=True
+            )
+        )
         db.add(
             ModelConfig(
                 id="model_selected",
@@ -680,12 +744,16 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
             _admin_user(),
         )
 
-        archived = archive_general_skill(imported.slug, "tenant_demo", db, current_user=_admin_user())
+        archived = archive_general_skill(
+            imported.slug, "tenant_demo", db, current_user=_admin_user()
+        )
         assert archived.status == "archived"
         try:
             run_general_skill(
                 imported.slug,
-                GeneralSkillRunRequest(tenant_id="tenant_demo", user_id="user_demo", query="北京天气"),
+                GeneralSkillRunRequest(
+                    tenant_id="tenant_demo", user_id="user_demo", query="北京天气"
+                ),
                 db,
                 _admin_user(),
             )
@@ -695,7 +763,9 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
         else:
             raise AssertionError("archived general skill should not run")
 
-        published = publish_general_skill(imported.slug, "tenant_demo", db, current_user=_admin_user())
+        published = publish_general_skill(
+            imported.slug, "tenant_demo", db, current_user=_admin_user()
+        )
         assert published.status == "published"
         result = run_general_skill(
             imported.slug,
@@ -739,8 +809,16 @@ def test_general_skill_archive_publish_and_delete_api(monkeypatch) -> None:
 def test_non_overall_agent_delete_hides_general_skill_only_in_branch() -> None:
     with _test_session() as db:
         _seed_minimal_tenant(db)
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
-        db.add(AgentProfile(id="agent_branch", tenant_id="tenant_demo", name="客服分支", is_overall=False))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
+        db.add(
+            AgentProfile(
+                id="agent_branch", tenant_id="tenant_demo", name="客服分支", is_overall=False
+            )
+        )
         imported = import_general_skill(
             GeneralSkillImportRequest(
                 tenant_id="tenant_demo",
@@ -764,7 +842,9 @@ def test_non_overall_agent_delete_hides_general_skill_only_in_branch() -> None:
         assert deleted == {"status": "hidden", "slug": "weather-zh"}
         assert get_general_skill(imported.slug, "tenant_demo", db).slug == "weather-zh"
         assert list_general_skills("tenant_demo", db, agent_id="agent_branch") == []
-        assert list_general_skills("tenant_demo", db, agent_id="agent_overall")[0].slug == "weather-zh"
+        assert (
+            list_general_skills("tenant_demo", db, agent_id="agent_overall")[0].slug == "weather-zh"
+        )
 
 
 def test_chat_turn_uses_general_skill_after_scene_router_skips_unmatched_scene(
@@ -826,7 +906,11 @@ def test_chat_turn_uses_general_skill_after_scene_router_skips_unmatched_scene(
 
     with _test_session() as db:
         _seed_minimal_tenant(db)
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
         scene_skill = _purchase_scene_skill()
         general_skill = GeneralSkill(
             tenant_id="tenant_demo",
@@ -858,7 +942,9 @@ def test_chat_turn_uses_general_skill_after_scene_router_skips_unmatched_scene(
         assert response.tool_result.tool_name == "general_skill.weather-zh"
         assert response.router_decision is not None
         assert response.router_decision.target_skill_id is None
-        events = db.exec(select(AgentEvent).where(AgentEvent.session_id == response.session_id)).all()
+        events = db.exec(
+            select(AgentEvent).where(AgentEvent.session_id == response.session_id)
+        ).all()
         event_types = {event.event_type for event in events}
         assert "general_skill_selected" in event_types
         assert "tool_call_started" not in event_types
@@ -876,7 +962,7 @@ def test_general_skill_response_keeps_active_scene_context(monkeypatch) -> None:
         if "企业技能路由器" in prompt_text:
             calls.append("router")
             return {
-                "decision": "answer_related_question_then_resume",
+                "decision": "answer_only",
                 "confidence": 0.9,
                 "user_intent": "购买流程中插入天气查询",
                 "reason": "用户在购买流程中询问天气，需要先回答相关问题。",
@@ -902,7 +988,9 @@ def test_general_skill_response_keeps_active_scene_context(monkeypatch) -> None:
             assert payload["structured_result"]["city"] == "海淀"
             return {"reply": "海淀当前天气晴。"}
         if "企业技能执行助手" in prompt_text:
-            raise AssertionError("scene step agent should not run for inserted general skill answer")
+            raise AssertionError(
+                "scene step agent should not run for inserted general skill answer"
+            )
         raise AssertionError("unexpected JSON prompt")
 
     def fake_generate_text(self, system_prompt, payload):  # noqa: ANN001
@@ -920,7 +1008,11 @@ def test_general_skill_response_keeps_active_scene_context(monkeypatch) -> None:
 
     with _test_session() as db:
         _seed_minimal_tenant(db)
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
         scene_skill = _purchase_scene_skill()
         general_skill = GeneralSkill(
             tenant_id="tenant_demo",
@@ -984,7 +1076,7 @@ def test_scene_tool_call_to_general_skill_records_expandable_trace(monkeypatch) 
                 "rationale": "查询天气。",
             },
             {"phase": "attempt_started", "message": "开始第 1 次运行", "attempt": 1},
-            {"phase": "stdout_chunk", "text": "{\"success\": true, \"city\": \"北京\"}"},
+            {"phase": "stdout_chunk", "text": '{"success": true, "city": "北京"}'},
             {"phase": "reflection_passed", "message": "第 1 次运行结果可用", "attempt": 1},
             {"phase": "reply_created", "message": "已生成最终回复"},
         ]
@@ -995,7 +1087,7 @@ def test_scene_tool_call_to_general_skill_records_expandable_trace(monkeypatch) 
             skill_slug=skill.slug,
             execution_trace=trace,
             generated_code=trace[1]["code"],
-            stdout="{\"success\": true, \"city\": \"北京\"}",
+            stdout='{"success": true, "city": "北京"}',
             stderr="",
             structured_result={"success": True, "city": "北京"},
             reply="北京天气已查询。",
@@ -1007,15 +1099,24 @@ def test_scene_tool_call_to_general_skill_records_expandable_trace(monkeypatch) 
     with _test_session() as db:
         _seed_minimal_tenant(db)
         db.add(
-            GeneralSkill(
+            AgentProfile(
+                id="agent_overall_tool_trace",
                 tenant_id="tenant_demo",
-                slug="weather-zh",
-                name="中国城市天气",
-                description="中国城市天气查询工具",
-                skill_markdown=WEATHER_SKILL_MD,
-                status="published",
+                name="开放广场",
+                is_overall=True,
             )
         )
+        general_skill = GeneralSkill(
+            tenant_id="tenant_demo",
+            slug="weather-zh",
+            name="中国城市天气",
+            description="中国城市天气查询工具",
+            skill_markdown=WEATHER_SKILL_MD,
+            status="published",
+        )
+        db.add(general_skill)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "general_skill", general_skill.id, "active")
         db.add(
             ChatSession(
                 id="session_general_skill_tool",
@@ -1043,16 +1144,25 @@ def test_scene_tool_call_to_general_skill_records_expandable_trace(monkeypatch) 
 
         assert result.success is True
         assert result.data["generated_code"].startswith("import json")
-        rows = db.exec(select(AgentEvent).where(AgentEvent.session_id == "session_general_skill_tool")).all()
+        rows = db.exec(
+            select(AgentEvent).where(AgentEvent.session_id == "session_general_skill_tool")
+        ).all()
         event_types = [row.event_type for row in rows]
         assert event_types[0] == "tool_call_started"
         assert "general_skill_trace" in event_types
         assert "general_skill_run_finished" in event_types
         assert event_types[-1] == "tool_call_finished"
-        trace_payloads = [row.payload_json for row in rows if row.event_type == "general_skill_trace"]
-        assert any(payload.get("phase") == "plan_created" and "import json" in str(payload.get("code")) for payload in trace_payloads)
+        trace_payloads = [
+            row.payload_json for row in rows if row.event_type == "general_skill_trace"
+        ]
+        assert any(
+            payload.get("phase") == "plan_created" and "import json" in str(payload.get("code"))
+            for payload in trace_payloads
+        )
         assert any(payload.get("phase") == "stdout_chunk" for payload in trace_payloads)
-        assert [name for name, _payload in stream_events].count("general_skill_trace") == len(trace_payloads)
+        assert [name for name, _payload in stream_events].count("general_skill_trace") == len(
+            trace_payloads
+        )
         assert any(name == "general_skill_run_finished" for name, _payload in stream_events)
 
 
@@ -1093,15 +1203,24 @@ def test_scene_tool_call_to_general_skill_backfills_returned_trace(monkeypatch) 
     with _test_session() as db:
         _seed_minimal_tenant(db)
         db.add(
-            GeneralSkill(
+            AgentProfile(
+                id="agent_overall_tool_backfill",
                 tenant_id="tenant_demo",
-                slug="weather-zh",
-                name="中国城市天气",
-                description="中国城市天气查询工具",
-                skill_markdown=WEATHER_SKILL_MD,
-                status="published",
+                name="开放广场",
+                is_overall=True,
             )
         )
+        general_skill = GeneralSkill(
+            tenant_id="tenant_demo",
+            slug="weather-zh",
+            name="中国城市天气",
+            description="中国城市天气查询工具",
+            skill_markdown=WEATHER_SKILL_MD,
+            status="published",
+        )
+        db.add(general_skill)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "general_skill", general_skill.id, "active")
         db.add(
             ChatSession(
                 id="session_general_skill_tool_backfill",
@@ -1128,15 +1247,21 @@ def test_scene_tool_call_to_general_skill_backfills_returned_trace(monkeypatch) 
         )
 
         assert result.success is True
-        rows = db.exec(select(AgentEvent).where(AgentEvent.session_id == "session_general_skill_tool_backfill")).all()
-        trace_payloads = [row.payload_json for row in rows if row.event_type == "general_skill_trace"]
+        rows = db.exec(
+            select(AgentEvent).where(AgentEvent.session_id == "session_general_skill_tool_backfill")
+        ).all()
+        trace_payloads = [
+            row.payload_json for row in rows if row.event_type == "general_skill_trace"
+        ]
         assert [payload.get("phase") for payload in trace_payloads] == [
             "skill_loaded",
             "plan_created",
             "stdout_chunk",
             "reply_created",
         ]
-        assert [name for name, _payload in stream_events].count("general_skill_trace") == len(trace_payloads)
+        assert [name for name, _payload in stream_events].count("general_skill_trace") == len(
+            trace_payloads
+        )
 
 
 def test_scene_tool_call_rejects_mismatched_general_skill(monkeypatch) -> None:
@@ -1168,15 +1293,24 @@ def test_scene_tool_call_rejects_mismatched_general_skill(monkeypatch) -> None:
     with _test_session() as db:
         _seed_minimal_tenant(db)
         db.add(
-            GeneralSkill(
+            AgentProfile(
+                id="agent_overall_tool_mismatch",
                 tenant_id="tenant_demo",
-                slug="weather-zh",
-                name="中国城市天气",
-                description="中国城市天气查询工具",
-                skill_markdown=WEATHER_SKILL_MD,
-                status="published",
+                name="开放广场",
+                is_overall=True,
             )
         )
+        general_skill = GeneralSkill(
+            tenant_id="tenant_demo",
+            slug="weather-zh",
+            name="中国城市天气",
+            description="中国城市天气查询工具",
+            skill_markdown=WEATHER_SKILL_MD,
+            status="published",
+        )
+        db.add(general_skill)
+        db.flush()
+        ensure_open_gallery_binding(db, "tenant_demo", "general_skill", general_skill.id, "active")
         db.add(
             ChatSession(
                 id="session_general_skill_mismatch",
@@ -1196,7 +1330,10 @@ def test_scene_tool_call_rejects_mismatched_general_skill(monkeypatch) -> None:
                 message="查询商品 A1 和 A3 的当前实时价格",
             ),
             db.get(ChatSession, "session_general_skill_mismatch"),
-            ToolCall(name="general_skill.weather-zh", arguments={"query": "查询商品 A1 和 A3 的当前实时价格"}),
+            ToolCall(
+                name="general_skill.weather-zh",
+                arguments={"query": "查询商品 A1 和 A3 的当前实时价格"},
+            ),
             tool_call_id="toolcall_weather_mismatch",
         )
 
@@ -1204,7 +1341,9 @@ def test_scene_tool_call_rejects_mismatched_general_skill(monkeypatch) -> None:
         assert result.error is not None
         assert result.error.code == "GENERAL_SKILL_MISMATCH"
         assert runner_calls == []
-        rows = db.exec(select(AgentEvent).where(AgentEvent.session_id == "session_general_skill_mismatch")).all()
+        rows = db.exec(
+            select(AgentEvent).where(AgentEvent.session_id == "session_general_skill_mismatch")
+        ).all()
         assert any(row.event_type == "general_skill_guard_rejected" for row in rows)
 
 
@@ -1233,7 +1372,9 @@ def test_scene_step_agent_does_not_expose_irrelevant_general_skill(monkeypatch) 
         )
         db.commit()
 
-        model_config = db.exec(select(ModelConfig).where(ModelConfig.tenant_id == "tenant_demo")).first()
+        model_config = db.exec(
+            select(ModelConfig).where(ModelConfig.tenant_id == "tenant_demo")
+        ).first()
         active_skill = Skill(
             tenant_id="tenant_demo",
             skill_id="after_sales_refund",
@@ -1242,7 +1383,9 @@ def test_scene_step_agent_does_not_expose_irrelevant_general_skill(monkeypatch) 
             content_json={},
         )
         tools = [
-            SimpleNamespace(enabled=True, name="order.query", allowed_skills_json=["after_sales_refund"]),
+            SimpleNamespace(
+                enabled=True, name="order.query", allowed_skills_json=["after_sales_refund"]
+            ),
             SimpleNamespace(enabled=True, name="general_skill.weather-zh", allowed_skills_json=[]),
         ]
 
@@ -1348,7 +1491,11 @@ def test_chat_turn_treats_unmatched_scene_as_chat_when_general_skill_not_selecte
 
     with _test_session() as db:
         _seed_minimal_tenant(db)
-        db.add(AgentProfile(id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True))
+        db.add(
+            AgentProfile(
+                id="agent_overall", tenant_id="tenant_demo", name="整体智能体", is_overall=True
+            )
+        )
         scene_skill = _purchase_scene_skill()
         general_skill = GeneralSkill(
             tenant_id="tenant_demo",
@@ -1376,7 +1523,9 @@ def test_chat_turn_treats_unmatched_scene_as_chat_when_general_skill_not_selecte
 
         assert response.reply == "你好，有什么业务需要我帮忙？"
         assert calls == ["router", "selector", "response"]
-        events = db.exec(select(AgentEvent).where(AgentEvent.session_id == response.session_id)).all()
+        events = db.exec(
+            select(AgentEvent).where(AgentEvent.session_id == response.session_id)
+        ).all()
         event_types = {event.event_type for event in events}
         assert "general_skill_selected" not in event_types
         assert "tool_call_started" not in event_types
@@ -1436,7 +1585,9 @@ def test_general_skill_runner_repairs_failed_code(monkeypatch) -> None:
 
     events: list[dict] = []
 
-    response = GeneralSkillRunner().run(skill, "北京今天天气怎么样", model_config, max_attempts=2, event_sink=events.append)
+    response = GeneralSkillRunner().run(
+        skill, "北京今天天气怎么样", model_config, max_attempts=2, event_sink=events.append
+    )
 
     assert response.reply == "北京今天晴。"
     assert response.structured_result["success"] is True
@@ -1456,7 +1607,10 @@ def test_general_skill_runner_materializes_folder_package(monkeypatch) -> None:
         if "通用技能执行器" in prompt_text:
             calls.append("runner")
             assert payload["skill"]["package"]["file_count"] == 2
-            assert [item["path"] for item in payload["skill"]["package"]["files"]] == ["SKILL.md", "data/city.txt"]
+            assert [item["path"] for item in payload["skill"]["package"]["files"]] == [
+                "SKILL.md",
+                "data/city.txt",
+            ]
             return {
                 "code": (
                     "import json\n"
@@ -1528,7 +1682,7 @@ def test_general_skill_runner_executes_bash_package_command(monkeypatch) -> None
             assert payload["runtime"]["languages"] == ["bash", "python"]
             return {
                 "runtime": "bash",
-                "code": "set -euo pipefail\ncd \"$SKILL_WORKSPACE\"\nprintf '%s\\n' \"$ARGUMENTS\" | python3 scripts/weather.py\n",
+                "code": 'set -euo pipefail\ncd "$SKILL_WORKSPACE"\nprintf \'%s\\n\' "$ARGUMENTS" | python3 scripts/weather.py\n',
                 "rationale": "技能声明 allowed-tools: Bash，并给出了调用 scripts/weather.py 的命令。",
             }
         if "通用技能运行结果审查器" in prompt_text:
@@ -1557,12 +1711,12 @@ def test_general_skill_runner_executes_bash_package_command(monkeypatch) -> None
             "---\n"
             "allowed-tools: Bash\n"
             "---\n"
-            "```bash\nprintf '%s\\n' \"$ARGUMENTS\" | python3 \"scripts/weather.py\"\n```\n"
+            '```bash\nprintf \'%s\\n\' "$ARGUMENTS" | python3 "scripts/weather.py"\n```\n'
         ),
         skill_files_json=[
             {
                 "path": "SKILL.md",
-                "content": "---\nallowed-tools: Bash\n---\n```bash\nprintf '%s\\n' \"$ARGUMENTS\" | python3 \"scripts/weather.py\"\n```\n",
+                "content": '---\nallowed-tools: Bash\n---\n```bash\nprintf \'%s\\n\' "$ARGUMENTS" | python3 "scripts/weather.py"\n```\n',
             },
             {
                 "path": "scripts/weather.py",
@@ -1659,9 +1813,13 @@ def test_general_skill_runner_has_requests_in_runtime(monkeypatch) -> None:
 
 
 def test_general_skill_prompt_rejects_unlisted_external_apis() -> None:
-    prompt = (Path(__file__).resolve().parents[1] / "app" / "llm" / "prompts" / "general_skill_runner_prompt.md").read_text(
-        encoding="utf-8"
-    )
+    prompt = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "llm"
+        / "prompts"
+        / "general_skill_runner_prompt.md"
+    ).read_text(encoding="utf-8")
 
     assert "不要自行发明第三方接口" in prompt
     assert "runtime=`bash`" in prompt
@@ -1677,7 +1835,10 @@ def test_general_skill_runner_reflects_failed_initial_plan(monkeypatch) -> None:
         prompt_text = str(system_prompt)
         if "代码修复器" in prompt_text:
             calls.append("repair")
-            assert payload["previous_attempts"][0]["structured_result"]["error"] == "plan_generation_failed"
+            assert (
+                payload["previous_attempts"][0]["structured_result"]["error"]
+                == "plan_generation_failed"
+            )
             return {
                 "code": (
                     "import json\n"

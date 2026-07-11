@@ -134,56 +134,14 @@ export const EMPLOYEE_TEMPLATES: EmployeeTemplate[] = [
   },
 ];
 
-const DEFAULT_WORK_STYLES = ['目标明确', '证据优先', '动作可追溯'];
-const DEFAULT_EXPERTISE = ['业务问答', 'SOP 执行', '工具调用'];
-const DEFAULT_WORK_MODES = ['识别意图', '补齐信息', '执行并复盘'];
-
-const SD1_TEXT_REPLACEMENTS: Array<[RegExp, string]> = [
-  [/默认员工/g, '研发员工'],
-  [/在线客服员工/g, '研发员工'],
-  [/在线客服/g, '研发'],
-  [/客服接待/g, '研发协作'],
-  [/运营排查/g, '人事'],
-  [/质量复盘/g, '法务'],
-  [/客服分支/g, '研发分支'],
-  [/智能客服/g, '数字员工'],
-  [/客服/g, '员工'],
-  [/售后退款流程/g, '行政资料复盘流程'],
-  [/售后换货流程/g, '行政事务跟进流程'],
-  [/售后处理/g, '行政处理'],
-  [/售后/g, '行政'],
-  [/商品比价服务/g, '财务数据核对'],
-  [/商品比价/g, '财务核对'],
-  [/商品导购/g, '财务分析'],
-  [/商品/g, '资料'],
-  [/订单/g, '任务单'],
-  [/退款/g, '报销'],
-  [/换货/g, '归档'],
-  [/购买/g, '执行'],
-];
-
 export function staffdeckDisplayText(value: string): string {
-  return SD1_TEXT_REPLACEMENTS.reduce((current, [pattern, replacement]) => current.replace(pattern, replacement), value);
-}
-
-function staffdeckRoleName(value: string): string {
-  const text = staffdeckDisplayText(value);
-  return text.endsWith('员工') ? text.slice(0, -2) : text;
+  return value;
 }
 
 export function isDefaultEmployeeAgent(agent?: EmployeeAgentLike | null): boolean {
   if (!agent || agent.is_overall) return false;
   const metadata = agent.metadata || {};
-  const roleKey = String(metadata.role_key || '');
-  const avatarPreset = String(metadata.avatar_preset || '');
-  const roleName = String(metadata.role_name || '');
-  const name = String(agent.name || '');
-  return (
-    roleKey === 'service-specialist'
-    || avatarPreset === 'service-orbit'
-    || Boolean(agent.id && agent.id.endsWith('_default'))
-    || /研发|在线客服/.test(`${roleName} ${name}`)
-  );
+  return metadata.is_default_employee === true;
 }
 
 export function preferredEmployeeAgent<T extends EmployeeAgentLike>(agents: T[]): T | undefined {
@@ -283,16 +241,16 @@ export function openGalleryAgent(rows: AgentProfileRead[]): AgentProfileRead | u
   return rows.find((agent) => agent.is_overall);
 }
 
-export function openGalleryAgentId(rows: AgentProfileRead[], tenantId: string): string {
-  return openGalleryAgent(rows)?.id || `agent_${tenantId}_overall`;
+export function openGalleryAgentId(rows: AgentProfileRead[]): string {
+  return openGalleryAgent(rows)?.id || '';
 }
 
 export function openGalleryImportSourceOptions(
   rows: AgentProfileRead[],
   label: string,
-  tenantId: string,
 ): Array<{ value: string; label: string }> {
-  return [{ value: openGalleryAgentId(rows, tenantId), label }];
+  const agentId = openGalleryAgentId(rows);
+  return agentId ? [{ value: agentId, label }] : [];
 }
 
 function asStringArray(value: unknown): string[] {
@@ -329,24 +287,19 @@ export function creatorNameFromMetadata(
   );
   if (!creator) return fallback;
   const normalized = creator.trim();
-  if (!normalized || normalized === '系统' || normalized.toLowerCase() === 'system') return fallback;
-  return normalized;
+  return normalized || fallback;
 }
 
 export function displayNameWithCreator(name: string, creator?: string): string {
   const cleanName = name.trim() || '未命名';
   const cleanCreator = (creator || '').trim();
   if (!cleanCreator) return cleanName;
-  if (cleanName.endsWith(`@${cleanCreator}`) || cleanName.includes(` @${cleanCreator}`)) return cleanName;
   return `${cleanName} @${cleanCreator}`;
 }
 
 export function employeeProfile(agent?: AgentProfileRead | null): EmployeeProfile {
   const metadata = agent?.metadata || {};
-  const isBlankOnboarding = metadata.blank_onboarding === true;
-  const template = isBlankOnboarding
-    ? undefined
-    : EMPLOYEE_TEMPLATES.find((item) => item.key === metadata.role_key) || EMPLOYEE_TEMPLATES[0];
+  const template = EMPLOYEE_TEMPLATES.find((item) => item.key === metadata.role_key);
   const preset = EMPLOYEE_AVATAR_PRESETS.find((item) => item.key === metadata.avatar_preset)
     || (template ? EMPLOYEE_AVATAR_PRESETS.find((item) => item.key === template.avatarPreset) : undefined)
     || EMPLOYEE_AVATAR_PRESETS[0];
@@ -356,50 +309,42 @@ export function employeeProfile(agent?: AgentProfileRead | null): EmployeeProfil
     : 'preset';
   return {
     roleKey: stringFromMeta(metadata, 'role_key') || template?.key || '',
-    roleName: isOverall ? '开放广场' : staffdeckRoleName(stringFromMeta(metadata, 'role_name') || template?.roleName || '待补充岗位'),
+    roleName: isOverall ? '开放广场' : stringFromMeta(metadata, 'role_name') || template?.roleName || '待补充岗位',
     avatarText: isOverall ? '广' : stringFromMeta(metadata, 'avatar_text') || preset.text || template?.avatarText || '员',
     avatarTone: isOverall ? 'overall' : stringFromMeta(metadata, 'avatar_tone') || preset.tone || template?.avatarTone || 'teal',
     avatarKind: isOverall ? 'preset' : avatarKind,
     avatarPreset: isOverall ? 'overall' : stringFromMeta(metadata, 'avatar_preset') || preset.key,
     avatarImage: isOverall ? '' : stringFromMeta(metadata, 'avatar_image'),
     onboardedAt: stringFromMeta(metadata, 'onboarded_at') || agent?.created_at?.slice(0, 10) || '-',
-    workStyles: asStringArray(metadata.work_styles).length ? asStringArray(metadata.work_styles) : isBlankOnboarding ? [] : DEFAULT_WORK_STYLES,
-    expertiseTags: asStringArray(metadata.expertise_tags).length ? asStringArray(metadata.expertise_tags) : isBlankOnboarding ? [] : DEFAULT_EXPERTISE,
-    workModes: asStringArray(metadata.work_modes).length ? asStringArray(metadata.work_modes) : isBlankOnboarding ? [] : DEFAULT_WORK_MODES,
+    workStyles: asStringArray(metadata.work_styles),
+    expertiseTags: asStringArray(metadata.expertise_tags),
+    workModes: asStringArray(metadata.work_modes),
   };
 }
 
 export function employeeDisplayName(agent?: AgentProfileRead | null): string {
   if (!agent) return '数字员工';
   if (agent.is_overall) return '开放广场';
-  return staffdeckDisplayText((agent.name || '数字员工').replace(/智能体/g, '员工'));
+  return agent.name || '数字员工';
 }
 
 export function employeeCreatorName(agent?: AgentProfileRead | null): string {
   return creatorNameFromMetadata(agent?.metadata);
 }
 
-export function employeeCreatorNameOrAdmin(agent?: AgentProfileRead | null): string {
-  return creatorNameFromMetadata(agent?.metadata, 'admin');
-}
-
 export function employeeDisplayNameWithCreator(agent?: AgentProfileRead | null): string {
-  return displayNameWithCreator(employeeDisplayName(agent), employeeCreatorNameOrAdmin(agent));
+  return displayNameWithCreator(employeeDisplayName(agent), employeeCreatorName(agent));
 }
 
 export function resourceCreatorName(resource?: { metadata?: Record<string, unknown> } | null): string {
   return creatorNameFromMetadata(resource?.metadata);
 }
 
-export function resourceCreatorNameOrAdmin(resource?: { metadata?: Record<string, unknown> } | null): string {
-  return creatorNameFromMetadata(resource?.metadata, 'admin');
-}
-
 export function resourceDisplayNameWithCreator(
   name: string,
   resource?: { metadata?: Record<string, unknown> } | null,
 ): string {
-  return displayNameWithCreator(name, resourceCreatorNameOrAdmin(resource));
+  return displayNameWithCreator(name, resourceCreatorName(resource));
 }
 
 export function resourceCount(resources: AgentResourceBindingRead[] | undefined, type: AgentResourceBindingRead['resource_type']): number {

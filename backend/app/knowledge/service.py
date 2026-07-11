@@ -60,33 +60,6 @@ SEARCH_BUCKET_LIMIT = 80
 TERMINAL_INGEST_STATUSES = {"succeeded", "failed", "cancelled"}
 CANCELLING_INGEST_STATUSES = {"cancel_requested", "cancelled"}
 CANCEL_REQUEST_STALE_AFTER = timedelta(seconds=15)
-GENERIC_SEARCH_TERMS = {
-    "请根据",
-    "根据",
-    "业务",
-    "资料",
-    "业务资料",
-    "说明",
-    "用户",
-    "服务",
-    "服务人员",
-    "人员",
-    "应该",
-    "应该怎么",
-    "怎么",
-    "怎么处理",
-    "处理",
-    "回答",
-    "必须",
-    "知识",
-    "引用",
-    "知识引用",
-    "规则",
-    "文档",
-    "信息",
-    "相关",
-    "基于",
-}
 SEARCH_MIN_DOCUMENT_SCORE = 2.0
 SEARCH_MIN_BUCKET_SCORE = 2.0
 SEARCH_MIN_CHUNK_SCORE = 2.0
@@ -433,13 +406,12 @@ class KnowledgeService:
         selected_document_ids: list[str] = []
         if model_config:
             selected_document_ids = self._select_documents_with_llm(query, documents, 5, model_config, route_trace)
-        if not selected_document_ids:
-            fallback_documents = _score_documents(query, documents)[:5]
-            selected_document_ids = [row.id for row in fallback_documents]
+        else:
+            selected_document_ids = [row.id for row in _score_documents(query, documents)[:5]]
             route_trace.append(
                 {
-                    "phase": "document_route_fallback",
-                    "message": "按文档卡相关性补选知识文档",
+                    "phase": "document_route_lexical",
+                    "message": "按检索相关性选择知识文档",
                     "selected_count": len(selected_document_ids),
                 }
             )
@@ -479,22 +451,12 @@ class KnowledgeService:
         )
         if model_config:
             selected_ids = self._select_buckets_with_llm(query, buckets, request.max_buckets, model_config, route_trace)
-        if not selected_ids:
-            fallback_buckets = _score_buckets(query, buckets)
-            selected_ids = [bucket.id for bucket in fallback_buckets[: request.max_buckets]]
-            if len(selected_ids) < request.max_buckets:
-                selected_set = set(selected_ids)
-                for bucket in buckets:
-                    if bucket.id in selected_set:
-                        continue
-                    selected_ids.append(bucket.id)
-                    selected_set.add(bucket.id)
-                    if len(selected_ids) >= request.max_buckets:
-                        break
+        else:
+            selected_ids = [bucket.id for bucket in _score_buckets(query, buckets)[: request.max_buckets]]
             route_trace.append(
                 {
-                    "phase": "bucket_route_fallback",
-                    "message": "按内部索引摘要相关性补选",
+                    "phase": "bucket_route_lexical",
+                    "message": "按检索相关性选择内部索引",
                     "selected_count": len(selected_ids),
                 }
             )
@@ -1746,25 +1708,17 @@ def _score_text(query: str, text: str) -> float:
     score = 0.0
     if query and query.lower() in haystack:
         score += 5.0
-    specific_hit = False
     for term in _query_terms(query):
         count = haystack.count(term)
         if count:
-            is_generic = term in GENERIC_SEARCH_TERMS
-            if is_generic:
-                score += min(0.75, count * 0.2)
-                continue
-            specific_hit = True
-            term_weight = 1.4
+            term_weight = 2.0
             if re.fullmatch(r"[\u4e00-\u9fff]{3,}", term):
-                term_weight = 2.2
+                term_weight = 2.5
             if re.fullmatch(r"[\u4e00-\u9fff]{4,}", term):
                 term_weight = 3.0
             if len(term) >= 5:
                 term_weight = 3.4
             score += min(8.0, count * term_weight)
-    if not specific_hit and score:
-        return score * 0.12
     return score
 
 

@@ -8,9 +8,6 @@ from app.tools.tool_schema import ToolCall, ToolResult
 
 
 RouterDecisionValue = Literal[
-    "start_skill",
-    "continue_current_skill",
-    "jump_within_current_skill",
     "continue_active",
     "switch_to_pending",
     "create_pending",
@@ -18,11 +15,6 @@ RouterDecisionValue = Literal[
     "complete_task",
     "start_new_task",
     "answer_only",
-    "answer_related_question_then_resume",
-    "answer_chitchat_then_resume",
-    "suspend_current_and_start_new_skill",
-    "exit_current_skill",
-    "handoff",
     "handoff_human",
     "clarify",
 ]
@@ -47,7 +39,7 @@ class TaskFrame(BaseModel):
 class PendingTask(BaseModel):
     task_id: Optional[str] = None
     status: str = "pending"
-    decision: RouterDecisionValue = "start_skill"
+    decision: RouterDecisionValue = "start_new_task"
     target_skill_id: Optional[str] = None
     target_step_id: Optional[str] = None
     confidence: float = 0.0
@@ -94,7 +86,6 @@ class RouterDecision(BaseModel):
     user_intent: Optional[str] = None
     reason: Optional[str] = None
     source_message: Optional[str] = None
-    should_resume_after_answer: bool = False
     clarification_question: Optional[str] = None
     slot_hints: dict[str, Any] = Field(default_factory=dict)
     pending_tasks: list[PendingTask] = Field(default_factory=list)
@@ -133,9 +124,7 @@ class SessionPublic(BaseModel):
     active_skill_id: Optional[str] = None
     active_step_id: Optional[str] = None
     slots: dict[str, Any] = Field(default_factory=dict)
-    skill_stack: list[dict[str, Any]] = Field(default_factory=list)
     pending_tasks: list[dict[str, Any]] = Field(default_factory=list)
-    resume_after_answer: Optional[dict[str, Any]] = None
     awaiting_input: Optional[dict[str, Any]] = None
     knowledge_context: list[dict[str, Any]] = Field(default_factory=list)
     summary: Optional[str] = None
@@ -204,6 +193,7 @@ class ChatSessionRead(BaseModel):
     status: str
     summary: Optional[str]
     last_agent_question: Optional[str]
+    is_scheduled: bool = False
     created_at: str
     updated_at: str
 

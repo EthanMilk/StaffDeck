@@ -71,52 +71,6 @@ class SkillCard(BaseModel):
         return self
 
 
-def graph_from_legacy_steps(steps: list[dict[str, Any]]) -> dict[str, Any]:
-    """One-time migration helper. Public SkillCard does not accept steps."""
-
-    normalized_steps = [step for step in steps if isinstance(step, dict)]
-    nodes = [_step_dict_to_node(step, index) for index, step in enumerate(normalized_steps)]
-    edges = [
-        {
-            "source_node_id": nodes[index]["node_id"],
-            "next_node_id": nodes[index + 1]["node_id"],
-            "priority": index,
-            "label": "默认推进",
-        }
-        for index in range(len(nodes) - 1)
-    ]
-    return {
-        "nodes": nodes,
-        "edges": edges,
-        "start_node_id": nodes[0]["node_id"] if nodes else "",
-        "terminal_node_ids": [nodes[-1]["node_id"]] if nodes else [],
-    }
-
-
-def _step_dict_to_node(step: dict[str, Any], index: int) -> dict[str, Any]:
-    step_id = str(step.get("step_id") or step.get("node_id") or f"node_{index + 1}")
-    actions = [str(action) for action in step.get("allowed_actions", []) if str(action).strip()]
-    expected = [str(field) for field in step.get("expected_user_info", []) if str(field).strip()]
-    node_type = str(step.get("type") or "").strip() or ("collect_info" if expected else "response")
-    if any(action.startswith("call_tool:") for action in actions):
-        node_type = "tool_call"
-    if any(action == "handoff_human" for action in actions):
-        node_type = "handoff"
-    return {
-        "node_id": step_id,
-        "type": node_type,
-        "name": str(step.get("name") or step_id),
-        "instruction": str(step.get("instruction") or ""),
-        "optional": bool(step.get("optional") or False),
-        "condition": step.get("condition") if isinstance(step.get("condition"), str) else None,
-        "expected_user_info": expected,
-        "allowed_actions": actions,
-        "knowledge_scope": step.get("knowledge_scope") if isinstance(step.get("knowledge_scope"), dict) else {},
-        "retry_policy": step.get("retry_policy") if isinstance(step.get("retry_policy"), dict) else {},
-        "metadata": step.get("metadata") if isinstance(step.get("metadata"), dict) else {},
-    }
-
-
 class ToolSuggestion(BaseModel):
     name: str
     display_name: Optional[str] = None

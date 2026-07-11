@@ -545,7 +545,7 @@ def _last_step_allows_answer(steps: list[dict[str, Any]]) -> bool:
     if not steps:
         return False
     actions = [str(action) for action in steps[-1].get("allowed_actions", [])]
-    return "answer_user" in actions or "reply" in actions
+    return "answer_user" in actions
 
 
 def _unique_step_id(steps: list[dict[str, Any]], base: str) -> str:
@@ -728,17 +728,10 @@ def _default_slot_filling_policy(expected_infos: list[str]) -> dict[str, Any]:
 
 
 def _normalize_actions(actions: list[str]) -> list[str]:
-    aliases = {
-        "ask_for_info": "ask_user",
-        "ask": "ask_user",
-        "reply": "answer_user",
-        "respond": "answer_user",
-    }
     normalized: list[str] = []
     for action in actions:
-        value = aliases.get(action, action)
-        if value not in normalized:
-            normalized.append(value)
+        if action not in normalized:
+            normalized.append(action)
     return normalized
 
 

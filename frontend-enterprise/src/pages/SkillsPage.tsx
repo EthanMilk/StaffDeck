@@ -50,7 +50,7 @@ import {
   canManageEmployeeAgent,
   openGalleryAgentId,
   openGalleryImportSourceOptions,
-  resourceCreatorNameOrAdmin,
+  resourceCreatorName,
   visibleEmployeeAgents,
 } from '../employee';
 import { useClientPagination } from '../hooks/useClientPagination';
@@ -190,7 +190,7 @@ export default function SkillsPage({
           row.business_domain || '',
           row.description || '',
           row.version,
-          resourceCreatorNameOrAdmin(row),
+          resourceCreatorName(row),
         ].some((value) => value.toLowerCase().includes(keyword));
       const matchesStatus = statusFilter === 'all' || row.status === statusFilter;
       const branchState = row.branch_status === 'inactive' ? 'inactive' : row.branch_sync_state || 'synced';
@@ -257,8 +257,8 @@ export default function SkillsPage({
       title: '创建者',
       width: 120,
       render: (row) => (
-        <span className="block truncate text-[#858b9c]" title={resourceCreatorNameOrAdmin(row)}>
-          {resourceCreatorNameOrAdmin(row)}
+        <span className="block truncate text-[#858b9c]" title={resourceCreatorName(row)}>
+          {resourceCreatorName(row) || '-'}
         </span>
       ),
     },
@@ -370,7 +370,7 @@ export default function SkillsPage({
           <div className="min-w-0">
             <strong className="block truncate text-[14px] font-semibold text-[#18181a]">{row.name}</strong>
             <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">{row.skill_id}</span>
-            <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">创建者：{resourceCreatorNameOrAdmin(row)}</span>
+            <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">创建者：{resourceCreatorName(row) || '-'}</span>
           </div>
           {renderActions(row)}
         </div>
@@ -397,7 +397,7 @@ export default function SkillsPage({
       setAgents(agentRows);
       setImportMode(mode);
       const firstSource = mode === 'plaza'
-        ? openGalleryAgentId(agentRows, TENANT_ID)
+        ? openGalleryAgentId(agentRows)
         : visibleEmployeeAgents(agentRows, currentUser, { activeOnly: true, excludeAgentId: agentId })[0]?.id || '';
       setImportSourceAgentId(firstSource);
       setImportSelectedSkillIds([]);
@@ -766,7 +766,7 @@ export default function SkillsPage({
         title={importMode === 'plaza' ? '从广场复制 SOP' : '从数字员工复制 SOP'}
         sourcePlaceholder={importMode === 'plaza' ? '选择开放广场' : '选择复制来源'}
         sources={importMode === 'plaza'
-          ? openGalleryImportSourceOptions(agents, '开放广场', TENANT_ID)
+          ? openGalleryImportSourceOptions(agents, '开放广场')
           : visibleEmployeeAgents(agents, currentUser, { activeOnly: true, excludeAgentId: agentId })
             .map((item) => ({ value: item.id, label: item.name }))}
         sourceId={importSourceAgentId}

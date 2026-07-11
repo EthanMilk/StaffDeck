@@ -29,8 +29,8 @@ from app.agents.branching import (
     is_open_gallery_resource,
     mark_resource_open_gallery,
     mark_resource_private_for_agent,
+    metadata_preserving_creator,
     require_overall_agent,
-    system_creator_metadata,
     user_creator_metadata,
 )
 from app.db import get_session
@@ -85,8 +85,10 @@ def general_skill_read(row: GeneralSkill, status_override: str | None = None) ->
         description=row.description,
         homepage=row.homepage,
         skill_markdown=row.skill_markdown,
-        skill_files=[GeneralSkillFile.model_validate(item) for item in _skill_files_or_markdown(row)],
-        metadata=system_creator_metadata(row.metadata_json or {}),
+        skill_files=[
+            GeneralSkillFile.model_validate(item) for item in _skill_files_or_markdown(row)
+        ],
+        metadata=dict(row.metadata_json or {}),
         status=status_override or row.status,
         permissions=row.permissions_json or {},
         runtime_config=row.runtime_config_json or {},
@@ -104,11 +106,20 @@ def import_general_skill(
     ensure_tenant(db, request.tenant_id)
     files = _normalize_skill_files(request.files, request.markdown)
     markdown = _skill_markdown_from_files(files)
-    metadata = user_creator_metadata(current_user, _parse_skill_metadata(markdown))
-    name = _optional_text(request.name) or _metadata_text(metadata, "name", "title") or "未命名通用技能"
+    parsed_metadata = _parse_skill_metadata(markdown)
+    metadata = user_creator_metadata(current_user, parsed_metadata)
+    name = (
+        _optional_text(request.name)
+        or _metadata_text(metadata, "name", "title")
+        or "未命名通用技能"
+    )
     slug = _optional_text(request.slug) or _metadata_text(metadata, "slug", "id") or _slugify(name)
-    description = _optional_text(request.description) or _metadata_text(metadata, "description", "summary")
-    homepage = _optional_text(request.homepage) or _metadata_text(metadata, "homepage", "url", "source")
+    description = _optional_text(request.description) or _metadata_text(
+        metadata, "description", "summary"
+    )
+    homepage = _optional_text(request.homepage) or _metadata_text(
+        metadata, "homepage", "url", "source"
+    )
     _validate_slug(slug)
     lookup_slug = _optional_text(request.original_slug)
     agent_id = _agent_id_or_none(request.agent_id)
@@ -133,7 +144,9 @@ def import_general_skill(
                 row = None
                 slug = _unique_slug(db, request.tenant_id, slug)
             elif not _general_skill_editable_by_agent(db, request.tenant_id, agent.id, row):
-                raise HTTPException(status_code=404, detail="General skill not visible to this agent")
+                raise HTTPException(
+                    status_code=404, detail="General skill not visible to this agent"
+                )
     else:
         conflict = db.exec(
             select(GeneralSkill).where(
@@ -153,6 +166,7 @@ def import_general_skill(
                 raise HTTPException(status_code=409, detail="General skill slug already exists")
     now = utc_now()
     if row:
+        metadata = metadata_preserving_creator(row.metadata_json, parsed_metadata)
         if slug != row.slug:
             conflict = db.exec(
                 select(GeneralSkill).where(
@@ -280,7 +294,9 @@ def import_general_skill_package(
             )
         ]
     else:
-        raise HTTPException(status_code=400, detail="Uploaded skill package must be a .zip or Markdown file")
+        raise HTTPException(
+            status_code=400, detail="Uploaded skill package must be a .zip or Markdown file"
+        )
     files = _normalize_skill_files(raw_files, None)
     return _create_imported_general_skill(
         db,
@@ -313,12 +329,27 @@ def _create_imported_general_skill(
 ) -> GeneralSkillRead:
     markdown = _skill_markdown_from_files(files)
     metadata = _parse_skill_metadata(markdown)
-    resolved_name = _optional_text(name) or _metadata_text(metadata, "name", "title") or _source_name(import_source)
+    resolved_name = (
+        _optional_text(name)
+        or _metadata_text(metadata, "name", "title")
+        or _source_name(import_source)
+    )
     source_slug = _clawhub_slug_from_source(import_source)
-    slug_base = _optional_text(slug) or _metadata_text(metadata, "slug", "id") or source_slug or _slugify(resolved_name)
+    slug_base = (
+        _optional_text(slug)
+        or _metadata_text(metadata, "slug", "id")
+        or source_slug
+        or _slugify(resolved_name)
+    )
     resolved_slug = _unique_slug(db, tenant_id, slug_base)
-    resolved_description = _optional_text(description) or _metadata_text(metadata, "description", "summary")
-    resolved_homepage = _optional_text(homepage) or _metadata_text(metadata, "homepage", "url", "source") or _clawhub_homepage_from_source(import_source)
+    resolved_description = _optional_text(description) or _metadata_text(
+        metadata, "description", "summary"
+    )
+    resolved_homepage = (
+        _optional_text(homepage)
+        or _metadata_text(metadata, "homepage", "url", "source")
+        or _clawhub_homepage_from_source(import_source)
+    )
     _validate_slug(resolved_slug)
     now = utc_now()
     resolved_agent_id = _agent_id_or_none(agent_id)
@@ -331,7 +362,9 @@ def _create_imported_general_skill(
         homepage=resolved_homepage,
         skill_markdown=markdown,
         skill_files_json=[file.model_dump(mode="json") for file in files],
-        metadata_json=user_creator_metadata(current_user, {**metadata, "import_source": import_source}),
+        metadata_json=user_creator_metadata(
+            current_user, {**metadata, "import_source": import_source}
+        ),
         status=status,
         permissions_json={"network": True, "python": True},
         runtime_config_json={"runtime": "python", "timeout_seconds": 12},
@@ -370,7 +403,9 @@ def _create_imported_general_skill(
     return general_skill_read(row)
 
 
-@router.get("", response_model=list[GeneralSkillRead], dependencies=[Depends(require_agent_scope_viewer)])
+@router.get(
+    "", response_model=list[GeneralSkillRead], dependencies=[Depends(require_agent_scope_viewer)]
+)
 def list_general_skills(
     tenant_id: str = Query(...),
     db: Session = Depends(get_session),
@@ -405,23 +440,33 @@ def list_general_skills(
             row = rows_by_id.get(binding.resource_id)
             if not row:
                 continue
-            if not is_bound_resource_visible_for_agent(db, tenant_id, "general_skill", row, binding):
+            if not is_bound_resource_visible_for_agent(
+                db, tenant_id, "general_skill", row, binding
+            ):
                 continue
             visible_rows.append(
                 general_skill_read(
                     row,
-                    status_override="published" if binding.status == "active" else "archived",
+                    status_override=(
+                        "published"
+                        if binding.status == "active" and row.status == "published"
+                        else "archived"
+                    ),
                 )
             )
         return visible_rows
     rows = db.exec(
-        select(GeneralSkill).where(GeneralSkill.tenant_id == tenant_id).order_by(GeneralSkill.updated_at.desc())
+        select(GeneralSkill)
+        .where(GeneralSkill.tenant_id == tenant_id)
+        .order_by(GeneralSkill.updated_at.desc())
     ).all()
     rows = [row for row in rows if is_open_gallery_resource(db, tenant_id, "general_skill", row)]
     return [general_skill_read(row) for row in rows]
 
 
-@router.get("/{slug}", response_model=GeneralSkillRead, dependencies=[Depends(require_agent_scope_viewer)])
+@router.get(
+    "/{slug}", response_model=GeneralSkillRead, dependencies=[Depends(require_agent_scope_viewer)]
+)
 def get_general_skill(
     slug: str,
     tenant_id: str = Query(...),
@@ -450,7 +495,7 @@ def publish_general_skill(
             tenant_id,
             agent.id,
             row.id,
-            metadata_json=user_creator_metadata(current_user, row.metadata_json or {}),
+            metadata_json=row.metadata_json or {},
         )
         binding.status = "active"
         binding.updated_at = utc_now()
@@ -498,6 +543,8 @@ def archive_general_skill(
     row.status = "archived"
     row.updated_at = utc_now()
     db.add(row)
+    db.flush()
+    ensure_open_gallery_binding(db, tenant_id, "general_skill", row.id, "inactive")
     db.commit()
     db.refresh(row)
     return general_skill_read(row)
@@ -549,7 +596,9 @@ def run_general_skill(
     require_agent_scope_viewer(request.tenant_id, request.agent_id, current_user, db)
     _ensure_general_skill_visible(db, request.tenant_id, skill, request.agent_id)
     model_config = _get_request_model(db, request.tenant_id, request.model_config_id)
-    return GeneralSkillRunner().run(skill, request.query, model_config, current_user.id, request.max_attempts)
+    return GeneralSkillRunner().run(
+        skill, request.query, model_config, current_user.id, request.max_attempts
+    )
 
 
 @router.post("/{slug}/run/stream")
@@ -591,13 +640,19 @@ def run_general_skill_stream(
                 events.put(None)
 
         threading.Thread(target=worker, daemon=True).start()
-        yield _sse("stream_started", {"skill_slug": skill_snapshot.slug, "max_attempts": request.max_attempts})
+        yield _sse(
+            "stream_started",
+            {"skill_slug": skill_snapshot.slug, "max_attempts": request.max_attempts},
+        )
         last_worker_event_at = time.monotonic()
         while True:
             try:
                 item = events.get(timeout=5)
             except queue.Empty:
-                if time.monotonic() - last_worker_event_at > GENERAL_SKILL_STREAM_IDLE_TIMEOUT_SECONDS:
+                if (
+                    time.monotonic() - last_worker_event_at
+                    > GENERAL_SKILL_STREAM_IDLE_TIMEOUT_SECONDS
+                ):
                     yield _sse(
                         "error",
                         {
@@ -646,7 +701,9 @@ def _ensure_general_skill_visible(
             AgentResourceBinding.resource_id == row.id,
         )
     ).first()
-    if not binding or not is_bound_resource_visible_for_agent(db, tenant_id, "general_skill", row, binding):
+    if not binding or not is_bound_resource_visible_for_agent(
+        db, tenant_id, "general_skill", row, binding
+    ):
         raise HTTPException(status_code=404, detail="General skill not visible to this agent")
 
 
@@ -673,10 +730,14 @@ def _ensure_general_skill_binding(
         "created_from_agent": True,
     }
     if row:
-        row.metadata_json = {
+        merged_metadata = {
             **(row.metadata_json or {}),
             **metadata,
         }
+        row.metadata_json = metadata_preserving_creator(
+            row.metadata_json,
+            merged_metadata,
+        )
         return row
     row = AgentResourceBinding(
         tenant_id=tenant_id,
@@ -691,7 +752,9 @@ def _ensure_general_skill_binding(
     return row
 
 
-def _general_skill_editable_by_agent(db: Session, tenant_id: str, agent_id: str, row: GeneralSkill) -> bool:
+def _general_skill_editable_by_agent(
+    db: Session, tenant_id: str, agent_id: str, row: GeneralSkill
+) -> bool:
     metadata = row.metadata_json or {}
     if metadata.get("owner_agent_id") == agent_id and metadata.get("scope") == "agent_private":
         return True
@@ -724,7 +787,9 @@ def _get_default_model(db: Session, tenant_id: str) -> ModelConfig:
     return model_config
 
 
-def _get_request_model(db: Session, tenant_id: str, model_config_id: str | None = None) -> ModelConfig:
+def _get_request_model(
+    db: Session, tenant_id: str, model_config_id: str | None = None
+) -> ModelConfig:
     if not model_config_id:
         return _get_default_model(db, tenant_id)
     model_config = db.get(ModelConfig, model_config_id)
@@ -777,7 +842,9 @@ def _normalize_skill_files(
 ) -> list[GeneralSkillFile]:
     if not requested_files:
         content = _required_text(markdown, "markdown")
-        return [GeneralSkillFile(path="SKILL.md", content=content, size=len(content.encode("utf-8")))]
+        return [
+            GeneralSkillFile(path="SKILL.md", content=content, size=len(content.encode("utf-8")))
+        ]
     cleaned_files: list[GeneralSkillFile] = []
     for file in requested_files:
         path = _clean_package_path(file.path)
@@ -801,7 +868,7 @@ def _normalize_skill_files(
     for file in cleaned_files:
         if file.path == base_dir or not file.path.startswith(prefix):
             continue
-        normalized.append(file.model_copy(update={"path": file.path[len(prefix):]}))
+        normalized.append(file.model_copy(update={"path": file.path[len(prefix) :]}))
     return normalized
 
 
@@ -814,7 +881,9 @@ def _clean_package_path(path: str) -> str:
 
 
 def _find_skill_file(files: list[GeneralSkillFile]) -> GeneralSkillFile | None:
-    return next((file for file in files if file.path.rsplit("/", 1)[-1].lower() == "skill.md"), None)
+    return next(
+        (file for file in files if file.path.rsplit("/", 1)[-1].lower() == "skill.md"), None
+    )
 
 
 def _skill_markdown_from_files(files: list[GeneralSkillFile]) -> str:
@@ -828,7 +897,13 @@ def _skill_files_or_markdown(row: GeneralSkill) -> list[dict[str, object]]:
     files = row.skill_files_json or []
     if files:
         return files
-    return [{"path": "SKILL.md", "content": row.skill_markdown, "size": len(row.skill_markdown.encode("utf-8"))}]
+    return [
+        {
+            "path": "SKILL.md",
+            "content": row.skill_markdown,
+            "size": len(row.skill_markdown.encode("utf-8")),
+        }
+    ]
 
 
 def _parse_skill_metadata(markdown: str) -> dict[str, object]:
@@ -853,11 +928,7 @@ def _parse_skill_metadata(markdown: str) -> dict[str, object]:
 def _parse_metadata_value(value: str) -> object:
     cleaned = value.strip().strip("'\"")
     if cleaned.startswith("[") and cleaned.endswith("]"):
-        return [
-            item.strip().strip("'\"")
-            for item in cleaned[1:-1].split(",")
-            if item.strip()
-        ]
+        return [item.strip().strip("'\"") for item in cleaned[1:-1].split(",") if item.strip()]
     return cleaned
 
 
@@ -878,7 +949,11 @@ def _unique_slug(db: Session, tenant_id: str, base_slug: str) -> str:
     base = _slugify(base_slug)
     candidate = base
     suffix = 2
-    while db.exec(select(GeneralSkill).where(GeneralSkill.tenant_id == tenant_id, GeneralSkill.slug == candidate)).first():
+    while db.exec(
+        select(GeneralSkill).where(
+            GeneralSkill.tenant_id == tenant_id, GeneralSkill.slug == candidate
+        )
+    ).first():
         candidate = f"{base}-{suffix}"
         suffix += 1
     return candidate
@@ -909,7 +984,9 @@ def _decode_base64_payload(value: str) -> bytes:
     try:
         data = base64.b64decode(cleaned, validate=True)
     except (binascii.Error, ValueError) as exc:
-        raise HTTPException(status_code=400, detail="Uploaded skill package content is not valid base64") from exc
+        raise HTTPException(
+            status_code=400, detail="Uploaded skill package content is not valid base64"
+        ) from exc
     if not data:
         raise HTTPException(status_code=400, detail="Uploaded skill package is empty")
     if len(data) > MAX_CLAWHUB_PACKAGE_BYTES:
@@ -1002,7 +1079,9 @@ def _load_remote_skill_source(url: str, visited: set[str] | None = None) -> list
     if normalized_url in visited:
         raise HTTPException(status_code=400, detail="Remote skill source redirects to itself")
     if len(visited) >= 5:
-        raise HTTPException(status_code=400, detail="Remote skill source contains too many indirections")
+        raise HTTPException(
+            status_code=400, detail="Remote skill source contains too many indirections"
+        )
     visited.add(normalized_url)
     if parsed.netloc in GITHUB_HOSTS or parsed.netloc == RAW_GITHUB_HOST:
         return _load_github_skill_source(parsed)
@@ -1044,7 +1123,10 @@ def _load_github_skill_source(parsed) -> list[GeneralSkillFile]:
     parts = [part for part in parsed.path.strip("/").split("/") if part]
     if parsed.netloc == RAW_GITHUB_HOST:
         if len(parts) < 4:
-            raise HTTPException(status_code=400, detail="Raw GitHub source must include owner, repo, branch and path")
+            raise HTTPException(
+                status_code=400,
+                detail="Raw GitHub source must include owner, repo, branch and path",
+            )
         owner, repo, branch = parts[0], parts[1], parts[2]
         file_path = "/".join(parts[3:])
         data, content_type = _download_url(parsed.geturl())
@@ -1057,7 +1139,9 @@ def _load_github_skill_source(parsed) -> list[GeneralSkillFile]:
             )
         ]
     if len(parts) < 2:
-        raise HTTPException(status_code=400, detail="GitHub source must include owner and repository")
+        raise HTTPException(
+            status_code=400, detail="GitHub source must include owner and repository"
+        )
     owner, repo = parts[0], parts[1].removesuffix(".git")
     if len(parts) >= 3 and parts[2] == "archive":
         data, _ = _download_url(parsed.geturl())
@@ -1067,7 +1151,14 @@ def _load_github_skill_source(parsed) -> list[GeneralSkillFile]:
         file_path = "/".join(parts[4:])
         raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{file_path}"
         data, content_type = _download_url(raw_url)
-        return [GeneralSkillFile(path=file_path.rsplit("/", 1)[-1] or "SKILL.md", content=_decode_text(data), size=len(data), mime_type=content_type or "text/markdown")]
+        return [
+            GeneralSkillFile(
+                path=file_path.rsplit("/", 1)[-1] or "SKILL.md",
+                content=_decode_text(data),
+                size=len(data),
+                mime_type=content_type or "text/markdown",
+            )
+        ]
     if len(parts) >= 5 and parts[2] == "tree":
         branch = parts[3]
         subtree = "/".join(parts[4:])
@@ -1082,7 +1173,9 @@ def _load_github_skill_source(parsed) -> list[GeneralSkillFile]:
     return _download_github_archive(owner, repo, ["main", "master"], subtree)
 
 
-def _download_github_directory(owner: str, repo: str, branch: str, subtree: str = "") -> list[GeneralSkillFile]:
+def _download_github_directory(
+    owner: str, repo: str, branch: str, subtree: str = ""
+) -> list[GeneralSkillFile]:
     try:
         return _download_github_directory_contents(owner, repo, branch, subtree)
     except HTTPException as api_error:
@@ -1092,7 +1185,9 @@ def _download_github_directory(owner: str, repo: str, branch: str, subtree: str 
             raise api_error
 
 
-def _download_github_directory_contents(owner: str, repo: str, branch: str, subtree: str = "") -> list[GeneralSkillFile]:
+def _download_github_directory_contents(
+    owner: str, repo: str, branch: str, subtree: str = ""
+) -> list[GeneralSkillFile]:
     normalized_subtree = subtree.strip("/")
     files: list[GeneralSkillFile] = []
     visited_dirs: set[str] = set()
@@ -1151,7 +1246,9 @@ def _download_github_directory_contents(owner: str, repo: str, branch: str, subt
     return files
 
 
-def _download_github_archive(owner: str, repo: str, branches: list[str], subtree: str = "") -> list[GeneralSkillFile]:
+def _download_github_archive(
+    owner: str, repo: str, branches: list[str], subtree: str = ""
+) -> list[GeneralSkillFile]:
     errors: list[str] = []
     for branch in branches:
         archive_url = f"https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip"
@@ -1160,7 +1257,9 @@ def _download_github_archive(owner: str, repo: str, branches: list[str], subtree
             return _files_from_zip(data, subtree=subtree)
         except HTTPException as exc:
             errors.append(str(exc.detail))
-    raise HTTPException(status_code=400, detail=f"Unable to download GitHub skill package: {'; '.join(errors)}")
+    raise HTTPException(
+        status_code=400, detail=f"Unable to download GitHub skill package: {'; '.join(errors)}"
+    )
 
 
 def _download_json(url: str) -> object:
@@ -1168,7 +1267,9 @@ def _download_json(url: str) -> object:
     try:
         return json.loads(_decode_text(data))
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail="Remote GitHub API returned invalid JSON") from exc
+        raise HTTPException(
+            status_code=400, detail="Remote GitHub API returned invalid JSON"
+        ) from exc
 
 
 def _looks_like_markdown_source(path: str, content_type: str) -> bool:
@@ -1184,19 +1285,20 @@ def _looks_like_markdown_source(path: str, content_type: str) -> bool:
 
 def _looks_like_html_response(text: str, content_type: str) -> bool:
     stripped = text.lstrip().lower()
-    return "text/html" in content_type or stripped.startswith("<!doctype html") or stripped.startswith("<html")
+    return (
+        "text/html" in content_type
+        or stripped.startswith("<!doctype html")
+        or stripped.startswith("<html")
+    )
 
 
 def _extract_skill_source_from_html(text: str, base_url: str) -> str | None:
-    normalized = (
-        unescape(text)
-        .replace("\\/", "/")
-        .replace("\\u002F", "/")
-        .replace("\\u002f", "/")
-    )
+    normalized = unescape(text).replace("\\/", "/").replace("\\u002F", "/").replace("\\u002f", "/")
     candidates: list[str] = []
     candidates.extend(re.findall(r"https?://[^\s\"'<>]+", normalized))
-    for match in re.finditer(r"""(?:href|src)\s*=\s*["']([^"']+)["']""", normalized, flags=re.IGNORECASE):
+    for match in re.finditer(
+        r"""(?:href|src)\s*=\s*["']([^"']+)["']""", normalized, flags=re.IGNORECASE
+    ):
         candidates.append(urljoin(base_url, match.group(1)))
     seen: set[str] = set()
     for candidate in candidates:
@@ -1236,7 +1338,9 @@ def _download_url(url: str) -> tuple[bytes, str]:
             content_type = response.headers.get("content-type", "")
             data = response.read(MAX_CLAWHUB_PACKAGE_BYTES + 1)
     except HTTPError as exc:
-        raise HTTPException(status_code=400, detail=f"Download failed with HTTP {exc.code}") from exc
+        raise HTTPException(
+            status_code=400, detail=f"Download failed with HTTP {exc.code}"
+        ) from exc
     except URLError as exc:
         raise HTTPException(status_code=400, detail=f"Download failed: {exc.reason}") from exc
     except TimeoutError as exc:
@@ -1249,10 +1353,18 @@ def _download_url(url: str) -> tuple[bytes, str]:
 def _files_from_zip(data: bytes, subtree: str = "") -> list[GeneralSkillFile]:
     normalized_subtree = subtree.strip("/")
     with zipfile.ZipFile(BytesIO(data)) as archive:
-        names = [name for name in archive.namelist() if not name.endswith("/") and not _skip_package_path(name)]
+        names = [
+            name
+            for name in archive.namelist()
+            if not name.endswith("/") and not _skip_package_path(name)
+        ]
         skill_candidates = [name for name in names if name.rsplit("/", 1)[-1].lower() == "skill.md"]
         if normalized_subtree:
-            skill_candidates = [name for name in skill_candidates if _zip_relative_path(name, normalized_subtree) is not None]
+            skill_candidates = [
+                name
+                for name in skill_candidates
+                if _zip_relative_path(name, normalized_subtree) is not None
+            ]
         if not skill_candidates:
             raise HTTPException(status_code=400, detail="Package does not contain SKILL.md")
         base = skill_candidates[0].rsplit("/", 1)[0] if "/" in skill_candidates[0] else ""
@@ -1294,7 +1406,9 @@ def _zip_relative_path(name: str, subtree: str) -> str | None:
 
 def _skip_package_path(path: str) -> bool:
     parts = path.split("/")
-    return any(part in {"__MACOSX", ".git", "node_modules", ".venv", "dist", "build"} for part in parts)
+    return any(
+        part in {"__MACOSX", ".git", "node_modules", ".venv", "dist", "build"} for part in parts
+    )
 
 
 def _decode_text(data: bytes) -> str:
@@ -1315,7 +1429,9 @@ def _guess_mime_type(path: str) -> str:
 
 def _validate_slug(value: str) -> None:
     if any(char.isspace() for char in value) or "/" in value:
-        raise HTTPException(status_code=400, detail="General skill slug cannot contain spaces or slashes")
+        raise HTTPException(
+            status_code=400, detail="General skill slug cannot contain spaces or slashes"
+        )
 
 
 def _sse(event: object, data: object) -> str:

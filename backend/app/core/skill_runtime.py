@@ -26,7 +26,7 @@ class SkillRuntime:
         _sanitize_decision_slots(decision)
         session.slots_json = strip_router_generated_message_slots(session.slots_json)
         session.pending_tasks_json = _sanitize_task_frames(session.pending_tasks_json)
-        session.skill_stack_json = _sanitize_task_frames(session.skill_stack_json)
+        session.skill_stack_json = []
         self._apply_task_updates(session, decision.task_updates)
         self._append_pending_tasks(session, [*decision.pending_tasks, *decision.created_tasks])
         session.resume_after_answer_json = None
@@ -34,23 +34,14 @@ class SkillRuntime:
         selected_frame = self._take_task_frame(session, decision.selected_task_id)
         selected_frame = _frame_with_slot_hints(selected_frame, decision.slot_hints)
 
-        decision_name = _decision_alias(decision.decision)
+        decision_name = decision.decision
         if decision_name in {"create_pending", "update_pending", "answer_only", "clarify"}:
             pass
-        elif decision_name in {"handoff", "handoff_human"}:
+        elif decision_name == "handoff_human":
             session.status = "handoff"
-        elif decision_name in {"start_skill", "continue_current_skill", "jump_within_current_skill", "switch_to_pending"}:
+        elif decision_name in {"start_new_task", "continue_active", "switch_to_pending"}:
             self._activate_decision_target(session, decision, selected_frame)
-        elif decision_name == "suspend_current_and_start_new_skill":
-            self._pause_current_and_activate_target(session, decision, selected_frame)
-        elif decision_name in {"answer_related_question_then_resume", "answer_chitchat_then_resume"}:
-            self._pause_current_and_activate_target(
-                session,
-                decision,
-                selected_frame,
-                resume_policy="after_temporary_answer",
-            )
-        elif decision_name in {"exit_current_skill", "complete_task"}:
+        elif decision_name == "complete_task":
             if decision.selected_task_id:
                 self._remove_task_frame(session, decision.selected_task_id)
             else:
@@ -62,45 +53,13 @@ class SkillRuntime:
             if active_task_id and not awaiting_input.get("task_id"):
                 awaiting_input["task_id"] = active_task_id
             session.awaiting_input_json = awaiting_input
-        if decision.slot_hints and decision_name != "exit_current_skill":
+        if decision.slot_hints and decision_name != "complete_task":
             session.slots_json = strip_router_generated_message_slots(
                 {**(session.slots_json or {}), **dict(decision.slot_hints)}
             )
 
         session.updated_at = utc_now()
         return session
-
-    def pop_next_pending_task(self, session: ChatSession) -> RouterDecision | None:
-        """Compatibility helper; agent loop no longer calls this automatically."""
-        tasks = list(session.pending_tasks_json or [])
-        while tasks:
-            task = tasks.pop(0)
-            if not isinstance(task, dict):
-                continue
-            skill_id = task.get("skill_id") or task.get("target_skill_id")
-            if not skill_id:
-                continue
-            session.pending_tasks_json = tasks
-            raw_slot_hints = (
-                task.get("slots")
-                if isinstance(task.get("slots"), dict)
-                else task.get("slot_hints")
-                if isinstance(task.get("slot_hints"), dict)
-                else {}
-            )
-            return RouterDecision(
-                decision="switch_to_pending",
-                selected_task_id=task.get("task_id"),
-                target_skill_id=str(skill_id),
-                target_step_id=task.get("step_id") or task.get("target_step_id"),
-                confidence=float(task.get("confidence") or 0.0),
-                user_intent=task.get("intent_summary") or task.get("user_intent"),
-                reason=task.get("reason"),
-                source_message=task.get("source_message"),
-                slot_hints=strip_router_generated_message_slots(raw_slot_hints),
-            )
-        session.pending_tasks_json = []
-        return None
 
     def complete_current_skill(self, session: ChatSession) -> ChatSession:
         active_task_id = _active_task_id(session)
@@ -113,29 +72,11 @@ class SkillRuntime:
                 completed_frame,
                 exclude_task_id=active_task_id,
             )
-            session.skill_stack_json = _without_equivalent_task_frames(
-                session.skill_stack_json,
-                completed_frame,
-                exclude_task_id=active_task_id,
-            )
-        session.skill_stack_json = _without_task_or_skill(
-            session.skill_stack_json,
-            task_id=active_task_id,
-        )
+        session.skill_stack_json = []
         session.active_skill_id = None
         session.active_step_id = None
         session.slots_json = {}
         session.awaiting_input_json = None
-        session.resume_after_answer_json = None
-        session.updated_at = utc_now()
-        return session
-
-    def finish_interrupt_response(self, session: ChatSession) -> ChatSession:
-        """Deprecated compatibility hook.
-
-        Interrupt/resume state is now represented as task frames. There is no implicit
-        restore after a response has been generated.
-        """
         session.resume_after_answer_json = None
         session.updated_at = utc_now()
         return session
@@ -161,58 +102,12 @@ class SkillRuntime:
             session.active_skill_id = decision.target_skill_id
             session.slots_json = strip_router_generated_message_slots(decision.slot_hints)
             _set_active_task_id(session, None)
-        if decision.target_skill_id and decision.decision in {"start_skill", "start_new_task"}:
+        if decision.target_skill_id and decision.decision == "start_new_task":
             session.active_skill_id = decision.target_skill_id
             session.slots_json = strip_router_generated_message_slots(decision.slot_hints)
             _set_active_task_id(session, None)
         if decision.target_step_id:
             session.active_step_id = decision.target_step_id
-
-    def _pause_current_and_activate_target(
-        self,
-        session: ChatSession,
-        decision: RouterDecision,
-        selected_frame: dict[str, Any] | None,
-        resume_policy: str | None = None,
-    ) -> None:
-        if not selected_frame and not decision.target_skill_id:
-            return
-        current_frame = _current_frame(session, status="paused", resume_policy=resume_policy)
-        if current_frame and (
-            not selected_frame
-            or current_frame.get("skill_id") != selected_frame.get("skill_id")
-            or current_frame.get("task_id") != selected_frame.get("task_id")
-        ):
-            session.skill_stack_json = _upsert_frame(session.skill_stack_json, current_frame)
-
-        if selected_frame:
-            _activate_frame(session, selected_frame)
-            return
-
-        if current_frame and (
-            decision.target_skill_id == current_frame.get("skill_id")
-            or decision.target_skill_id == current_frame.get("target_skill_id")
-        ):
-            session.active_skill_id = decision.target_skill_id
-            session.active_step_id = decision.target_step_id
-            session.slots_json = strip_router_generated_message_slots(
-                {**(session.slots_json or {}), **dict(decision.slot_hints or {})}
-            )
-            _set_active_task_id(session, None)
-            return
-
-        target_frame, stack = _pop_last_skill_frame(session.skill_stack_json, decision.target_skill_id)
-        session.skill_stack_json = stack
-        if target_frame:
-            _activate_frame(session, _frame_with_slot_hints(target_frame, decision.slot_hints))
-            if decision.target_step_id:
-                session.active_step_id = decision.target_step_id
-            return
-
-        session.active_skill_id = decision.target_skill_id
-        session.active_step_id = decision.target_step_id
-        session.slots_json = strip_router_generated_message_slots(decision.slot_hints)
-        _set_active_task_id(session, None)
 
     def _append_pending_tasks(self, session: ChatSession, tasks: list[PendingTask]) -> None:
         if not tasks:
@@ -240,11 +135,9 @@ class SkillRuntime:
         if not updates:
             return
         pending = list(session.pending_tasks_json or [])
-        stack = list(session.skill_stack_json or [])
         for update in updates:
             if update.remove or update.status in {"removed", "completed", "cancelled"}:
                 pending = _without_task_or_skill(pending, task_id=update.task_id)
-                stack = _without_task_or_skill(stack, task_id=update.task_id)
                 continue
             patch = {
                 key: value
@@ -268,9 +161,7 @@ class SkillRuntime:
                     patch["slots"] = slot_hints
                     patch["slot_hints"] = slot_hints
             pending = _patch_task_frame(pending, update.task_id, patch)
-            stack = _patch_task_frame(stack, update.task_id, patch)
         session.pending_tasks_json = pending
-        session.skill_stack_json = stack
 
     def _take_task_frame(self, session: ChatSession, task_id: str | None) -> dict[str, Any] | None:
         if not task_id:
@@ -279,25 +170,12 @@ class SkillRuntime:
         if frame:
             session.pending_tasks_json = pending
             return frame
-        frame, stack = _pop_task_frame(session.skill_stack_json, task_id)
-        if frame:
-            session.skill_stack_json = stack
-            return frame
         return None
 
     def _remove_task_frame(self, session: ChatSession, task_id: str | None) -> None:
         if not task_id:
             return
         session.pending_tasks_json = _without_task_or_skill(session.pending_tasks_json, task_id=task_id)
-        session.skill_stack_json = _without_task_or_skill(session.skill_stack_json, task_id=task_id)
-
-
-def _decision_alias(decision: str) -> str:
-    aliases = {
-        "continue_active": "continue_current_skill",
-        "start_new_task": "start_skill",
-    }
-    return aliases.get(decision, decision)
 
 
 def _sanitize_decision_slots(decision: RouterDecision) -> None:

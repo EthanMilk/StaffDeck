@@ -69,7 +69,7 @@ import {
   canManageEmployeeAgent,
   openGalleryAgentId,
   openGalleryImportSourceOptions,
-  resourceCreatorNameOrAdmin,
+  resourceCreatorName,
   visibleEmployeeAgents,
 } from '../employee';
 import { useClientPagination } from '../hooks/useClientPagination';
@@ -396,7 +396,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
         row.slug,
         row.description,
         row.homepage,
-        resourceCreatorNameOrAdmin(row),
+        resourceCreatorName(row),
       ].filter(Boolean).join(' ').toLowerCase();
       return matchesStatus && (!keyword || haystack.includes(keyword));
     });
@@ -461,7 +461,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
     try {
       const agents = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
       const firstSource = mode === 'plaza'
-        ? openGalleryAgentId(agents, TENANT_ID)
+        ? openGalleryAgentId(agents)
         : visibleEmployeeAgents(agents, currentUser, { activeOnly: true, excludeAgentId: agentId })[0]?.id || '';
       setAgentImportMode(mode);
       setAgentImportAgents(agents);
@@ -645,8 +645,8 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
       title: '创建者',
       width: 120,
       render: (row) => (
-        <span className="block truncate text-[#858b9c]" title={resourceCreatorNameOrAdmin(row)}>
-          {resourceCreatorNameOrAdmin(row)}
+        <span className="block truncate text-[#858b9c]" title={resourceCreatorName(row)}>
+          {resourceCreatorName(row) || '-'}
         </span>
       ),
     },
@@ -682,7 +682,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
           <div className="min-w-0">
             <strong className="block truncate text-[14px] font-semibold text-[#18181a]">{row.name}</strong>
             <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">{row.slug}</span>
-            <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">创建者：{resourceCreatorNameOrAdmin(row)}</span>
+            <span className="mt-[2px] block truncate text-[12px] text-[#858b9c]">创建者：{resourceCreatorName(row) || '-'}</span>
           </div>
           {renderActions(row)}
         </div>
@@ -845,7 +845,7 @@ export default function GeneralSkillsPage({ embedded = false, currentUser, onLog
         title={agentImportMode === 'plaza' ? '从广场复制技能' : '从数字员工复制技能'}
         sourcePlaceholder={agentImportMode === 'plaza' ? '选择开放广场' : '选择复制来源'}
         sources={agentImportMode === 'plaza'
-          ? openGalleryImportSourceOptions(agentImportAgents, '开放广场', TENANT_ID)
+          ? openGalleryImportSourceOptions(agentImportAgents, '开放广场')
           : visibleEmployeeAgents(agentImportAgents, currentUser, { activeOnly: true, excludeAgentId: agentId })
             .map((item) => ({ value: item.id, label: item.name }))}
         sourceId={agentImportSourceAgentId}
@@ -979,7 +979,7 @@ function resultSucceeded(result: Partial<GeneralSkillRunResponse> | null): boole
 
 function isAbortError(error: unknown): boolean {
   if (error instanceof DOMException && error.name === 'AbortError') return true;
-  return error instanceof Error && (error.name === 'AbortError' || error.message.toLowerCase().includes('abort'));
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 function languageFromFilePath(path?: string): string {
@@ -1513,7 +1513,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
       try {
         const agents = await api.get<AgentProfileRead[]>(`/api/enterprise/agents?tenant_id=${TENANT_ID}`);
         const firstSource = mode === 'plaza'
-          ? openGalleryAgentId(agents, TENANT_ID)
+          ? openGalleryAgentId(agents)
           : visibleEmployeeAgents(agents, currentUser, { activeOnly: true, excludeAgentId: agentId })[0]?.id || '';
         setAgentImportMode(mode);
         setAgentImportAgents(agents);
@@ -2342,7 +2342,7 @@ function GeneralSkillEditorPage({ mode, currentUser, onLogout }: { mode: 'new' |
         title={agentImportMode === 'plaza' ? '从广场复制技能' : '从数字员工复制技能'}
         sourcePlaceholder={agentImportMode === 'plaza' ? '选择开放广场' : '选择复制来源'}
         sources={agentImportMode === 'plaza'
-          ? openGalleryImportSourceOptions(agentImportAgents, '开放广场', TENANT_ID)
+          ? openGalleryImportSourceOptions(agentImportAgents, '开放广场')
           : visibleEmployeeAgents(agentImportAgents, currentUser, { activeOnly: true, excludeAgentId: agentId })
             .map((item) => ({ value: item.id, label: item.name }))}
         sourceId={agentImportSourceAgentId}

@@ -23,28 +23,6 @@ JSON_REPAIR_ATTEMPTS = 3
 EMPTY_RESPONSE_RETRIES = 2
 EMPTY_RESPONSE_MESSAGE = "Model returned an empty response"
 DEFAULT_MODEL_API_TIMEOUT_SECONDS = 600.0
-MULTIMODAL_UNSUPPORTED_MESSAGE = "该模型目前不支持多模态输入"
-_VISION_MODEL_PATTERNS = (
-    r"\bgpt-4o\b",
-    r"\bgpt-4\.1\b",
-    r"\bgpt-5\b",
-    r"\bo3\b",
-    r"\bo4\b",
-    r"\bclaude-(3|4)\b",
-    r"\bgemini\b",
-    r"\bglm-4v\b",
-    r"\bqwen[^,\s]*[-_./]vl\b",
-    r"\bqvq\b",
-    r"\bvl[-_./]max\b",
-    r"\bvision\b",
-    r"\bvisual\b",
-    r"\bomni\b",
-    r"\bllava\b",
-    r"\binternvl\b",
-    r"\bminicpm[-_./]?v\b",
-    r"\bkimi[-_./]?vl\b",
-    r"\bdoubao[^,\s]*vision\b",
-)
 
 
 class LLMClient:
@@ -52,7 +30,9 @@ class LLMClient:
         api_key = decrypt_secret(model_config.api_key_encrypted)
         if not api_key:
             raise LLMError("Model API key is not configured")
-        self.timeout_seconds = get_settings().model_api_timeout_seconds or DEFAULT_MODEL_API_TIMEOUT_SECONDS
+        self.timeout_seconds = (
+            get_settings().model_api_timeout_seconds or DEFAULT_MODEL_API_TIMEOUT_SECONDS
+        )
         self.base_url = str(model_config.base_url or "")
         self.client = OpenAI(
             api_key=api_key,
@@ -70,8 +50,6 @@ class LLMClient:
         response_format: dict[str, str] | None = None,
     ) -> str:
         context_messages, serialized_payload = _project_context_messages(user_payload)
-        if _messages_include_images(context_messages) and not model_supports_images(self.model):
-            raise LLMError(MULTIMODAL_UNSUPPORTED_MESSAGE)
         serialized = json.dumps(serialized_payload, ensure_ascii=False)
         try:
             request: dict[str, Any] = {
@@ -102,10 +80,10 @@ class LLMClient:
                 raise
             raise LLMError(_provider_failure_detail(self, exc)) from exc
 
-    def generate_text_stream(self, system_prompt: str, user_payload: dict[str, Any]) -> Iterator[str]:
+    def generate_text_stream(
+        self, system_prompt: str, user_payload: dict[str, Any]
+    ) -> Iterator[str]:
         context_messages, serialized_payload = _project_context_messages(user_payload)
-        if _messages_include_images(context_messages) and not model_supports_images(self.model):
-            raise LLMError(MULTIMODAL_UNSUPPORTED_MESSAGE)
         serialized = json.dumps(serialized_payload, ensure_ascii=False)
         try:
             empty_diagnostics: list[str] = []
@@ -201,7 +179,10 @@ class LLMClient:
                         "字符串内部的双引号必须转义；不要输出 Markdown、解释、代码块或额外文本。"
                     ),
                 }
-        previews = "; ".join(f"attempt_{index + 1}_preview={_preview(output)!r}" for index, output in enumerate(outputs))
+        previews = "; ".join(
+            f"attempt_{index + 1}_preview={_preview(output)!r}"
+            for index, output in enumerate(outputs)
+        )
         raise LLMError(
             f"Model did not return valid JSON after {JSON_REPAIR_ATTEMPTS} repair attempts; {previews}"
         ) from last_error
@@ -527,14 +508,9 @@ def _empty_response(message: str) -> bool:
     return EMPTY_RESPONSE_MESSAGE.lower() in message.lower()
 
 
-def model_supports_images(model_config_or_name: Any) -> bool:
-    model = str(getattr(model_config_or_name, "model", model_config_or_name) or "").lower()
-    provider = str(getattr(model_config_or_name, "provider", "") or "").lower()
-    text = f"{provider} {model}"
-    return any(re.search(pattern, text) for pattern in _VISION_MODEL_PATTERNS)
-
-
-def _project_context_messages(user_payload: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _project_context_messages(
+    user_payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     payload = copy.deepcopy(user_payload)
     context = payload.get("conversation_context")
     if not isinstance(context, dict):
@@ -583,13 +559,3 @@ def _normalize_image_parts(value: Any) -> list[dict[str, Any]]:
                 image_url["detail"] = detail
             parts.append({"type": "image_url", "image_url": image_url})
     return parts
-
-
-def _messages_include_images(messages: list[dict[str, Any]]) -> bool:
-    for message in messages:
-        content = message.get("content")
-        if not isinstance(content, list):
-            continue
-        if any(isinstance(item, dict) and item.get("type") == "image_url" for item in content):
-            return True
-    return False

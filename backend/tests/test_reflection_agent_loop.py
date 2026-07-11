@@ -23,11 +23,11 @@ def test_reflection_switches_wrong_active_skill_without_suspending() -> None:
         ),
         session,
         [_skill("visitor_badge"), _skill("repair_ticket")],
-        previous_decision=RouterDecision(decision="continue_current_skill"),
+        previous_decision=RouterDecision(decision="continue_active"),
     )
 
     assert decision is not None
-    assert decision.decision == "start_skill"
+    assert decision.decision == "start_new_task"
     assert decision.target_skill_id == "repair_ticket"
 
 
@@ -78,12 +78,12 @@ def test_reflection_can_continue_completed_skill_when_still_active() -> None:
         ),
         session,
         [_skill("price_compare")],
-        previous_decision=RouterDecision(decision="continue_current_skill"),
+        previous_decision=RouterDecision(decision="continue_active"),
         completed_skill_ids_this_turn={"price_compare"},
     )
 
     assert decision is not None
-    assert decision.decision == "continue_current_skill"
+    assert decision.decision == "continue_active"
     assert decision.target_skill_id == "price_compare"
 
 
@@ -167,21 +167,23 @@ def test_reflection_tool_retry_preserves_router_decision_and_streams_tool_events
         active_step_id="check_refund_eligibility",
     )
     decision = RouterDecision(
-        decision="continue_current_skill",
+        decision="continue_active",
         target_skill_id="after_sales_refund",
         target_step_id="check_refund_eligibility",
         user_intent="申请退款",
     )
     stream_events: list[tuple[str, dict[str, object]]] = []
 
-    active_skill, returned_decision, step_result, tool_result = loop._retry_with_reflection_tool_call(
-        ChatTurnRequest(tenant_id="tenant_demo", message="我要退款"),
-        session,
-        None,
-        decision,
-        ToolCall(name="order.archive_query", arguments={"order_id": "ARCHIVE-1001"}),
-        "主工具未命中，尝试历史订单查询",
-        stream_events,
+    active_skill, returned_decision, step_result, tool_result = (
+        loop._retry_with_reflection_tool_call(
+            ChatTurnRequest(tenant_id="tenant_demo", message="我要退款"),
+            session,
+            None,
+            decision,
+            ToolCall(name="order.archive_query", arguments={"order_id": "ARCHIVE-1001"}),
+            "主工具未命中，尝试历史订单查询",
+            stream_events,
+        )
     )
 
     assert active_skill is None
@@ -200,7 +202,7 @@ def test_zero_reflection_rounds_skips_reflection_agent() -> None:
     loop.events = _FakeEvents()
     loop.reflection_agent = _RaisingReflectionAgent()
     session = ChatSession(id="session_test", tenant_id="tenant_demo")
-    decision = RouterDecision(decision="continue_current_skill", user_intent="申请退款")
+    decision = RouterDecision(decision="continue_active", user_intent="申请退款")
     step_result = StepAgentResult(is_step_completed=True)
     tool_result = ToolResult(tool_name="order.query", success=True, data={"found": False})
 
@@ -250,7 +252,7 @@ def test_successful_expected_tool_result_can_pass_reflection() -> None:
     loop.reflection_agent = _PassingReflectionAgent()
     loop.events = _FakeEvents()
     session = ChatSession(id="session_test", tenant_id="tenant_demo")
-    decision = RouterDecision(decision="continue_current_skill", user_intent="查询订单")
+    decision = RouterDecision(decision="continue_active", user_intent="查询订单")
     step_result = StepAgentResult(is_step_completed=True)
     tool_result = ToolResult(tool_name="order.query", success=True, data={"found": True})
 
@@ -306,7 +308,7 @@ def test_reflection_target_skill_is_scheduled_instead_of_skipped() -> None:
         slots_json={"product_name_1": "A1", "product_name_2": "A3"},
     )
     previous_decision = RouterDecision(
-        decision="continue_current_skill",
+        decision="continue_active",
         target_skill_id="purchase",
         user_intent="购买前比价",
     )
@@ -336,7 +338,7 @@ def test_reflection_target_skill_is_scheduled_instead_of_skipped() -> None:
     assert retried is True
     assert active_skill is not None
     assert active_skill.skill_id == "price_compare"
-    assert router_decision.decision == "start_skill"
+    assert router_decision.decision == "start_new_task"
     assert router_decision.target_skill_id == "price_compare"
     assert session.active_skill_id == "price_compare"
     assert session.active_step_id == "collect_products"
@@ -368,7 +370,13 @@ class _FakeEvents:
 
 
 class _FakeToolExecutor:
-    def execute(self, tenant_id: str, tool_call: ToolCall, active_skill_id: str | None) -> ToolResult:
+    def execute(
+        self,
+        tenant_id: str,
+        tool_call: ToolCall,
+        active_skill_id: str | None,
+        agent_id: str | None = None,
+    ) -> ToolResult:
         return ToolResult(
             tool_name=tool_call.name,
             success=True,
@@ -407,7 +415,14 @@ def _skill(skill_id: str) -> Skill:
         content_json={
             "skill_id": skill_id,
             "name": skill_id,
-            "nodes": [{"node_id": "start", "type": "collect_info", "name": "开始", "allowed_actions": ["ask_user"]}],
+            "nodes": [
+                {
+                    "node_id": "start",
+                    "type": "collect_info",
+                    "name": "开始",
+                    "allowed_actions": ["ask_user"],
+                }
+            ],
             "edges": [],
             "start_node_id": "start",
             "terminal_node_ids": ["start"],
