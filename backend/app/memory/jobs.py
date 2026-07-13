@@ -6,7 +6,7 @@ from sqlmodel import Session, select
 
 from app.async_jobs import AsyncJob, enqueue_async_job
 from app.db import engine
-from app.db.models import AgentEvent, ChatSession, ModelConfig
+from app.db.models import AgentEvent, ChatSession, Message, ModelConfig
 from app.memory.service import MemoryService, memory_read
 from app.observability import EventLog
 from app.observability.spans import bind_span_sink
@@ -17,20 +17,16 @@ from app.tools.tool_schema import ToolResult
 def enqueue_memory_capture(
     request: ChatTurnRequest,
     session_id: str,
-    reply: str,
     step_result: StepAgentResult,
     tool_result: ToolResult | None,
     model_config_id: str,
-    recent_messages: list[dict[str, str]],
 ) -> AsyncJob:
     payload = {
         "request": request.model_dump(mode="json"),
         "session_id": session_id,
-        "reply": reply,
         "step_result": step_result.model_dump(mode="json"),
         "tool_result": tool_result.model_dump(mode="json") if tool_result else None,
         "model_config_id": model_config_id,
-        "recent_messages": recent_messages,
     }
     return enqueue_async_job(
         "memory.capture_turn",
@@ -50,9 +46,6 @@ def run_memory_capture_job(payload: dict[str, Any]) -> None:
     model_config_id = str(payload["model_config_id"])
     step_result = StepAgentResult.model_validate(payload["step_result"])
     tool_result = ToolResult.model_validate(payload["tool_result"]) if payload.get("tool_result") else None
-    recent_messages = _normalize_recent_messages(payload.get("recent_messages"))
-    reply = str(payload.get("reply") or "")
-
     with Session(engine) as db:
         events = EventLog(db)
         chat_session = db.get(ChatSession, session_id)
@@ -97,6 +90,18 @@ def run_memory_capture_job(payload: dict[str, Any]) -> None:
             or latest_user_payload.get("message_id")
             or ""
         )
+        conversation_messages = _conversation_messages_for_turn(
+            db, request.tenant_id, session_id, turn_id
+        )
+        if not conversation_messages:
+            events.record(
+                request.tenant_id,
+                session_id,
+                "memory_error",
+                {"message": "后台 Memory 任务未找到本轮已落库的完整消息历史。"},
+            )
+            db.commit()
+            return
 
         def persist_span(event_type: str, event_payload: dict[str, Any]) -> None:
             traced_payload = dict(event_payload)
@@ -113,11 +118,10 @@ def run_memory_capture_job(payload: dict[str, Any]) -> None:
                 rows = MemoryService(db).capture_turn(
                     request,
                     chat_session,
-                    reply,
                     step_result,
                     tool_result,
                     model_config,
-                    recent_messages,
+                    conversation_messages,
                 )
         except Exception as exc:  # noqa: BLE001 - persist failure without affecting the request path.
             events.record(
@@ -140,15 +144,41 @@ def run_memory_capture_job(payload: dict[str, Any]) -> None:
         db.commit()
 
 
-def _normalize_recent_messages(value: Any) -> list[dict[str, str]]:
-    if not isinstance(value, list):
+def _conversation_messages_for_turn(
+    db: Session,
+    tenant_id: str,
+    session_id: str,
+    turn_id: str,
+) -> list[dict[str, str]]:
+    if not turn_id:
         return []
-    messages: list[dict[str, str]] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        role = str(item.get("role") or "").strip()
-        content = str(item.get("content") or "").strip()
-        if role and content:
-            messages.append({"role": role, "content": content})
-    return messages[-12:]
+    rows = list(
+        db.exec(
+            select(Message)
+            .where(Message.tenant_id == tenant_id, Message.session_id == session_id)
+            .order_by(Message.created_at.desc())
+            .limit(100)
+        ).all()
+    )
+    rows.reverse()
+    target_index = next(
+        (
+            index
+            for index in range(len(rows) - 1, -1, -1)
+            if rows[index].role == "assistant"
+            and str(
+                (rows[index].metadata_json or {}).get("turn_id")
+                or (rows[index].metadata_json or {}).get("user_message_id")
+                or ""
+            )
+            == turn_id
+        ),
+        None,
+    )
+    if target_index is None:
+        return []
+    return [
+        {"role": row.role, "content": row.content}
+        for row in rows[: target_index + 1]
+        if row.role in {"user", "assistant"} and row.content.strip()
+    ][-12:]

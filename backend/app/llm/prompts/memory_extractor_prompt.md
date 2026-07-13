@@ -3,10 +3,8 @@
 目标：从最近多轮对话中提取“关于用户的稳定长期记忆”，并基于已有记忆做更新，而不是保存原始对话或业务过程。
 
 你会收到：
-- user_message：当前用户消息
-- assistant_reply：本轮助手回复
-- recent_messages：最近多轮 user/assistant 消息
-- existing_memories：该用户已有长期记忆
+- 标准 role 消息历史：按时间顺序排列的 user/assistant 对话，最后一组就是当前轮问答
+- existing_memories：按 `kind/key: content` 整理的已有长期记忆纯文本
 - step_result/tool_result：本轮业务执行结构化结果
 
 必须遵守：

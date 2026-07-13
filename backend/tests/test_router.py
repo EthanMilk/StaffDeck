@@ -5,7 +5,7 @@ from app.db.models import ChatSession, Skill
 from app.llm import LLMClient, LLMError
 
 
-def test_router_payload_exposes_step_details_and_accepts_canonical_answer_only(monkeypatch):
+def test_router_payload_only_exposes_skill_routing_summary(monkeypatch):
     captured = {}
 
     def fake_init(self, model_config):  # noqa: ANN001
@@ -15,13 +15,14 @@ def test_router_payload_exposes_step_details_and_accepts_canonical_answer_only(m
         captured["system_prompt"] = system_prompt
         captured["payload"] = payload
         purchase = next(item for item in payload["available_skills"] if item["skill_id"] == "purchase")
-        assert purchase["required_info"] == ["user_name", "product_id", "quantity"]
-        assert purchase["nodes"][0]["instruction"] == "收集姓名、商品和数量。"
-        assert purchase["nodes"][0]["expected_user_info"] == ["user_name", "product_id", "quantity"]
-        assert purchase["nodes"][0]["allowed_actions"] == ["ask_user", "continue_flow"]
+        assert purchase == {
+            "skill_id": "purchase",
+            "name": "购买商品流程",
+            "description": "帮助用户购买商品。",
+            "trigger_intents": ["购买", "下单"],
+        }
         assert "不要让原则10吞掉复合意图" in system_prompt
-        assert "不要输出纯 clarify" in system_prompt
-        assert "应放入 slot_hints" in system_prompt
+        assert "不读取 SOP 节点图" in system_prompt
         return {
             "decision": "answer_only",
             "target_skill_id": "price_compare",
@@ -53,9 +54,9 @@ def test_router_payload_exposes_step_details_and_accepts_canonical_answer_only(m
     assert decision.target_skill_id == "price_compare"
     assert decision.target_step_id == "collect_products"
     assert captured["payload"]["current_session"]["active_skill_id"] == "purchase"
-    assert captured["payload"]["memory_context"] == [
-        {"kind": "profile", "content": "hm", "metadata": {"key": "preferred_name"}}
-    ]
+    assert captured["payload"]["memory_context"] == "- hm"
+    assert "knowledge_context" not in captured["payload"]["current_session"]
+    assert "tenant_id" not in captured["payload"]["current_session"]
 
 
 def test_router_accepts_ordered_pending_tasks(monkeypatch):
@@ -179,7 +180,12 @@ def test_task_scheduler_can_continue_price_compare_after_purchase_completion(mon
         price_compare = next(
             item for item in payload["available_skills"] if item["skill_id"] == "price_compare"
         )
-        assert price_compare["nodes"][0]["node_id"] == "collect_products"
+        assert price_compare == {
+            "skill_id": "price_compare",
+            "name": "商品比价服务",
+            "description": "比较两个商品的价格。",
+            "trigger_intents": ["比价", "价格对比"],
+        }
         return {
             "action": "run_tasks",
             "selected_task_ids": ["task_price_compare_a1_a3"],

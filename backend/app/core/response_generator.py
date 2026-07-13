@@ -4,6 +4,13 @@ import re
 from collections.abc import Iterator
 
 from app import paths
+from app.core.context_projection import (
+    compact_citation_hints,
+    compact_current_step,
+    compact_knowledge_context,
+    compact_memory_context,
+    compact_response_step_result,
+)
 from app.db.models import ChatSession, ModelConfig, Skill
 from app.knowledge.citations import knowledge_citations_from_results
 from app.llm import LLMClient
@@ -177,24 +184,24 @@ class ResponseGenerator:
         conversation_context: dict[str, object] | None = None,
     ) -> dict[str, object]:
         knowledge_context = self._current_knowledge_context(message, session, step_result)
+        compact_knowledge = compact_knowledge_context(knowledge_context)
         return {
             "user_message": message,
             "conversation_context": conversation_context or {},
-            "session": {
-                "active_skill_id": session.active_skill_id,
-                "active_step_id": session.active_step_id,
-                "slots": session.slots_json or {},
-                "awaiting_input": session.awaiting_input_json,
-                "pending_tasks": session.pending_tasks_json or [],
-                "knowledge_context": knowledge_context,
-            },
-            "active_skill": skill.content_json if skill else None,
+            "current_step": compact_current_step(
+                skill.content_json if skill else None, session.active_step_id
+            ),
             "progress": self._progress_payload(session, skill, step_result, tool_result),
-            "router_decision": router_decision.model_dump(),
-            "step_result": step_result.model_dump(),
+            "slots": session.slots_json or {},
+            "step_summary": compact_response_step_result(
+                step_result.model_dump(mode="json")
+            ),
             "tool_result": tool_result.model_dump() if tool_result else None,
-            "memory_context": memory_context or [],
-            "knowledge_citation_hints": knowledge_citations_from_results(knowledge_context),
+            "knowledge_results": compact_knowledge,
+            "memory_context": compact_memory_context(memory_context),
+            "knowledge_citation_hints": compact_citation_hints(
+                knowledge_citations_from_results(knowledge_context)
+            ),
             "response_rules": skill.content_json.get("response_rules", []) if skill else [],
         }
 

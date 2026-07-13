@@ -56,14 +56,14 @@ class LLMClient:
         )
         context_messages, serialized_payload = _project_context_messages(user_payload)
         serialized = json.dumps(serialized_payload, ensure_ascii=False)
+        request_messages = _request_messages(system_prompt, context_messages, serialized)
+        request_shape = _request_shape_metrics(
+            system_prompt, context_messages, serialized, request_messages
+        )
         try:
             request: dict[str, Any] = {
                 "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    *context_messages,
-                    {"role": "user", "content": serialized},
-                ],
+                "messages": request_messages,
                 "temperature": self.temperature,
                 "max_tokens": max_output_tokens,
             }
@@ -80,6 +80,7 @@ class LLMClient:
                     retry_count=attempt,
                     max_attempts=EMPTY_RESPONSE_RETRIES + 1,
                     max_output_tokens=max_output_tokens,
+                    **request_shape,
                 )
                 try:
                     completion = self.client.chat.completions.create(
@@ -120,6 +121,10 @@ class LLMClient:
         )
         context_messages, serialized_payload = _project_context_messages(user_payload)
         serialized = json.dumps(serialized_payload, ensure_ascii=False)
+        request_messages = _request_messages(system_prompt, context_messages, serialized)
+        request_shape = _request_shape_metrics(
+            system_prompt, context_messages, serialized, request_messages
+        )
         try:
             empty_diagnostics: list[str] = []
             for attempt in range(EMPTY_RESPONSE_RETRIES + 1):
@@ -132,6 +137,7 @@ class LLMClient:
                     retry_count=attempt,
                     max_attempts=EMPTY_RESPONSE_RETRIES + 1,
                     max_output_tokens=max_output_tokens,
+                    **request_shape,
                 )
                 pending_parts: list[str] = []
                 emitted_text = False
@@ -146,11 +152,7 @@ class LLMClient:
                 try:
                     stream = self.client.chat.completions.create(
                         model=self.model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            *context_messages,
-                            {"role": "user", "content": serialized},
-                        ],
+                        messages=request_messages,
                         temperature=self.temperature,
                         max_tokens=max_output_tokens,
                         stream=True,
@@ -312,6 +314,43 @@ def _completion_message_content(completion: Any) -> str:
     except (IndexError, TypeError, AttributeError):
         return ""
     return _content_text(content)
+
+
+def _request_shape_metrics(
+    system_prompt: str,
+    context_messages: list[dict[str, Any]],
+    serialized_payload: str,
+    request_messages: list[dict[str, Any]],
+) -> dict[str, int]:
+    context_chars = sum(
+        len(_content_text(message.get("content"))) for message in context_messages
+    )
+    request_chars = sum(
+        len(_content_text(message.get("content"))) for message in request_messages
+    )
+    return {
+        "system_prompt_chars": len(system_prompt),
+        "context_message_count": len(context_messages),
+        "context_text_chars": context_chars,
+        "payload_chars": len(serialized_payload),
+        "request_text_chars": request_chars,
+    }
+
+
+def _request_messages(
+    system_prompt: str,
+    context_messages: list[dict[str, Any]],
+    serialized_payload: str,
+) -> list[dict[str, Any]]:
+    system_content = system_prompt.rstrip()
+    if context_messages and serialized_payload != "{}":
+        system_content += f"\n\n当前执行状态（JSON）：\n{serialized_payload}"
+    messages: list[dict[str, Any]] = [{"role": "system", "content": system_content}]
+    if not context_messages:
+        messages.append({"role": "user", "content": serialized_payload})
+        return messages
+    messages.extend(context_messages)
+    return messages
 
 
 def _completion_span_metrics(completion: Any) -> dict[str, Any]:
@@ -621,12 +660,12 @@ def _project_context_messages(
     user_payload: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     payload = copy.deepcopy(user_payload)
-    context = payload.get("conversation_context")
+    context = payload.pop("conversation_context", None)
     if not isinstance(context, dict):
-        return [], payload
-    messages = context.pop("messages", [])
+        return [], _drop_empty_values(payload)
+    messages = context.get("messages", [])
     if not isinstance(messages, list):
-        return [], payload
+        return [], _drop_empty_values(payload)
     projected: list[dict[str, Any]] = []
     for message in messages:
         if not isinstance(message, dict):
@@ -648,7 +687,39 @@ def _project_context_messages(
             )
         else:
             projected.append({"role": role, "content": content})
-    return projected, payload
+    current_user_message = str(payload.get("user_message") or "").strip()
+    latest_user_message = next(
+        (
+            _content_text(message.get("content")).strip()
+            for message in reversed(projected)
+            if message.get("role") == "user"
+        ),
+        "",
+    )
+    if current_user_message and current_user_message == latest_user_message:
+        payload.pop("user_message", None)
+    return projected, _drop_empty_values(payload)
+
+
+def _drop_empty_values(value: Any) -> Any:
+    if isinstance(value, dict):
+        projected = {
+            key: _drop_empty_values(item)
+            for key, item in value.items()
+        }
+        return {
+            key: item
+            for key, item in projected.items()
+            if item is not None and item != "" and item != [] and item != {}
+        }
+    if isinstance(value, list):
+        projected = [_drop_empty_values(item) for item in value]
+        return [
+            item
+            for item in projected
+            if item is not None and item != "" and item != [] and item != {}
+        ]
+    return value
 
 
 def _normalize_image_parts(value: Any) -> list[dict[str, Any]]:

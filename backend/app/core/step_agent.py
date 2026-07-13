@@ -1,6 +1,15 @@
 from __future__ import annotations
 
 from app import paths
+from app.core.context_projection import (
+    compact_awaiting_input,
+    compact_conversation_context,
+    compact_knowledge_context,
+    compact_memory_context,
+    compact_pending_tasks,
+    compact_router_decision,
+    compact_step_skill_context,
+)
 from app.db.models import ChatSession, ModelConfig, Skill, Tool
 from app.llm import LLMClient, LLMError
 from app.observability.spans import llm_operation
@@ -25,19 +34,29 @@ class StepAgent:
         memory_context: list[dict[str, object]] | None = None,
         conversation_context: dict[str, object] | None = None,
     ) -> StepAgentResult:
+        compact_knowledge = compact_knowledge_context(session.knowledge_context_json or [])
+        compact_repair = _compact_repair_context(repair_context)
         payload = {
             "user_message": message,
-            "recent_messages": recent_messages or [],
-            "conversation_context": conversation_context or {},
-            "memory_context": memory_context or [],
-            "active_skill": skill.content_json if skill else None,
-            "active_step": _active_step(skill, session.active_step_id),
-            "knowledge_context": session.knowledge_context_json or [],
-            "router_decision": router_decision.model_dump() if router_decision else None,
+            "conversation_context": compact_conversation_context(conversation_context),
+            "memory_context": compact_memory_context(memory_context),
+            "active_skill": compact_step_skill_context(
+                skill.content_json,
+                session.active_step_id,
+                skill_id=skill.skill_id,
+                name=skill.name,
+                description=skill.description,
+            )
+            if skill
+            else None,
+            "knowledge_context": compact_knowledge,
+            "router_decision": compact_router_decision(
+                router_decision.model_dump(mode="json") if router_decision else None
+            ),
             "slots": _step_agent_slots(session.slots_json),
-            "awaiting_input": session.awaiting_input_json,
-            "pending_tasks": session.pending_tasks_json or [],
-            "repair_context": repair_context,
+            "awaiting_input": compact_awaiting_input(session.awaiting_input_json),
+            "pending_tasks": compact_pending_tasks(session.pending_tasks_json),
+            "repair_context": compact_repair,
             "available_tools": [
                 {
                     "name": tool.name,
@@ -65,16 +84,6 @@ class StepAgent:
             raise LLMError(f"Step agent returned invalid JSON schema: {exc}") from exc
 
 
-def _active_step(skill: Skill | None, active_step_id: str | None) -> dict[str, object] | None:
-    if not skill or not active_step_id:
-        return None
-    content = skill.content_json or {}
-    for node in content.get("nodes", []):
-        if isinstance(node, dict) and node.get("node_id") == active_step_id:
-            return _node_as_step(node)
-    return None
-
-
 def _step_agent_slots(slots: dict[str, object] | None) -> dict[str, object]:
     if not isinstance(slots, dict):
         return {}
@@ -85,17 +94,13 @@ def _step_agent_slots(slots: dict[str, object] | None) -> dict[str, object]:
     }
 
 
-def _node_as_step(node: dict[str, object]) -> dict[str, object]:
-    return {
-        "step_id": node.get("node_id"),
-        "node_id": node.get("node_id"),
-        "type": node.get("type"),
-        "name": node.get("name"),
-        "instruction": node.get("instruction"),
-        "optional": node.get("optional"),
-        "condition": node.get("condition"),
-        "expected_user_info": node.get("expected_user_info") or [],
-        "allowed_actions": node.get("allowed_actions") or [],
-        "knowledge_scope": node.get("knowledge_scope") or {},
-        "retry_policy": node.get("retry_policy") or {},
-    }
+def _compact_repair_context(
+    repair_context: dict[str, object] | None,
+) -> dict[str, object] | None:
+    if not isinstance(repair_context, dict):
+        return None
+    projected = dict(repair_context)
+    if projected.get("reason") == "knowledge_continuation":
+        projected.pop("knowledge_results", None)
+        projected["knowledge_results_available_in"] = "knowledge_context"
+    return projected

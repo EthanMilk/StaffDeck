@@ -2,8 +2,9 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.api.memories import clear_my_memories, list_memories
-from app.db.models import AgentProfile, ChatSession, MemoryRecord, ModelConfig, Tenant, User
+from app.db.models import AgentProfile, ChatSession, MemoryRecord, Message, ModelConfig, Tenant, User
 from app.llm.client import LLMClient
+from app.memory.jobs import _conversation_messages_for_turn
 from app.memory.service import MemoryService, memory_rows_for_read
 from app.session.session_schema import ChatTurnRequest, StepAgentResult
 
@@ -51,11 +52,13 @@ def test_memory_capture_uses_model_updates_and_deduplicates_profile_name(monkeyp
         saved = MemoryService(db).capture_turn(
             ChatTurnRequest(tenant_id="tenant_demo", user_id="user_demo", message="我叫xyq"),
             ChatSession(id="session_test", tenant_id="tenant_demo", user_id="user_demo"),
-            "好的，已记住您的称呼。",
             StepAgentResult(),
             None,
             ModelConfig(tenant_id="tenant_demo", name="demo", api_key_encrypted="", model="demo"),
-            [{"role": "user", "content": "我叫xyq"}],
+            [
+                {"role": "user", "content": "我叫xyq"},
+                {"role": "assistant", "content": "好的，已记住您的称呼。"},
+            ],
         )
         db.commit()
 
@@ -68,7 +71,14 @@ def test_memory_capture_uses_model_updates_and_deduplicates_profile_name(monkeyp
     assert profile_rows[0].metadata_json["key"] == "preferred_name"
     assert summary_rows == []
     assert saved
-    assert captured_payload["existing_memories"][0]["content"] == "hm"
+    assert captured_payload["existing_memories"] == "- profile/preferred_name: hm"
+    assert captured_payload["conversation_context"]["messages"] == [
+        {"role": "user", "content": "我叫xyq"},
+        {"role": "assistant", "content": "好的，已记住您的称呼。"},
+    ]
+    assert "user_message" not in captured_payload
+    assert "assistant_reply" not in captured_payload
+    assert "recent_messages" not in captured_payload
 
 
 def test_memory_capture_ignores_summary_updates(monkeypatch) -> None:
@@ -76,7 +86,7 @@ def test_memory_capture_ignores_summary_updates(monkeypatch) -> None:
         return None
 
     def fake_generate_json(self, system_prompt, payload):  # noqa: ANN001
-        assert "用户长期摘要" in payload["existing_memories"][0]["content"]
+        assert "用户长期摘要" in payload["existing_memories"]
         return {
             "memories": [],
             "updated_summary": "用户希望客服回复简洁，并正在验证多轮下单流程。",
@@ -103,11 +113,13 @@ def test_memory_capture_ignores_summary_updates(monkeypatch) -> None:
         MemoryService(db).capture_turn(
             ChatTurnRequest(tenant_id="tenant_demo", user_id="user_demo", message="一个"),
             ChatSession(id="session_test", tenant_id="tenant_demo", user_id="user_demo"),
-            "已为您创建订单。",
             StepAgentResult(),
             None,
             ModelConfig(tenant_id="tenant_demo", name="demo", api_key_encrypted="", model="demo"),
-            [{"role": "user", "content": "一个"}],
+            [
+                {"role": "user", "content": "一个"},
+                {"role": "assistant", "content": "已为您创建订单。"},
+            ],
         )
         db.commit()
 
@@ -116,6 +128,54 @@ def test_memory_capture_ignores_summary_updates(monkeypatch) -> None:
     assert len(rows) == 1
     assert rows[0].content == "用户长期摘要\n- 用户本轮诉求：我要买东西；最近处理结果：请问数量"
     assert rows[0].metadata_json["turn_count"] == 3
+
+
+def test_memory_job_reads_canonical_history_through_its_own_turn() -> None:
+    with _test_session() as db:
+        db.add_all(
+            [
+                Message(
+                    id="msg_user_1",
+                    tenant_id="tenant_demo",
+                    session_id="session_test",
+                    role="user",
+                    content="我32岁",
+                ),
+                Message(
+                    id="msg_assistant_1",
+                    tenant_id="tenant_demo",
+                    session_id="session_test",
+                    role="assistant",
+                    content="已记录",
+                    metadata_json={"turn_id": "msg_user_1"},
+                ),
+                Message(
+                    id="msg_user_2",
+                    tenant_id="tenant_demo",
+                    session_id="session_test",
+                    role="user",
+                    content="这是更晚一轮",
+                ),
+                Message(
+                    id="msg_assistant_2",
+                    tenant_id="tenant_demo",
+                    session_id="session_test",
+                    role="assistant",
+                    content="更晚一轮回复",
+                    metadata_json={"turn_id": "msg_user_2"},
+                ),
+            ]
+        )
+        db.commit()
+
+        messages = _conversation_messages_for_turn(
+            db, "tenant_demo", "session_test", "msg_user_1"
+        )
+
+    assert messages == [
+        {"role": "user", "content": "我32岁"},
+        {"role": "assistant", "content": "已记录"},
+    ]
 
 
 def test_memory_recall_excludes_summary_history() -> None:

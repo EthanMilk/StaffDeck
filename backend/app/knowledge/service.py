@@ -867,7 +867,7 @@ class KnowledgeService:
         payload = {
             "query": query,
             "max_documents": max_documents,
-            "documents": [_document_card_for_search(row) for row in documents],
+            "documents": [_document_card_for_route(row) for row in documents],
         }
         try:
             with llm_operation("knowledge.document_route", candidate_count=len(documents)):
@@ -1623,6 +1623,45 @@ def _document_card_for_search(row: KnowledgeDocument) -> dict[str, Any]:
         "chunk_count": row.chunk_count,
         "updated_at": row.updated_at.isoformat(),
     }
+
+
+def _document_card_for_route(row: KnowledgeDocument) -> dict[str, Any]:
+    card = _document_card_for_search(row)
+    return {
+        "id": card["id"],
+        "knowledge_base_id": card["knowledge_base_id"],
+        "title": _summarize_text(str(card.get("title") or ""), 120),
+        "filename": _summarize_text(str(card.get("filename") or ""), 120),
+        "file_type": card.get("file_type"),
+        "summary": _summarize_text(str(card.get("summary") or ""), 160),
+        "outline": _route_labels(card.get("outline"), 2, 60),
+        "key_entities": _route_labels(card.get("key_entities"), 3, 30),
+        "section_count": card.get("section_count"),
+        "chunk_count": card.get("chunk_count"),
+    }
+
+
+def _route_labels(value: object, limit: int, char_limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    labels: list[str] = []
+    for item in value[:limit]:
+        if isinstance(item, dict):
+            label = next(
+                (
+                    str(item.get(key) or "").strip()
+                    for key in ("path", "title", "name", "heading", "label")
+                    if item.get(key)
+                ),
+                "",
+            )
+            if not label:
+                label = json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+        else:
+            label = str(item or "").strip()
+        if label:
+            labels.append(_summarize_text(label, char_limit))
+    return labels
 
 
 def _score_documents(query: str, documents: list[KnowledgeDocument]) -> list[KnowledgeDocument]:

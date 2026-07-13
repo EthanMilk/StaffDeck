@@ -5,6 +5,66 @@ from app.session.session_schema import RouterDecision, StepAgentResult
 from app.tools.tool_schema import ToolError, ToolResult
 
 
+def test_response_payload_has_single_source_for_each_business_fact() -> None:
+    skill = Skill(
+        tenant_id="tenant_demo",
+        skill_id="medical",
+        name="问诊",
+        status="published",
+        content_json={
+            "response_rules": ["给出明确建议"],
+            "nodes": [
+                {
+                    "node_id": "collect",
+                    "type": "collect_info",
+                    "name": "收集症状",
+                    "instruction": "收集仍然缺失的症状信息。",
+                    "expected_user_info": ["symptom", "duration"],
+                }
+            ],
+        },
+    )
+    decision = RouterDecision(
+        decision="continue_active",
+        source_message="腹泻两天",
+        slot_hints={"duration": "两天"},
+    )
+    payload = ResponseGenerator()._payload(
+        "腹泻两天",
+        ChatSession(
+            id="session_test",
+            tenant_id="tenant_demo",
+            active_skill_id="medical",
+            active_step_id="collect",
+            slots_json={"symptom": "腹泻", "duration": "两天"},
+            awaiting_input_json={"expected_fields": ["age"]},
+        ),
+        skill,
+        decision,
+        StepAgentResult(
+            reply="请补充年龄",
+            slot_updates={"duration": "两天"},
+            is_step_completed=False,
+        ),
+        None,
+    )
+
+    assert payload["current_step"]["instruction"] == "收集仍然缺失的症状信息。"
+    assert payload["slots"] == {"symptom": "腹泻", "duration": "两天"}
+    assert payload["step_summary"] == {
+        "reply": "请补充年龄",
+        "is_step_completed": False,
+        "handoff": False,
+    }
+    assert payload["response_rules"] == ["给出明确建议"]
+    assert "active_skill" not in payload
+    assert "router_decision" not in payload
+    assert "session" not in payload
+    assert "slot_updates" not in str(payload)
+    assert "source_message" not in str(payload)
+    assert "awaiting_input" not in str(payload)
+
+
 def test_clarify_does_not_leak_internal_router_prompt(monkeypatch):
     def fake_init(self, model_config):  # noqa: ANN001
         return None
@@ -227,8 +287,8 @@ def test_response_payload_does_not_include_stale_last_question(monkeypatch):
         return None
 
     def fake_generate_text(self, system_prompt, payload):  # noqa: ANN001
-        assert "last_agent_question" not in payload["session"]
-        assert payload["step_result"]["reply"] == refund_reply
+        assert "session" not in payload
+        assert payload["step_summary"]["reply"] == refund_reply
         return stale_price_reply
 
     monkeypatch.setattr(LLMClient, "__init__", fake_init)
@@ -261,7 +321,7 @@ def test_stream_payload_does_not_include_stale_last_question(monkeypatch):
         return None
 
     def fake_generate_text_stream(self, system_prompt, payload):  # noqa: ANN001
-        assert "last_agent_question" not in payload["session"]
+        assert "session" not in payload
         yield stale_price_reply[:12]
         yield stale_price_reply[12:]
 
@@ -501,8 +561,17 @@ def test_knowledge_result_does_not_prefer_generic_step_reply(monkeypatch):
         return None
 
     def fake_generate_text(self, system_prompt, payload):  # noqa: ANN001
-        assert payload["session"]["knowledge_context"]
+        assert payload["knowledge_results"]
         assert payload["knowledge_citation_hints"]
+        assert "knowledge_results" not in payload["step_summary"]
+        assert "slot_updates" not in payload["step_summary"]
+        assert "active_skill" not in payload
+        assert "router_decision" not in payload
+        assert "session" not in payload
+        assert "content" not in payload["knowledge_citation_hints"][0]
+        assert len(
+            payload["knowledge_results"][0]["evidence_pack"][0]["content"]
+        ) <= 803
         return "前端规范包括目录组织、命名规范和组件编写规范。[1]"
 
     monkeypatch.setattr(LLMClient, "__init__", fake_init)
@@ -521,7 +590,7 @@ def test_knowledge_result_does_not_prefer_generic_step_reply(monkeypatch):
                     "evidence_pack": [
                         {
                             "source_path": "vue3-coding-standards.md / 前端编码规范 / evidence 1",
-                            "excerpt": "前端规范包括目录组织、命名规范、组件编写规范。",
+                            "excerpt": "前端规范包括目录组织、命名规范、组件编写规范。" * 200,
                             "reason": "命中前端规范问题",
                         }
                     ],

@@ -3,10 +3,15 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from app import paths
+from app.core.context_projection import (
+    compact_conversation_context,
+    compact_current_step,
+    compact_router_decision,
+    compact_step_result,
+)
 from app.db.models import ChatSession, ModelConfig, Skill, Tool
 from app.llm import LLMClient, LLMError
 from app.observability.spans import llm_operation
-from app.session.helpers import public_session
 from app.session.session_schema import RouterDecision, StepAgentResult
 from app.tools.tool_schema import ToolResult
 
@@ -40,36 +45,24 @@ class ReflectionAgent:
         if not action_needs_reflection(router_decision, step_result, tool_result):
             return ReflectionDecision()
 
-        available_skill_ids = {skill.skill_id for skill in available_skills}
         payload = {
             "user_message": message,
-            "conversation_context": conversation_context or {},
-            "current_session": public_session(session).model_dump(),
-            "active_skill": active_skill.content_json if active_skill else None,
-            "router_decision": router_decision.model_dump(),
-            "step_result": step_result.model_dump(),
+            "conversation_context": compact_conversation_context(conversation_context),
+            "current_step": compact_current_step(
+                active_skill.content_json if active_skill else None,
+                session.active_step_id,
+            ),
+            "rules": {
+                "response_rules": active_skill.content_json.get("response_rules", [])
+                if active_skill
+                else [],
+            },
+            "slots": session.slots_json or {},
+            "router_decision": compact_router_decision(
+                router_decision.model_dump(mode="json")
+            ),
+            "step_result": compact_step_result(step_result.model_dump(mode="json")),
             "tool_result": tool_result.model_dump() if tool_result else None,
-            "available_skills": [
-                {
-                    "skill_id": skill.skill_id,
-                    "name": skill.name,
-                    "description": skill.description,
-                    "trigger_intents": skill.content_json.get("trigger_intents", []),
-                    "required_info": skill.content_json.get("required_info", []),
-                    "nodes": [
-                        {
-                            "node_id": node.get("node_id"),
-                            "type": node.get("type"),
-                            "name": node.get("name"),
-                            "allowed_actions": node.get("allowed_actions", []),
-                        }
-                        for node in skill.content_json.get("nodes", [])
-                        if isinstance(node, dict)
-                    ],
-                }
-                for skill in available_skills
-            ],
-            "available_tools": self._available_tool_payload(available_tools, available_skill_ids),
         }
         try:
             with llm_operation("reflection.review"):
@@ -81,36 +74,6 @@ class ReflectionAgent:
             if isinstance(exc, LLMError):
                 raise
             raise LLMError(f"Reflection agent returned invalid JSON schema: {exc}") from exc
-
-    def _available_tool_payload(
-        self,
-        available_tools: list[Tool],
-        available_skill_ids: set[str],
-    ) -> list[dict[str, object]]:
-        payload: list[dict[str, object]] = []
-        for tool in available_tools:
-            if not tool.enabled:
-                continue
-            raw_allowed = [
-                str(skill_id)
-                for skill_id in (tool.allowed_skills_json or [])
-                if str(skill_id).strip()
-            ]
-            allowed_skills = [skill_id for skill_id in raw_allowed if skill_id in available_skill_ids]
-            if raw_allowed and not allowed_skills:
-                continue
-            payload.append(
-                {
-                    "name": tool.name,
-                    "display_name": tool.display_name,
-                    "description": tool.description,
-                    "bucket": getattr(tool, "bucket", None) or "未分桶",
-                    "input_schema": tool.input_schema,
-                    "allowed_skills": allowed_skills,
-                }
-            )
-        return payload
-
 
 def action_needs_reflection(
     router_decision: RouterDecision,

@@ -45,7 +45,6 @@ def test_agent_loop_enqueues_memory_capture_without_running_it_inline(monkeypatc
     result = loop._enqueue_memory_capture(
         ChatTurnRequest(tenant_id="tenant_demo", user_id="user_demo", message="我叫hm"),
         ChatSession(id="session_test", tenant_id="tenant_demo", user_id="user_demo"),
-        "您好 hm。",
         StepAgentResult(),
         None,
         ModelConfig(
@@ -55,12 +54,11 @@ def test_agent_loop_enqueues_memory_capture_without_running_it_inline(monkeypatc
             api_key_encrypted="encrypted",
             model="demo",
         ),
-        [{"role": "user", "content": "我叫hm"}],
     )
 
     assert result == [{"job_id": "job_memory_1", "job_name": "memory.capture_turn"}]
     assert captured["args"][1] == "session_test"
-    assert captured["args"][5] == "model_test"
+    assert captured["args"][4] == "model_test"
     assert loop.events.records[0][2] == "async_job_enqueued"
     assert loop.db.commits == 1
 

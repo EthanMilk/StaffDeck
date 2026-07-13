@@ -1,54 +1,84 @@
 from app.core.reflection_agent import ReflectionAgent
-from app.db.models import Skill, Tool
+from app.db.models import ChatSession, Skill
+from app.llm import LLMClient
+from app.session.session_schema import AwaitingInput, RouterDecision, StepAgentResult
 
 
-def test_reflection_tool_payload_drops_stale_skill_references() -> None:
-    agent = ReflectionAgent()
-    stale_tool = Tool(
+def test_reflection_payload_only_contains_current_rules_and_execution_result(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    def fake_init(self, model_config):  # noqa: ANN001
+        return None
+
+    def fake_generate_json(self, system_prompt, payload):  # noqa: ANN001
+        captured["payload"] = payload
+        return {"action": "pass", "needs_retry": False}
+
+    monkeypatch.setattr(LLMClient, "__init__", fake_init)
+    monkeypatch.setattr(LLMClient, "generate_json", fake_generate_json)
+
+    skill = Skill(
         tenant_id="tenant_demo",
-        name="product.price_query",
-        display_name="商品价格查询",
-        method="POST",
-        url="http://localhost:8000/api/mock/product/price-query",
-        allowed_skills_json=["missing_price_compare"],
-        enabled=True,
-    )
-
-    payload = agent._available_tool_payload([stale_tool], {"skill_purchase_001"})
-
-    assert payload == []
-
-
-def test_reflection_tool_payload_keeps_existing_allowed_skill_only() -> None:
-    agent = ReflectionAgent()
-    price_skill = Skill(
-        tenant_id="tenant_demo",
-        skill_id="skill_price_compare_001",
-        name="商品比价服务",
-        content_json={"skill_id": "skill_price_compare_001"},
+        skill_id="refund",
+        name="退款",
         status="published",
+        content_json={
+            "response_rules": ["必须明确说明退款结果"],
+            "nodes": [
+                {
+                    "node_id": "process_refund",
+                    "type": "tool",
+                    "name": "处理退款",
+                    "instruction": "确认工具结果后再完成。",
+                    "allowed_actions": ["call_tool:refund.apply"],
+                },
+                {"node_id": "unrelated", "instruction": "不应投影"},
+            ],
+        },
     )
-    tool = Tool(
-        tenant_id="tenant_demo",
-        name="product.price_query",
-        display_name="商品价格查询",
-        description="根据商品名称查询价格。",
-        method="POST",
-        url="http://localhost:8000/api/mock/product/price-query",
-        input_schema={"type": "object"},
-        allowed_skills_json=[price_skill.skill_id, "missing_skill"],
-        enabled=True,
+    decision = RouterDecision(
+        decision="continue_active",
+        target_skill_id="refund",
+        target_step_id="process_refund",
+        user_intent="申请退款",
+        source_message="我要退款",
+        awaiting_input=AwaitingInput(
+            skill_id="refund", step_id="process_refund", expected_fields=["order_id"]
+        ),
     )
 
-    payload = agent._available_tool_payload([tool], {price_skill.skill_id})
+    ReflectionAgent().review(
+        "我要退款",
+        ChatSession(
+            id="session_test",
+            tenant_id="tenant_demo",
+            agent_id="agent_test",
+            active_skill_id="refund",
+            active_step_id="process_refund",
+            slots_json={"order_id": "A001"},
+            pending_tasks_json=[{"task_id": "task_1"}],
+        ),
+        skill,
+        decision,
+        StepAgentResult(reply="退款已处理", is_step_completed=True),
+        None,
+        [skill],
+        [],
+        model_config=None,  # type: ignore[arg-type]
+    )
 
-    assert payload == [
-        {
-            "name": "product.price_query",
-            "display_name": "商品价格查询",
-            "description": "根据商品名称查询价格。",
-            "bucket": "未分桶",
-            "input_schema": {"type": "object"},
-            "allowed_skills": ["skill_price_compare_001"],
-        }
-    ]
+    payload = captured["payload"]
+    assert payload["current_step"]["instruction"] == "确认工具结果后再完成。"
+    assert payload["rules"] == {"response_rules": ["必须明确说明退款结果"]}
+    assert payload["slots"] == {"order_id": "A001"}
+    assert payload["step_result"]["reply"] == "退款已处理"
+    assert "source_message" not in payload["router_decision"]
+    assert "awaiting_input" not in payload["router_decision"]
+    assert "current_session" not in payload
+    assert "available_skills" not in payload
+    assert "available_tools" not in payload
+    assert "unrelated" not in str(payload)
+    assert "session_test" not in str(payload)
+    assert "agent_test" not in str(payload)

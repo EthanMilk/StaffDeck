@@ -893,11 +893,12 @@ def test_chat_turn_uses_general_skill_after_scene_router_skips_unmatched_scene(
 
     def fake_generate_text(self, system_prompt, payload):  # noqa: ANN001
         calls.append("response")
-        assert payload["session"]["active_skill_id"] is None
+        assert payload["current_step"] is None
+        assert payload["slots"] == {}
         assert payload["tool_result"]["tool_name"] == "general_skill.weather-zh"
         assert payload["tool_result"]["success"] is True
         assert payload["tool_result"]["data"]["structured_result"]["weather"] == "晴"
-        assert payload["step_result"]["reply"] == "海淀区今天晴。"
+        assert payload["step_summary"]["reply"] == "海淀区今天晴。"
         return "海淀区今天晴。"
 
     monkeypatch.setattr(LLMClient, "__init__", fake_init)
@@ -995,9 +996,8 @@ def test_general_skill_response_keeps_active_scene_context(monkeypatch) -> None:
 
     def fake_generate_text(self, system_prompt, payload):  # noqa: ANN001
         calls.append("response")
-        assert payload["session"]["active_skill_id"] == "purchase"
-        assert payload["session"]["active_step_id"] == "collect_product"
-        assert payload["session"]["slots"]["user_name"] == "hm"
+        assert payload["current_step"]["node_id"] == "collect_product"
+        assert payload["slots"]["user_name"] == "hm"
         assert payload["tool_result"]["tool_name"] == "general_skill.weather-zh"
         assert payload["tool_result"]["data"]["reply"] == "海淀当前天气晴。"
         return "海淀当前天气晴。天气合适的话，请继续告诉我想购买的商品和数量。"
@@ -1480,8 +1480,9 @@ def test_chat_turn_treats_unmatched_scene_as_chat_when_general_skill_not_selecte
 
     def fake_generate_text(self, system_prompt, payload):  # noqa: ANN001
         calls.append("response")
-        assert payload["active_skill"] is None
-        assert payload["router_decision"]["decision"] == "answer_only"
+        assert payload["current_step"] is None
+        assert "active_skill" not in payload
+        assert "router_decision" not in payload
         assert payload["tool_result"] is None
         return "你好，有什么业务需要我帮忙？"
 

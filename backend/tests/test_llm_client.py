@@ -136,6 +136,13 @@ def test_generate_text_persists_provider_request_metrics():
     assert finished["output_chars"] == 2
     assert finished["duration_ms"] >= 0
     assert finished["ttft_ms"] >= 0
+    assert finished["system_prompt_chars"] == len("system prompt")
+    assert finished["context_message_count"] == 0
+    assert finished["context_text_chars"] == 0
+    assert finished["payload_chars"] == len('{"hello": "world"}')
+    assert finished["request_text_chars"] == len("system prompt") + len(
+        '{"hello": "world"}'
+    )
 
 
 def test_generate_text_retries_empty_response():
@@ -306,6 +313,12 @@ def test_generate_text_projects_conversation_context_messages():
         "system prompt",
         {
             "user_message": "买两个",
+            "execution_state": {
+                "active_skill_id": "purchase",
+                "active_step_id": None,
+                "slots": {},
+                "pending_tasks": [],
+            },
             "conversation_context": {
                 "messages": [
                     {"role": "user", "content": "我是 hx，我要买 A2"},
@@ -319,14 +332,24 @@ def test_generate_text_projects_conversation_context_messages():
 
     assert output == "ok"
     call = client.client.chat.completions.calls[0]
-    assert call["messages"][:4] == [
-        {"role": "system", "content": "system prompt"},
+    assert call["messages"][0]["role"] == "system"
+    assert sum(message["role"] == "system" for message in call["messages"]) == 1
+    assert call["messages"][0]["content"].startswith("system prompt")
+    assert "当前执行状态（JSON）" in call["messages"][0]["content"]
+    assert '"execution_state": {"active_skill_id": "purchase"}' in call["messages"][0][
+        "content"
+    ]
+    assert '"user_message"' not in call["messages"][0]["content"]
+    assert '"conversation_context"' not in call["messages"][0]["content"]
+    assert '"active_step_id"' not in call["messages"][0]["content"]
+    assert '"slots"' not in call["messages"][0]["content"]
+    assert '"pending_tasks"' not in call["messages"][0]["content"]
+    assert call["messages"][1:] == [
         {"role": "user", "content": "我是 hx，我要买 A2"},
         {"role": "assistant", "content": "请问买几个？"},
         {"role": "user", "content": "买两个"},
     ]
-    assert '"messages":' not in call["messages"][-1]["content"]
-    assert '"metadata": {"total_messages": 3}' in call["messages"][-1]["content"]
+    assert call["messages"][-1] == {"role": "user", "content": "买两个"}
 
 
 def test_generate_text_projects_conversation_context_images_for_vision_model():
@@ -370,6 +393,38 @@ def test_generate_text_projects_conversation_context_images_for_vision_model():
         ],
     }
     assert '"messages":' not in call["messages"][-1]["content"]
+
+
+def test_generate_text_keeps_memory_capture_history_as_role_messages() -> None:
+    client = object.__new__(LLMClient)
+    client.client = _FakeOpenAIClient()
+    client.model = "demo-model"
+    client.temperature = 0.2
+    client.max_output_tokens = 256
+
+    assert client.generate_text(
+        "memory prompt",
+        {
+            "conversation_context": {
+                "messages": [
+                    {"role": "user", "content": "我32岁"},
+                    {"role": "assistant", "content": "已记录"},
+                ]
+            },
+            "existing_memories": "- profile/age: 32",
+        },
+    ) == "ok"
+
+    messages = client.client.chat.completions.calls[0]["messages"]
+    assert messages[0]["role"] == "system"
+    assert sum(message["role"] == "system" for message in messages) == 1
+    assert messages[0]["content"].startswith("memory prompt")
+    assert '"existing_memories": "- profile/age: 32"' in messages[0]["content"]
+    assert messages[1:] == [
+        {"role": "user", "content": "我32岁"},
+        {"role": "assistant", "content": "已记录"},
+    ]
+    assert all('"conversation_context"' not in str(message["content"]) for message in messages)
 
 
 def test_generate_text_does_not_guess_image_support_from_model_name():
@@ -480,8 +535,6 @@ def test_user_visible_response_keeps_configured_output_budget():
     ("operation", "expected"),
     [
         ("router.task_scheduler", 512),
-        ("step_agent.run", 1536),
-        ("step_agent.repair", 1536),
         ("reflection.review", 512),
         ("general_skill.select", 512),
         ("knowledge.document_route", 512),
@@ -492,6 +545,11 @@ def test_user_visible_response_keeps_configured_output_budget():
 )
 def test_control_plane_operation_output_budgets(operation, expected):  # noqa: ANN001
     assert operation_output_tokens(operation, 8192) == expected
+
+
+def test_step_agent_uses_configured_output_budget() -> None:
+    assert operation_output_tokens("step_agent.run", 8192) == 8192
+    assert operation_output_tokens("step_agent.repair", 8192) == 8192
 
 
 def test_generate_json_falls_back_when_json_object_mode_is_unsupported():

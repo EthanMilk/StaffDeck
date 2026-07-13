@@ -68,16 +68,78 @@ def test_step_agent_uses_model_json_for_slots_and_tool(monkeypatch):
 
     assert captured["payload"]["active_skill"]["skill_id"] == "repair_ticket"
     assert "技能节点是业务目标" in captured["system_prompt"]
-    assert captured["payload"]["active_step"]["step_id"] == "collect_issue"
+    assert captured["payload"]["active_skill"]["current_step"]["node_id"] == (
+        "collect_issue"
+    )
+    assert captured["payload"]["active_skill"]["adjacent_edges"] == [
+        {"source_node_id": "collect_issue", "next_node_id": "reply_ticket"}
+    ]
+    assert [
+        step["node_id"] for step in captured["payload"]["active_skill"]["target_steps"]
+    ] == ["reply_ticket"]
+    assert "active_step" not in captured["payload"]
     assert captured["payload"]["router_decision"]["user_intent"] == "设备报修"
-    assert captured["payload"]["recent_messages"][0]["content"] == "我是张三，设备 EQ-9 无法启动"
-    assert captured["payload"]["memory_context"][0]["metadata"]["key"] == "preferred_name"
+    assert "recent_messages" not in captured["payload"]
+    assert captured["payload"]["memory_context"] == "- 张三"
     assert captured["payload"]["awaiting_input"]["question_summary"] == "请描述设备问题。"
     assert "repair_context" in captured["payload"]
     assert result.slot_updates["asset_id"] == "EQ-9"
     assert result.tool_call is not None
     assert result.tool_call.name == "ticket.create"
     assert result.next_step_id == "reply_ticket"
+
+
+def test_step_agent_compacts_knowledge_continuation_without_duplicate_results(monkeypatch):
+    captured = {}
+
+    def fake_init(self, model_config):  # noqa: ANN001
+        return None
+
+    def fake_generate_json(self, system_prompt, payload):  # noqa: ANN001
+        captured["payload"] = payload
+        return {"reply": "已找到相关信息", "is_step_completed": True}
+
+    monkeypatch.setattr(LLMClient, "__init__", fake_init)
+    monkeypatch.setattr(LLMClient, "generate_json", fake_generate_json)
+    knowledge_result = {
+        "query": {"query": "设备故障"},
+        "chunks": [{"id": "chunk_1", "content": "重复切片" * 2_000}],
+        "expanded_sections": [{"content": "完整目录树" * 2_000}],
+        "evidence_pack": [
+            {
+                "chunk_id": "chunk_1",
+                "source_path": "维修指南/启动失败",
+                "content": "检查电源和保险丝" * 1_000,
+            }
+        ],
+    }
+
+    StepAgent().run(
+        "设备无法启动",
+        ChatSession(
+            id="session_test",
+            tenant_id="tenant_demo",
+            knowledge_context_json=[knowledge_result],
+        ),
+        None,
+        [],
+        model_config=None,  # type: ignore[arg-type]
+        repair_context={
+            "reason": "knowledge_continuation",
+            "knowledge_results": knowledge_result,
+        },
+        recent_messages=[{"role": "user", "content": "设备无法启动"}],
+    )
+
+    assert "recent_messages" not in captured["payload"]
+    assert "knowledge_results" not in captured["payload"]["repair_context"]
+    assert captured["payload"]["repair_context"]["knowledge_results_available_in"] == (
+        "knowledge_context"
+    )
+    compacted = captured["payload"]["knowledge_context"][0]
+    assert "chunks" not in compacted
+    assert "expanded_sections" not in compacted
+    assert len(compacted["evidence_pack"][0]["content"]) <= 803
 
 
 def _repair_skill() -> Skill:

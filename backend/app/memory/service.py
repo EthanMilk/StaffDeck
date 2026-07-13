@@ -65,14 +65,22 @@ class MemoryService:
         if limit <= 0:
             return []
         candidates = rows[:30]
-        by_id = {row.id: row for row in candidates}
+        candidate_refs = [f"m{index}" for index in range(1, len(candidates) + 1)]
+        candidate_text = "\n".join(
+            f"{reference}: {row.content}"
+            for reference, row in zip(candidate_refs, candidates, strict=True)
+        )
+        by_id = {
+            reference: row
+            for reference, row in zip(candidate_refs, candidates, strict=True)
+        }
         try:
             with llm_operation("memory.rerank", candidate_count=len(candidates)):
                 raw = LLMClient(model_config).generate_json(
                     RERANK_PROMPT_PATH.read_text(encoding="utf-8"),
                     {
                         "user_message": query,
-                        "candidate_memories": [memory_read(row) for row in candidates],
+                        "candidate_memories": candidate_text,
                         "limit": limit,
                     },
                 )
@@ -103,12 +111,13 @@ class MemoryService:
         self,
         request: ChatTurnRequest,
         session: ChatSession,
-        reply: str,
         step_result: StepAgentResult,
         tool_result: ToolResult | None,
         model_config: ModelConfig,
-        recent_messages: list[dict[str, str]],
+        conversation_messages: list[dict[str, str]],
     ) -> list[MemoryRecord]:
+        from app.core.context_projection import compact_step_result
+
         if not request.user_id:
             return []
 
@@ -126,11 +135,11 @@ class MemoryService:
             raw_delta = LLMClient(model_config).generate_json(
                 PROMPT_PATH.read_text(encoding="utf-8"),
                 {
-                    "user_message": request.message,
-                    "assistant_reply": reply,
-                    "recent_messages": _recent_messages_with_reply(recent_messages, reply),
-                    "existing_memories": [memory_read(row) for row in existing_rows],
-                    "step_result": step_result.model_dump(mode="json"),
+                    "conversation_context": {
+                        "messages": conversation_messages
+                    },
+                    "existing_memories": _memories_for_model(existing_rows),
+                    "step_result": compact_step_result(step_result.model_dump(mode="json")),
                     "tool_result": tool_result.model_dump(mode="json") if tool_result else None,
                 },
             )
@@ -352,6 +361,15 @@ def memory_read(record: MemoryRecord) -> dict[str, Any]:
     }
 
 
+def _memories_for_model(records: list[MemoryRecord]) -> str:
+    lines: list[str] = []
+    for record in records:
+        key = str((record.metadata_json or {}).get("key") or "").strip()
+        label = "/".join(part for part in (record.kind, key) if part)
+        lines.append(f"- {label}: {record.content}" if label else f"- {record.content}")
+    return "\n".join(lines)
+
+
 def memory_rows_for_read(rows: list[MemoryRecord]) -> list[MemoryRecord]:
     visible: list[MemoryRecord] = []
     seen_keys: set[tuple[str, str, str | None, str]] = set()
@@ -456,13 +474,6 @@ def _read_dedupe_key(record: MemoryRecord) -> str:
     if record.kind == "summary":
         return "summary"
     return record.id
-
-
-def _recent_messages_with_reply(recent_messages: list[dict[str, str]], reply: str) -> list[dict[str, str]]:
-    messages = [message for message in recent_messages if message.get("content")]
-    if reply.strip():
-        messages.append({"role": "assistant", "content": reply.strip()})
-    return messages[-12:]
 
 
 def _terms(text: str) -> set[str]:

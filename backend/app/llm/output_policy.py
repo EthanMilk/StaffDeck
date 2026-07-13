@@ -6,8 +6,6 @@ from __future__ import annotations
 OPERATION_MAX_OUTPUT_TOKENS: dict[str, int] = {
     "router.scene": 1024,
     "router.task_scheduler": 512,
-    "step_agent.run": 1536,
-    "step_agent.repair": 1536,
     "reflection.review": 512,
     "general_skill.select": 512,
     "general_skill.plan": 16384,

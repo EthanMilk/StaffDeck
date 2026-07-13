@@ -3,10 +3,15 @@ from __future__ import annotations
 from typing import Any
 
 from app import paths
+from app.core.context_projection import (
+    compact_awaiting_input,
+    compact_conversation_context,
+    compact_memory_context,
+    compact_pending_tasks,
+)
 from app.db.models import ChatSession, ModelConfig, Skill
 from app.llm import LLMClient, LLMError
 from app.observability.spans import llm_operation
-from app.session.helpers import public_session
 from app.session.session_schema import RouterDecision, TaskScheduleDecision
 from app.session.slot_policy import strip_router_generated_message_slots
 
@@ -27,9 +32,11 @@ class Router:
     ) -> RouterDecision:
         payload = {
             "user_message": message,
-            "conversation_context": conversation_context or {},
-            "memory_context": memory_context or [],
-            "current_session": public_session(session).model_dump(),
+            "conversation_context": compact_conversation_context(
+                conversation_context, token_budget=8_000
+            ),
+            "memory_context": compact_memory_context(memory_context),
+            "current_session": _router_session_payload(session),
             "available_skills": _available_skill_payloads(available_skills),
         }
         try:
@@ -58,9 +65,11 @@ class Router:
         payload = {
             "user_message": message,
             "completed_reply": completed_reply or "",
-            "conversation_context": conversation_context or {},
-            "memory_context": memory_context or [],
-            "current_session": public_session(session).model_dump(),
+            "conversation_context": compact_conversation_context(
+                conversation_context, token_budget=8_000
+            ),
+            "memory_context": compact_memory_context(memory_context),
+            "current_session": _router_session_payload(session),
             "candidate_task_frames": candidate_frames,
             "available_skills": _available_skill_payloads(available_skills),
         }
@@ -152,29 +161,13 @@ class Router:
         return schedule
 
     def _candidate_task_frames(self, session: ChatSession) -> list[dict[str, Any]]:
-        frames: list[dict[str, Any]] = []
-        for frame in session.pending_tasks_json or []:
-            if not isinstance(frame, dict) or not frame.get("task_id"):
-                continue
-            frames.append(
-                {
-                        "source": "pending",
-                        "task_id": frame.get("task_id"),
-                        "status": frame.get("status"),
-                        "skill_id": frame.get("skill_id") or frame.get("target_skill_id"),
-                        "step_id": frame.get("step_id") or frame.get("target_step_id"),
-                        "slots": strip_router_generated_message_slots(
-                            frame.get("slots") if isinstance(frame.get("slots"), dict) else {}
-                        ),
-                        "intent_summary": frame.get("intent_summary") or frame.get("user_intent"),
-                        "source_message": frame.get("source_message"),
-                        "parent_task_id": frame.get("parent_task_id"),
-                        "resume_policy": frame.get("resume_policy"),
-                        "created_at": frame.get("created_at"),
-                        "updated_at": frame.get("updated_at"),
-                    }
+        frames = compact_pending_tasks(session.pending_tasks_json)
+        for frame in frames:
+            frame["source"] = "pending"
+            frame["slots"] = strip_router_generated_message_slots(
+                frame.get("slots") if isinstance(frame.get("slots"), dict) else {}
             )
-        return frames
+        return [frame for frame in frames if frame.get("task_id")]
 
 
 def _first_node_id(skill: Skill) -> str | None:
@@ -196,28 +189,32 @@ def _available_skill_payloads(available_skills: list[Skill]) -> list[dict[str, A
 
 def _skill_payload(skill: Skill) -> dict[str, Any]:
     content = skill.content_json or {}
+    return _without_empty(
+        {
+            "skill_id": skill.skill_id,
+            "name": skill.name,
+            "description": skill.description,
+            "trigger_intents": content.get("trigger_intents", []),
+        }
+    )
+
+
+def _router_session_payload(session: ChatSession) -> dict[str, Any]:
+    return _without_empty(
+        {
+            "active_skill_id": session.active_skill_id,
+            "active_step_id": session.active_step_id,
+            "slots": session.slots_json or {},
+            "pending_tasks": compact_pending_tasks(session.pending_tasks_json),
+            "awaiting_input": compact_awaiting_input(session.awaiting_input_json),
+            "status": session.status,
+        }
+    )
+
+
+def _without_empty(value: dict[str, Any]) -> dict[str, Any]:
     return {
-        "skill_id": skill.skill_id,
-        "name": skill.name,
-        "description": skill.description,
-        "business_domain": content.get("business_domain"),
-        "trigger_intents": content.get("trigger_intents", []),
-        "required_info": content.get("required_info", []),
-        "nodes": [
-            {
-                "node_id": node.get("node_id"),
-                "type": node.get("type"),
-                "name": node.get("name"),
-                "instruction": node.get("instruction"),
-                "optional": node.get("optional"),
-                "condition": node.get("condition"),
-                "expected_user_info": node.get("expected_user_info", []),
-                "allowed_actions": node.get("allowed_actions", []),
-            }
-            for node in content.get("nodes", [])
-            if isinstance(node, dict)
-        ],
-        "edges": content.get("edges", []),
-        "start_node_id": content.get("start_node_id"),
-        "terminal_node_ids": content.get("terminal_node_ids", []),
+        key: item
+        for key, item in value.items()
+        if item is not None and item != "" and item != [] and item != {}
     }

@@ -424,7 +424,6 @@ class AgentLoop:
 
         if not chat_session:
             chat_session = self._get_or_create_session(request)
-        memory_recent_messages = self._recent_messages(chat_session) if memory_model_config else []
         self._finalize_turn(
             chat_session,
             request.tenant_id,
@@ -439,11 +438,9 @@ class AgentLoop:
             self._enqueue_memory_capture(
                 request,
                 chat_session,
-                reply,
                 step_result,
                 tool_result,
                 memory_model_config,
-                memory_recent_messages,
             )
         return ChatTurnResponse(
             reply=reply,
@@ -546,11 +543,9 @@ class AgentLoop:
         self._enqueue_memory_capture(
             request,
             chat_session,
-            reply,
             step_result,
             tool_result,
             model_config,
-            self._recent_messages(chat_session),
         )
         return ChatTurnResponse(
             reply=reply,
@@ -878,11 +873,9 @@ class AgentLoop:
         self._enqueue_memory_capture(
             request,
             chat_session,
-            reply,
             step_result,
             tool_result,
             model_config,
-            self._recent_messages(chat_session),
         )
         result = ChatTurnResponse(
             reply=reply,
@@ -1685,9 +1678,6 @@ class AgentLoop:
                 yield self._stream_event(
                     "stream_end", chat_session, self._turn_payload({}, user_message_id)
                 )
-                memory_recent_messages = (
-                    self._recent_messages(chat_session) if memory_model_config else []
-                )
                 finalize_turn_once(chat_session, reply, step_result, request.message)
                 self.db.commit()
                 self.db.refresh(chat_session)
@@ -1695,11 +1685,9 @@ class AgentLoop:
                     self._enqueue_memory_capture(
                         request,
                         chat_session,
-                        reply,
                         step_result,
                         tool_result,
                         memory_model_config,
-                        memory_recent_messages,
                     )
                 result = ChatTurnResponse(
                     reply=reply,
@@ -2027,9 +2015,6 @@ class AgentLoop:
                 chat_session = self._get_or_create_session(request)
             if mark_current_turn_cancelled():
                 return
-            memory_recent_messages = (
-                self._recent_messages(chat_session) if memory_model_config else []
-            )
             finalize_turn_once(chat_session, reply, step_result, request.message)
             self.db.commit()
             turn_commit_completed = True
@@ -2038,11 +2023,9 @@ class AgentLoop:
                 self._enqueue_memory_capture(
                     request,
                     chat_session,
-                    reply,
                     step_result,
                     tool_result,
                     memory_model_config,
-                    memory_recent_messages,
                 )
             result = ChatTurnResponse(
                 reply=reply,
@@ -6233,21 +6216,17 @@ class AgentLoop:
         self,
         request: ChatTurnRequest,
         chat_session: ChatSession,
-        reply: str,
         step_result: StepAgentResult,
         tool_result: ToolResult | None,
         model_config: ModelConfig,
-        recent_messages: list[dict[str, str]],
     ) -> list[dict[str, object]]:
         try:
             job = enqueue_memory_capture(
                 request,
                 chat_session.id,
-                reply,
                 step_result,
                 tool_result,
                 model_config.id,
-                recent_messages,
             )
         except Exception as exc:
             self.events.record(
